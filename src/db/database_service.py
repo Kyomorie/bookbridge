@@ -3988,6 +3988,13 @@ class DatabaseService:
                 func.count(ReadingSession.id).label('session_count'),
                 func.coalesce(func.sum(ReadingSession.duration_seconds), 0).label('total_duration'),
                 func.max(ReadingSession.end_time).label('last_session_time'),
+                # last_leader = the leader of the MOST RECENT session (max end_time).
+                # SQLite guarantees that with exactly one max()/min() aggregate and no
+                # GROUP-BY ambiguity, bare (non-aggregated) columns take their value from
+                # the same input row that produced that max — here, the max(end_time) row.
+                # This gives us the latest leader per book with no extra query. Do not
+                # "clean this up" into a plain column; it is load-bearing.
+                ReadingSession.leader_client.label('last_leader'),
             )
             uid = self._resolve_uid(user_id)
             if uid is not None:
@@ -4004,6 +4011,7 @@ class DatabaseService:
                     'session_count': int(row.session_count),
                     'avg_session_seconds': int(row.total_duration) // int(row.session_count),
                     'last_session_time': row.last_session_time,
+                    'last_leader': row.last_leader,
                 }
             return result
 

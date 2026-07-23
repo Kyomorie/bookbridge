@@ -1253,6 +1253,76 @@ class CleanFlaskIntegrationTest(unittest.TestCase):
         self.assertNotIn('Out of sync by 54.0%', html)
         self.assertNotIn('class="book-card out-of-sync"', html)
 
+    def test_index_marks_last_leader_service_on_dashboard(self):
+        """The card exposes the normalized last-instigator service and renders a
+        subtle leader dot on the matching service row."""
+        from src.db.models import Book
+
+        test_book = Book(
+            abs_id='leader-book-1',
+            abs_title='Leader Book',
+            ebook_filename='leader-book.epub',
+            kosync_doc_id='leader-doc',
+            sync_mode='audiobook',
+            status='active',
+            duration=3600,
+        )
+        self.mock_database_service.get_all_books.return_value = [test_book]
+        self.mock_database_service.get_all_states.return_value = []
+        self.mock_database_service.get_all_reading_stats.return_value = {
+            'leader-book-1': {
+                'listen_seconds': 100,
+                'read_seconds': 0,
+                'session_count': 1,
+                'avg_session_seconds': 100,
+                'last_session_time': 5000.0,
+                'last_leader': 'KoSync:kindle',
+            }
+        }
+        self._set_dashboard_integrations()
+
+        mapping = self._capture_index_mapping()
+        self.assertEqual(mapping['last_leader'], 'KoSync:kindle')
+        self.assertEqual(mapping['last_leader_service'], 'kosync')
+
+        # The CSS rule '.leader-dot' is always in the page; the rendered span
+        # 'class="leader-dot"' appears only when a dot is emitted.
+        html = self._render_index_template_source()
+        self.assertIn('class="leader-dot"', html)
+
+    def test_index_renders_no_leader_dot_for_tracker_leader(self):
+        """A write-only tracker leader is never a real instigator: no dot."""
+        from src.db.models import Book
+
+        test_book = Book(
+            abs_id='leader-book-2',
+            abs_title='Tracker Leader',
+            ebook_filename='tracker-leader.epub',
+            kosync_doc_id='tracker-doc',
+            sync_mode='audiobook',
+            status='active',
+            duration=3600,
+        )
+        self.mock_database_service.get_all_books.return_value = [test_book]
+        self.mock_database_service.get_all_states.return_value = []
+        self.mock_database_service.get_all_reading_stats.return_value = {
+            'leader-book-2': {
+                'listen_seconds': 0,
+                'read_seconds': 100,
+                'session_count': 1,
+                'avg_session_seconds': 100,
+                'last_session_time': 5000.0,
+                'last_leader': 'Hardcover',
+            }
+        }
+        self._set_dashboard_integrations()
+
+        mapping = self._capture_index_mapping()
+        self.assertIsNone(mapping['last_leader_service'])
+
+        html = self._render_index_template_source()
+        self.assertNotIn('class="leader-dot"', html)
+
     def test_index_sync_warning_maps_audio_axis_through_alignment(self):
         """A sentence-aligned book whose ABS time-axis % differs from the ebook
         text-axis % must not be flagged out of sync: the audio position is

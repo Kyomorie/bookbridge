@@ -6,6 +6,15 @@ All notable changes to BookBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **You can now see at a glance which app last moved a book's position.** On the
+  dashboard's In Progress cards, a small green dot now marks the service that most
+  recently updated where you are — for example, Audiobookshelf if you last listened in
+  the ABS app, or KoSync if you last read on your Kindle. It's a subtle indicator, so
+  it stays out of the way while making it easy to tell which side drove the latest
+  progress on books you're reading and listening to across services. (#333)
+
 ### Fixed
 
 - **Your book files are no longer read constantly when nothing is happening.** A

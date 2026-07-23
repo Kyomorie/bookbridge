@@ -4055,6 +4055,45 @@ def _group_dashboard_states_by_book(all_states):
     return states_by_book
 
 
+def _dashboard_leader_service(leader_client: str | None) -> str | None:
+    """Map a raw ReadingSession.leader_client to the dashboard's service key.
+
+    The returned key matches the lowercase client name used in ``mapping["states"]``
+    and the per-service ``.service-item`` blocks in ``index.html`` (``'abs'``,
+    ``'kosync'``, ``'storyteller'``, ``'booklore'``, ``'bookloreaudio'``,
+    ``'bookorbit'``, ``'bookorbitaudio'``, ``'cwa'``), so the 'In Progress' card can
+    subtly dot whichever service last moved the position.
+
+    This is display-only: internal client keys are never renamed. KoSync device
+    variants (``KoSync:<device>``, ``BridgeSync_Plugin``) collapse to ``'kosync'``;
+    ``ABSEbook`` shares the single ABS row; audio leaders keep their own row (the
+    template renders distinct GR/BO Audio rows); unknown / write-only tracker
+    leaders return None (no dot).
+    """
+    if not leader_client:
+        return None
+    key = str(leader_client).strip().lower()
+    if not key:
+        return None
+    if key.startswith("kosync") or key == "bridgesync_plugin":
+        return "kosync"
+    if key in ("abs", "absebook"):
+        return "abs"
+    if key == "storyteller":
+        return "storyteller"
+    if key == "booklore":
+        return "booklore"
+    if key == "bookloreaudio":
+        return "bookloreaudio"
+    if key == "bookorbit":
+        return "bookorbit"
+    if key == "bookorbitaudio":
+        return "bookorbitaudio"
+    if key == "cwa":
+        return "cwa"
+    return None
+
+
 def _build_dashboard_mapping(
     book,
     states_by_book,
@@ -4286,6 +4325,8 @@ def _build_dashboard_mapping(
     reading_stats = reading_stats_by_book.get(book.abs_id)
     if reading_stats:
         mapping["reading_stats"] = reading_stats
+        mapping["last_leader"] = reading_stats.get("last_leader")
+        mapping["last_leader_service"] = _dashboard_leader_service(reading_stats.get("last_leader"))
 
     return mapping
 
