@@ -1204,7 +1204,7 @@ def kosync_get_progress(doc_id):
     )
 
     logger.warning(
-        f"⚠️ KOSync: Document not found: {doc_id} (GET from {request.remote_addr}). "
+        f"⚠️ KOSync: Document not found: '{doc_id}' (GET from {request.remote_addr}). "
         "If auto-discovery can't match it (e.g. the device's copy isn't byte-identical to "
         "the library file), link it manually from Add / Update Book -> Reader Documents, or re-deliver "
         "the book via the BridgeSync plugin's 'Sync books' so the hash matches."
@@ -2877,7 +2877,7 @@ def _schedule_auto_discovery(doc_id: str, user_id=None, *, source: str = "get") 
     with _queued_discovery_lock:
         if _queued_discovery_count >= _MAX_QUEUED_DISCOVERY:
             logger.warning(
-                "KOSync: %s-discovery for %s dropped — discovery queue full (%d/%d)",
+                "KOSync: %s-discovery for '%s' dropped — discovery queue full (%d/%d)",
                 source, doc_id, _queued_discovery_count, _MAX_QUEUED_DISCOVERY,
             )
             return
@@ -3022,7 +3022,7 @@ def _suppress_empty_progress_response(doc_id: str, percentage: float, progress: 
     safe_progress = progress.strip() if isinstance(progress, str) else ""
     if percentage > 0 and not safe_progress:
         logger.warning(
-            "KOSync: Suppressing response for %s - percentage %.2f%% but no locator available. Returning 404 to prevent page-0 reset.",
+            "KOSync: Suppressing response for '%s' - percentage %.2f%% but no locator available. Returning 404 to prevent page-0 reset.",
             doc_id,
             percentage * 100.0,
         )
