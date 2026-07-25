@@ -140,7 +140,7 @@ class BookloreClient:
                                 self.db.save_booklore_book(b_model)
                                 count += 1
                             except Exception as e:
-                                logger.warning(f"⚠️ Failed to migrate book {filename}: {e}")
+                                logger.warning(f"⚠️ Failed to migrate book '{filename}': {e}")
                         
                         logger.info(f"✅ Grimmory: Migrated {count} books to database.")
                         
@@ -263,7 +263,7 @@ class BookloreClient:
     def _make_request(self, method, endpoint, json_data=None, timeout=None):
         token = self._get_fresh_token()
         if not token:
-            logger.warning(f"Grimmory: _make_request returning None (no token) for {method} {endpoint}")
+            logger.warning(f"Grimmory: _make_request returning None (no token) for {method} '{endpoint}'")
             return None
         request_timeout = timeout if timeout is not None else self._request_timeout
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -286,7 +286,7 @@ class BookloreClient:
                     self._token_timestamp = 0
                 token = self._get_fresh_token()
                 if not token:
-                    logger.warning(f"Grimmory: _make_request returning None after 401 retry (no token) for {method} {endpoint}")
+                    logger.warning(f"Grimmory: _make_request returning None after 401 retry (no token) for {method} '{endpoint}'")
                     return None
                 headers["Authorization"] = f"Bearer {token}"
                 if method_upper == "GET":
@@ -538,7 +538,7 @@ class BookloreClient:
                 try:
                     self.db.delete_booklore_book(cached_filename)
                 except Exception as e:
-                    logger.error(f"❌ Failed to evict stale Grimmory book {cached_filename}: {e}")
+                    logger.error(f"❌ Failed to evict stale Grimmory book '{cached_filename}': {e}")
 
         removed_any = bool(removed_filenames or removed_ids)
         if removed_any:
@@ -771,7 +771,7 @@ class BookloreClient:
                 try:
                     self.db.delete_booklore_book(filename)
                 except Exception as e:
-                    logger.error(f"❌ Failed to prune stale book {filename}: {e}")
+                    logger.error(f"❌ Failed to prune stale book '{filename}': {e}")
 
         if stale_entries:
             logger.info(f"📚 Grimmory: Pruned {len(stale_entries)} books no longer in library")
@@ -1009,7 +1009,7 @@ class BookloreClient:
                         try:
                             self.db.delete_booklore_book(fname)
                         except Exception as e:
-                            logger.error(f"❌ Failed to prune stale book {fname}: {e}")
+                            logger.error(f"❌ Failed to prune stale book '{fname}': {e}")
 
                 if stale_count > 0:
                     logger.info(f"🧹 Grimmory: Pruned {stale_count} stale books from database.")
@@ -1219,7 +1219,7 @@ class BookloreClient:
                 )
                 self.db.save_booklore_book(b_model)
             except Exception as e:
-                logger.error(f"❌ Failed to persist book {filename} to DB: {e}")
+                logger.error(f"❌ Failed to persist book '{filename}' to DB: {e}")
 
         return None
 
@@ -2254,7 +2254,7 @@ class BookloreClient:
             elif book_type == 'CBX':
                 payload_variants = [("standard", {"bookId": book_id, "cbxProgress": {"page": 1, "percentage": pct_display}})]
             else:
-                logger.warning(f"Grimmory: Unknown book type {book_type} for {safe_filename}")
+                logger.warning(f"Grimmory: Unknown book type {book_type} for '{safe_filename}'")
                 return False
 
         logger.debug(
