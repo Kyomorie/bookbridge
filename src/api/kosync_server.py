@@ -939,7 +939,7 @@ def _defer_kosync_book_access(doc_id: str, book, *, source: str):
     """Keep a foreign mapping private while discovery verifies the user's copy."""
     user_id = getattr(g, "kosync_user_id", None)
     logger.warning(
-        "KOSync: hash %s resolved to book %s but user %s has no UserBook claim; "
+        "KOSync: hash '%s' resolved to book '%s' but user %s has no UserBook claim; "
         "attempting user-scoped auto-discovery",
         doc_id,
         book.abs_id,

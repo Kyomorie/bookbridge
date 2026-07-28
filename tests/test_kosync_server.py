@@ -648,7 +648,7 @@ class TestKosyncEndpoints(unittest.TestCase):
             return MagicMock()
 
         expected_log = (
-            f"KOSync: hash {doc_hash} resolved to book {abs_id} but user {reader.id} "
+            f"KOSync: hash '{doc_hash}' resolved to book '{abs_id}' but user {reader.id} "
             "has no UserBook claim; attempting user-scoped auto-discovery"
         )
         with (
