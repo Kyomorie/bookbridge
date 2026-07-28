@@ -17,6 +17,13 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Audiobookshelf instant sync now connects through HTTPS reverse proxies.**
+  BookBridge now hands secure Audiobookshelf URLs to the WebSocket transport as
+  `wss://` instead of `https://`, preventing the socket client from rejecting the
+  URL while normal API requests continue to use HTTPS. Scheduled polling remained
+  available on affected installs, and instant sync resumes automatically after the
+  update is restarted.
+
 - **Your book files are no longer read constantly when nothing is happening.** A
   background task that prepares the optional KOReader managed-folder sync list was
   re-reading (hashing) every book in your library once a minute, forever — even on

@@ -200,6 +200,26 @@ class TestABSSocketListenerDebounce(unittest.TestCase):
             )
         self.assertEqual(listener._server_url, "http://abs.local:13378")
 
+    def test_https_socket_connection_uses_websocket_scheme(self):
+        """HTTPS ABS URLs must reach websocket-client as WSS URLs."""
+        with patch("src.services.abs_socket_listener.socketio.Client"):
+            listener = ABSSocketListener(
+                abs_server_url="https://abs.example.com",
+                abs_api_token="tok",
+                database_service=MagicMock(),
+                sync_manager=MagicMock(),
+            )
+        with patch.object(
+            listener, "_build_token_strategies", return_value=["socket-token"]
+        ):
+            listener.start()
+
+        listener._sio.connect.assert_called_once_with(
+            "wss://abs.example.com",
+            transports=["websocket"],
+            auth={"token": "socket-token"},
+        )
+
     def test_socket_token_http_failures_use_retry_backoff(self):
         """The reported 502 path must wait between token-exchange retries."""
         bad_gateway = MagicMock(status_code=502)

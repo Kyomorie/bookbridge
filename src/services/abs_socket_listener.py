@@ -422,7 +422,9 @@ class ABSSocketListener:
             )
             try:
                 self._sio.connect(
-                    self._server_url,
+                    self._server_url.replace("https://", "wss://", 1).replace(
+                        "http://", "ws://", 1
+                    ),
                     transports=["websocket"],
                     auth={"token": token},
                 )
