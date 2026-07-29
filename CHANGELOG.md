@@ -4,6 +4,108 @@
 
 All notable changes to BookBridge will be documented in this file.
 
+## [7.3.2] - 2026-07-29
+
+### Added
+
+- **You can now see at a glance which app last moved a book's position.** On the
+  dashboard's In Progress cards, a small green dot now marks the service that most
+  recently updated where you are — for example, Audiobookshelf if you last listened in
+  the ABS app, or KoSync if you last read on your Kindle. It's a subtle indicator, so
+  it stays out of the way while making it easy to tell which side drove the latest
+  progress on books you're reading and listening to across services. (#333)
+
+### Fixed
+
+- **Simultaneous first-time KOReader updates no longer occasionally fail.** KoSync
+  document progress now uses SQLite's atomic conflict-safe upsert, so two devices
+  introducing the same ebook hash at once update one shared row instead of racing
+  into a unique-constraint error.
+
+- **KOReader managed-folder sync can recover ABS ebooks with ordinary filenames.**
+  When a cached ebook is missing, BookBridge now tries the mapping's dedicated ABS
+  ebook identity and its known ABS item identity instead of requiring the legacy
+  `{item_id}_abs.epub` filename convention. IDs belonging to other ebook providers
+  are no longer sent to Audiobookshelf during fallback.
+
+- **Audiobookshelf instant sync now connects through HTTPS reverse proxies.**
+  BookBridge now hands secure Audiobookshelf URLs to the WebSocket transport as
+  `wss://` instead of `https://`, preventing the socket client from rejecting the
+  URL while normal API requests continue to use HTTPS. Scheduled polling remained
+  available on affected installs, and instant sync resumes automatically after the
+  update is restarted.
+
+- **Your book files are no longer read constantly when nothing is happening.** A
+  background task that prepares the optional KOReader managed-folder sync list was
+  re-reading (hashing) every book in your library once a minute, forever — even on
+  installs that never use that feature and even when you hadn't opened a book in days.
+  That kept hard drives from ever spinning down. BookBridge now only builds that list
+  when a KOReader device actually requests it, and it remembers each book's hash until
+  the file itself changes, so unchanged files are never re-read. Idle installs now
+  leave your disks alone. (#342)
+
+- **Shelf and matching-queue edge cases no longer leak or remove work.** BookOrbit
+  now recognizes case-variant configured shelf names in every shelving path, so a
+  book cannot be added to and then removed from the same collection. Persisted
+  queue owners accept only positive ASCII SQLite user IDs, preventing Unicode
+  numeric lookalikes from inheriting another user's queue. Grimmory retries shelf
+  creation without icon metadata only for the known 400 compatibility response,
+  avoiding duplicate non-idempotent requests after ambiguous server failures.
+
+- **Book editions with apostrophes can now be selected from multi-result matching
+  searches.** The Add / Update Book picker now reads each edition's existing card
+  metadata instead of embedding its filename and title in inline JavaScript. (#339)
+
+- **Matching queues are now consistent and private per user.** Add Book and
+  Suggestions share one atomic background processor, including BookOrbit hashes,
+  ownership claims, suggestion dismissal, and shelf-watch completion for direct,
+  Forge & Match, Forge only, audio-only, and ebook-only approvals. If the recorded
+  shelf move fails, the standard source-aware shelf fallback is now attempted; a
+  failed destination add never removes the watch-shelf copy. **A Grimmory shelf move
+  can no longer lose a book:** it previously cleared the old shelf first, so if the
+  new shelf couldn't be written the book ended up on neither. Queue items are stamped to the
+  acting user, so another user can no longer view, remove, clear, or process them.
+  Pre-upgrade unowned queue items remain available only to the primary admin.
+  Deleting a user removes their queued work, and malformed explicit queue owners
+  are discarded on the next queue rewrite.
+
+- **BookBridge can create Grimmory shelves again.** Shelving a book to a shelf that
+  didn't exist yet silently did nothing: the request included icon fields that
+  newer Grimmory builds reject outright, so the shelf was never created and the
+  book was never filed. BookBridge now retries without the icon details, so your
+  configured Kobo and Up Next shelves are created on first use as intended. If your
+  shelves already existed you were unaffected.
+
+- **Positions in some ebooks no longer fail to resolve.** In books whose HTML
+  contains comments — common in files produced by conversion tools — reading a
+  position from a service that speaks in CFI locators could hit one of those
+  comments and give up, leaving that book out of the sync for the cycle. Those
+  nodes are now skipped as the ebook standard requires, so the position resolves
+  normally. (#341)
+
+- **An expired StoryGraph login now tells you once instead of failing quietly
+  forever.** When your saved StoryGraph session cookie expires, BookBridge could
+  no longer write progress but kept trying for every book on every cycle, filling
+  the log with hundreds of identical failures and hiding the real problem. It now
+  logs a single clear warning asking you to sign in again and stops writing until
+  you save fresh credentials, at which point it picks straight back up.
+
+- **A round of log-noise fixes.** Several harmless situations were being reported
+  as warnings or errors: cleaning up a book whose Audiobookshelf collection no
+  longer exists, looking for a transcript on a book that has never been
+  transcribed, and routine KOReader and Grimmory activity. These are now quiet or
+  logged at debug level, so what remains in your log is worth reading. When
+  BookOrbit does refuse to create a collection, the log now says why.
+
+### Changed
+
+- **Housekeeping.** The old match, batch-match, and forge screens had been fully
+  replaced by the current Add / Update Book flow but were still shipping in the
+  image; they have been removed and their links now go straight to Add / Update
+  Book. The Shelfmark link opens the tool directly instead of wrapping it in a
+  BookBridge page. A batch of unused code and four unused Python dependencies were
+  dropped as well. No feature was lost.
+
 ## [7.3.1] - 2026-07-21
 
 ### Security

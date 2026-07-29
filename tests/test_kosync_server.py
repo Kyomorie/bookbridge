@@ -112,6 +112,45 @@ class TestKosyncDocument(unittest.TestCase):
 
         self.assertEqual(saved.user_id, user.id)
 
+    def test_save_kosync_document_uses_atomic_upsert_for_concurrent_create(self):
+        """Concurrent first PUTs must use one conflict-safe INSERT statement."""
+        from sqlalchemy import event
+
+        statements = []
+
+        def capture_statement(_conn, _cursor, statement, _params, _context, _many):
+            statements.append(statement)
+
+        event.listen(
+            self.db_service.db_manager.engine,
+            "before_cursor_execute",
+            capture_statement,
+        )
+        try:
+            self.db_service.save_kosync_document(
+                KosyncDocument(document_hash='2' * 32, percentage=0.25)
+            )
+            self.db_service.save_kosync_document(
+                KosyncDocument(document_hash='2' * 32, percentage=0.75)
+            )
+        finally:
+            event.remove(
+                self.db_service.db_manager.engine,
+                "before_cursor_execute",
+                capture_statement,
+            )
+
+        inserts = [
+            statement for statement in statements
+            if "INSERT INTO kosync_documents" in statement
+        ]
+        self.assertTrue(inserts)
+        self.assertTrue(all("ON CONFLICT" in statement for statement in inserts))
+        self.assertAlmostEqual(
+            float(self.db_service.get_kosync_document('2' * 32).percentage),
+            0.75,
+        )
+
     def test_try_find_epub_by_hash_handles_cached_filename_hash_collision(self):
         """A stale filename cache must not overwrite an existing document hash row."""
         from src.api import kosync_server
@@ -385,8 +424,7 @@ class TestKosyncEndpoints(unittest.TestCase):
         from src import web_server
 
         for placeholder in ("None", "none", "null", "NULL"):
-            with self.assertLogs(ks.logger, level='WARNING') as captured, \
-                 patch.object(ks, '_spawn_user_scoped_thread') as mock_spawn:
+            with self.assertLogs(ks.logger, level='WARNING') as captured:
                 response = self.client.get(
                     f'/syncs/progress/{placeholder}',
                     headers=self.auth_headers
@@ -397,7 +435,6 @@ class TestKosyncEndpoints(unittest.TestCase):
                 f"Invalid or placeholder document ID requested: '{placeholder}'",
                 "\n".join(captured.output),
             )
-            mock_spawn.assert_not_called()
             self.assertIsNone(web_server.database_service.get_kosync_document(placeholder))
 
 
@@ -650,7 +687,7 @@ class TestKosyncEndpoints(unittest.TestCase):
             return MagicMock()
 
         expected_log = (
-            f"KOSync: hash {doc_hash} resolved to book {abs_id} but user {reader.id} "
+            f"KOSync: hash '{doc_hash}' resolved to book '{abs_id}' but user {reader.id} "
             "has no UserBook claim; attempting user-scoped auto-discovery"
         )
         with (
@@ -2266,6 +2303,85 @@ class TestKosyncEndpoints(unittest.TestCase):
             self.assertEqual(session.query(ReadingSession).count(), 0)
         with kosync_server._kosync_open_sessions_lock:
             self.assertFalse(kosync_server._kosync_open_sessions)
+
+    def test_init_kosync_server_does_not_start_prebuilder(self):
+        """Regression for #342 — the prebuilder must not start at init or idle
+        installs churn the disk hashing every ebook every 60s."""
+        from src.api import kosync_server
+
+        # Snapshot the five module globals init_kosync_server touches
+        saved_db = kosync_server._database_service
+        saved_container = kosync_server._container
+        saved_manager = kosync_server._manager
+        saved_ebook_dir = kosync_server._ebook_dir
+        saved_registry = kosync_server._kosync_device_session_registry
+
+        try:
+            with patch.object(kosync_server, "_start_manifest_prebuilder") as start_mock:
+                kosync_server.init_kosync_server(
+                    saved_db, saved_container, saved_manager, saved_ebook_dir
+                )
+                start_mock.assert_not_called()
+        finally:
+            # Restore all five globals so the suite passes in any order
+            # (failure mode #17: module-global leakage).
+            kosync_server._database_service = saved_db
+            kosync_server._container = saved_container
+            kosync_server._manager = saved_manager
+            kosync_server._ebook_dir = saved_ebook_dir
+            kosync_server._kosync_device_session_registry = saved_registry
+
+    def test_manifest_endpoint_starts_prebuilder_lazily(self):
+        """Proving the prebuilder starts lazily on real device-sync use."""
+        from src.api import kosync_server
+        from src import web_server
+        from src.db.models import Book
+
+        # Save an active book so it survives per-user scoping (mirrors
+        # test_device_sync_manifest_returns_service_payload setup).
+        svc = web_server.database_service
+        admin_id = svc._default_user_id()
+        svc.save_book(Book(
+            abs_id="abs-lazy",
+            abs_title="Lazy Manifest",
+            ebook_filename="lazy.epub",
+            status="active",
+            user_id=admin_id,
+        ))
+
+        service = MagicMock()
+        service.build_manifest.return_value = {
+            "generated_at": 1,
+            "revision": "lazy-rev",
+            "delete_mode": "mirror",
+            "books": [
+                {
+                    "abs_id": "abs-lazy",
+                    "title": "Lazy Manifest",
+                    "filename": "lazy.epub",
+                    "content_hash": "hash-lazy",
+                    "download_path": "/koreader/device-sync/books/abs-lazy/download",
+                    "size": 4,
+                }
+            ],
+        }
+        container = MagicMock()
+        container.koreader_device_sync_service.return_value = service
+
+        # Reset manifest cache so the endpoint has to build inline
+        with kosync_server._manifest_cache_lock:
+            kosync_server._manifest_cache = None
+
+        with (
+            patch.object(kosync_server, "_start_manifest_prebuilder") as start_mock,
+            patch.object(kosync_server, "_container", container),
+        ):
+            response = self.client.get(
+                "/koreader/device-sync/manifest", headers=self.auth_headers
+            )
+
+        self.assertEqual(response.status_code, 200)
+        start_mock.assert_called()  # prebuilder starts lazily on real use
 
 
 class TestKosyncAuthStubs(unittest.TestCase):

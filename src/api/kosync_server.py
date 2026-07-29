@@ -494,7 +494,8 @@ def init_kosync_server(database_service, container, manager, ebook_dir=None):
     _manager = manager
     _ebook_dir = ebook_dir
     _kosync_device_session_registry = None
-    _start_manifest_prebuilder()
+    # Prebuilder is started lazily on first manifest request so idle installs
+    # that don't use device-sync never hash the library (ref #342).
 
 
 def _get_koreader_device_sync_service():
@@ -505,26 +506,6 @@ def _get_koreader_device_sync_service():
     except Exception as e:
         logger.warning(f"KOReader device-sync service unavailable: {e}")
         return None
-
-
-def _spawn_user_scoped_thread(target, args=(), user_id=None, name=None) -> None:
-    """Spawn a daemon thread that runs ``target`` with the KoSync device's user
-    bound as the ambient user.
-
-    contextvars are NOT inherited by newly-created threads, so a raw
-    ``threading.Thread`` running auto-discovery resolves ``get_current_user_id()``
-    to ``None`` on the worker and mis-attributes any ``save_book`` /
-    ``link_kosync_document`` to the default admin. Rebinding the id inside the
-    worker keeps the auto-created mapping owned by the reader who triggered it.
-    """
-    def runner():
-        token = set_current_user_id(user_id)
-        try:
-            target(*args)
-        finally:
-            reset_current_user_id(token)
-
-    threading.Thread(target=runner, daemon=True, name=name).start()
 
 
 def _record_kosync_event(abs_id: str, title: str, user_id=None) -> None:
@@ -958,7 +939,7 @@ def _defer_kosync_book_access(doc_id: str, book, *, source: str):
     """Keep a foreign mapping private while discovery verifies the user's copy."""
     user_id = getattr(g, "kosync_user_id", None)
     logger.warning(
-        "KOSync: hash %s resolved to book %s but user %s has no UserBook claim; "
+        "KOSync: hash '%s' resolved to book '%s' but user %s has no UserBook claim; "
         "attempting user-scoped auto-discovery",
         doc_id,
         book.abs_id,
@@ -1223,7 +1204,7 @@ def kosync_get_progress(doc_id):
     )
 
     logger.warning(
-        f"⚠️ KOSync: Document not found: {doc_id} (GET from {request.remote_addr}). "
+        f"⚠️ KOSync: Document not found: '{doc_id}' (GET from {request.remote_addr}). "
         "If auto-discovery can't match it (e.g. the device's copy isn't byte-identical to "
         "the library file), link it manually from Add / Update Book -> Reader Documents, or re-deliver "
         "the book via the BridgeSync plugin's 'Sync books' so the hash matches."
@@ -1686,6 +1667,8 @@ def koreader_device_sync_manifest():
     build and primes the cache so subsequent requests are instant.
     """
     global _manifest_cache
+    # Prebuilder is started lazily on first manifest request so idle installs
+    # that don't use device-sync never hash the library (ref #342).
     _start_manifest_prebuilder()
 
     user_id = getattr(g, "kosync_user_id", None)
@@ -2894,7 +2877,7 @@ def _schedule_auto_discovery(doc_id: str, user_id=None, *, source: str = "get") 
     with _queued_discovery_lock:
         if _queued_discovery_count >= _MAX_QUEUED_DISCOVERY:
             logger.warning(
-                "KOSync: %s-discovery for %s dropped — discovery queue full (%d/%d)",
+                "KOSync: %s-discovery for '%s' dropped — discovery queue full (%d/%d)",
                 source, doc_id, _queued_discovery_count, _MAX_QUEUED_DISCOVERY,
             )
             return
@@ -3039,7 +3022,7 @@ def _suppress_empty_progress_response(doc_id: str, percentage: float, progress: 
     safe_progress = progress.strip() if isinstance(progress, str) else ""
     if percentage > 0 and not safe_progress:
         logger.warning(
-            "KOSync: Suppressing response for %s - percentage %.2f%% but no locator available. Returning 404 to prevent page-0 reset.",
+            "KOSync: Suppressing response for '%s' - percentage %.2f%% but no locator available. Returning 404 to prevent page-0 reset.",
             doc_id,
             percentage * 100.0,
         )

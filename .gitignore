@@ -39,6 +39,7 @@ dist/
 # Local System Rules
 .cursorrules
 BRANCH_STATUS.md
+BRANCH_STATUS_ARCHIVE.md
 CLAUDE.md
 AGENTS.md
 .claude/

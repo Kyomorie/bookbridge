@@ -2121,7 +2121,7 @@ class EbookParser:
                 # CFI uses 1-based indexing, even numbers for elements
                 if step_index % 2 == 0:  # Even number = element
                     element_index = (step_index // 2) - 1
-                    children = [child for child in current_element if hasattr(child, 'tag')]
+                    children = [child for child in current_element if isinstance(child.tag, str)]
 
                     if 0 <= element_index < len(children):
                         current_element = children[element_index]
@@ -2229,7 +2229,7 @@ class EbookParser:
 
                 if step_index % 2 == 0:
                     element_index = (step_index // 2) - 1
-                    children = [child for child in current_element if hasattr(child, 'tag')]
+                    children = [child for child in current_element if isinstance(child.tag, str)]
                     if 0 <= element_index < len(children):
                         current_element = children[element_index]
                     else:

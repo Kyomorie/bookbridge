@@ -172,6 +172,217 @@ class TestMakeTemplate(unittest.TestCase):
             "Hardcover: API request returned 503",
         )
 
+    # -- scrub-token collapse tests (diagnostics finding 630) -------------
+
+    def test_quoted_doc_id_collapse_same_template(self):
+        """Two KoSync-style messages with different doc_ids produce same template."""
+        # Realistic 32-hex doc_ids (KoSync format) - each >= 12 chars so scrubbed to t:<hash>
+        msg1 = "Error fetching KoSync progress for doc 'a1b2c3d4e5f678901234567890abcdef': timeout"
+        msg2 = "Error fetching KoSync progress for doc 'fedcba09876543210fedcba098765432': timeout"
+
+        scrubbed1 = scrub_diagnostic_text(msg1)
+        scrubbed2 = scrub_diagnostic_text(msg2)
+        tpl1 = _make_template(scrubbed1)
+        tpl2 = _make_template(scrubbed2)
+
+        self.assertEqual(tpl1, tpl2)
+        # Verify the template contains the collapsed t:# form
+        self.assertIn("t:#", tpl1)
+        # And the rest of the message shape is preserved
+        self.assertIn("Error fetching KoSync progress for doc", tpl1)
+        self.assertIn("timeout", tpl1)
+
+    def test_filesystem_path_collapse_same_template(self):
+        """Two messages differing only in filesystem path produce same template.
+
+        The path must be whitespace-free: scrub tokenizes on whitespace, so only a
+        space-free token with >= 2 separators becomes a single ``path:<hash><ext>``.
+        """
+        msg1 = "Failed to open /srv/library/alpha/book.epub for reading"
+        msg2 = "Failed to open /srv/library/omega/story.epub for reading"
+
+        scrubbed1 = scrub_diagnostic_text(msg1)
+        scrubbed2 = scrub_diagnostic_text(msg2)
+        tpl1 = _make_template(scrubbed1)
+        tpl2 = _make_template(scrubbed2)
+
+        self.assertEqual(tpl1, tpl2)
+        # Path extension preserved after collapse
+        self.assertIn("path:#.epub", tpl1)
+
+    def test_url_collapse_same_template(self):
+        """Two messages differing only in URL produce same template."""
+        msg1 = "Sync request to https://abs-server-1.local/api/sync failed"
+        msg2 = "Sync request to https://abs-server-2.local/api/sync failed"
+
+        scrubbed1 = scrub_diagnostic_text(msg1)
+        scrubbed2 = scrub_diagnostic_text(msg2)
+        tpl1 = _make_template(scrubbed1)
+        tpl2 = _make_template(scrubbed2)
+
+        self.assertEqual(tpl1, tpl2)
+        self.assertIn("url:#", tpl1)
+
+    def test_http_status_preserved_after_scrub_token_collapse(self):
+        """HTTP status codes remain distinct in templates despite scrub-token collapse."""
+        msg1 = "Error fetching KoSync progress for doc 'a1b2c3d4e5f678901234567890abcdef': HTTP 401"
+        msg2 = "Error fetching KoSync progress for doc 'fedcba09876543210fedcba098765432': HTTP 502"
+
+        scrubbed1 = scrub_diagnostic_text(msg1)
+        scrubbed2 = scrub_diagnostic_text(msg2)
+        tpl1 = _make_template(scrubbed1)
+        tpl2 = _make_template(scrubbed2)
+
+        # Different HTTP statuses must yield different templates (regression guard)
+        self.assertNotEqual(tpl1, tpl2)
+        self.assertIn("401", tpl1)
+        self.assertIn("502", tpl2)
+        # But the doc_id hashes are collapsed
+        self.assertIn("t:#", tpl1)
+        self.assertIn("t:#", tpl2)
+
+    def test_kosync_bare_hash_warnings_collapse_when_quoted(self):
+        """The three KoSync WARNING log shapes collapse to one template each when the hash is quoted.
+        
+        This guards the fix for diagnostics log-cardinality overflow (fleet findings #940/#713/#714).
+        The quotes around the 32-hex hash make scrub_diagnostic_text tokenize it as a quoted span
+        (t:<hash>), which _make_template then collapses to t:#. Without quotes, the bare hex hash
+        survives digit-collapse (its letters differ per value) and each distinct hash becomes its
+        own template, blowing the 500-template cap.
+        """
+        from src.services.diagnostics import scrub_diagnostic_text, _make_template
+        
+        # Two distinct 32-hex document hashes (32 chars each)
+        hash1 = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+        hash2 = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+        
+        # Shape A: "KOSync: Document not found: '<HASH>' (GET from 10.0.0.1). trailing"
+        msg_a1 = f"KOSync: Document not found: '{hash1}' (GET from 10.0.0.1). Document not found on server"
+        msg_a2 = f"KOSync: Document not found: '{hash2}' (GET from 10.0.0.1). Document not found on server"
+        
+        scrubbed_a1 = scrub_diagnostic_text(msg_a1)
+        scrubbed_a2 = scrub_diagnostic_text(msg_a2)
+        tpl_a1 = _make_template(scrubbed_a1)
+        tpl_a2 = _make_template(scrubbed_a2)
+        
+        self.assertEqual(tpl_a1, tpl_a2)
+        self.assertIn("t:#", tpl_a1)
+        self.assertIn("KOSync: Document not found:", tpl_a1)
+        self.assertIn("(GET from #.#.#.#).", tpl_a1)
+        
+        # Shape B: "KOSync: GET-discovery for '<HASH>' dropped — discovery queue full (5/5)"
+        msg_b1 = f"KOSync: GET-discovery for '{hash1}' dropped \u2014 discovery queue full (5/5)"
+        msg_b2 = f"KOSync: GET-discovery for '{hash2}' dropped \u2014 discovery queue full (5/5)"
+        
+        scrubbed_b1 = scrub_diagnostic_text(msg_b1)
+        scrubbed_b2 = scrub_diagnostic_text(msg_b2)
+        tpl_b1 = _make_template(scrubbed_b1)
+        tpl_b2 = _make_template(scrubbed_b2)
+        
+        self.assertEqual(tpl_b1, tpl_b2)
+        self.assertIn("t:#", tpl_b1)
+        self.assertIn("KOSync: GET-discovery for", tpl_b1)
+        self.assertIn("dropped \u2014 discovery queue full (#/#)", tpl_b1)
+        
+        # Shape C: "KOSync: Suppressing response for '<HASH>' - percentage 12.34% but no locator available. Returning 404 to prevent page-0 reset."
+        msg_c1 = f"KOSync: Suppressing response for '{hash1}' - percentage 12.34% but no locator available. Returning 404 to prevent page-0 reset."
+        msg_c2 = f"KOSync: Suppressing response for '{hash2}' - percentage 12.34% but no locator available. Returning 404 to prevent page-0 reset."
+        
+        scrubbed_c1 = scrub_diagnostic_text(msg_c1)
+        scrubbed_c2 = scrub_diagnostic_text(msg_c2)
+        tpl_c1 = _make_template(scrubbed_c1)
+        tpl_c2 = _make_template(scrubbed_c2)
+        
+        self.assertEqual(tpl_c1, tpl_c2)
+        self.assertIn("t:#", tpl_c1)
+        self.assertIn("KOSync: Suppressing response for", tpl_c1)
+        self.assertIn("percentage #.#% but no locator available. Returning # to prevent page-# reset.", tpl_c1)
+        
+        # Companion assertion: the SAME message shapes but with BARE (unquoted) hashes
+        # produce DIFFERENT templates for the two hashes — proving the quotes are load-bearing.
+        bare_a1 = f"KOSync: Document not found: {hash1} (GET from 10.0.0.1). Document not found on server"
+        bare_a2 = f"KOSync: Document not found: {hash2} (GET from 10.0.0.1). Document not found on server"
+        bare_b1 = f"KOSync: GET-discovery for {hash1} dropped \u2014 discovery queue full (5/5)"
+        bare_b2 = f"KOSync: GET-discovery for {hash2} dropped \u2014 discovery queue full (5/5)"
+        bare_c1 = f"KOSync: Suppressing response for {hash1} - percentage 12.34% but no locator available. Returning 404 to prevent page-0 reset."
+        bare_c2 = f"KOSync: Suppressing response for {hash2} - percentage 12.34% but no locator available. Returning 404 to prevent page-0 reset."
+        
+        bare_scrubbed_a1 = scrub_diagnostic_text(bare_a1)
+        bare_scrubbed_a2 = scrub_diagnostic_text(bare_a2)
+        bare_tpl_a1 = _make_template(bare_scrubbed_a1)
+        bare_tpl_a2 = _make_template(bare_scrubbed_a2)
+        
+        bare_scrubbed_b1 = scrub_diagnostic_text(bare_b1)
+        bare_scrubbed_b2 = scrub_diagnostic_text(bare_b2)
+        bare_tpl_b1 = _make_template(bare_scrubbed_b1)
+        bare_tpl_b2 = _make_template(bare_scrubbed_b2)
+        
+        bare_scrubbed_c1 = scrub_diagnostic_text(bare_c1)
+        bare_scrubbed_c2 = scrub_diagnostic_text(bare_c2)
+        bare_tpl_c1 = _make_template(bare_scrubbed_c1)
+        bare_tpl_c2 = _make_template(bare_scrubbed_c2)
+        
+        # Bare hashes should NOT collapse — each distinct hash yields a different template
+        self.assertNotEqual(bare_tpl_a1, bare_tpl_a2, "Bare hashes in shape A should NOT collapse (quotes are load-bearing)")
+        self.assertNotEqual(bare_tpl_b1, bare_tpl_b2, "Bare hashes in shape B should NOT collapse (quotes are load-bearing)")
+        self.assertNotEqual(bare_tpl_c1, bare_tpl_c2, "Bare hashes in shape C should NOT collapse (quotes are load-bearing)")
+
+    def test_schedule_auto_discovery_warning_collapses_across_hashes(self):
+        """Production warning from _schedule_auto_discovery collapses to same template across hashes.
+        
+        This guards the load-bearing quote in the production log format string:
+        "KOSync: %s-discovery for '%s' dropped \u2014 discovery queue full (%d/%d)"
+        
+        The '%s' quote around the doc_id makes scrub_diagnostic_text tokenize it as a
+        quoted span (t:<hash>), which _make_template then collapses to t:#. If the quote
+        is removed from the format string, the bare 32-hex hash survives digit-collapse
+        and each distinct hash yields a distinct template — blowing the template cardinality cap.
+        """
+        from src.api import kosync_server
+        from src.services.diagnostics import scrub_diagnostic_text, _make_template
+        import os
+
+        # Save original module globals and env var for restoration
+        original_queued_count = kosync_server._queued_discovery_count
+        original_auto_create = os.environ.get('AUTO_CREATE_EBOOK_MAPPING')
+
+        # Two distinct 32-hex hashes that won't be in _active_scans
+        hash1 = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+        hash2 = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+
+        try:
+            # Force queue-full condition and enable auto-create
+            kosync_server._queued_discovery_count = kosync_server._MAX_QUEUED_DISCOVERY
+            os.environ['AUTO_CREATE_EBOOK_MAPPING'] = 'true'
+
+            # Capture first warning
+            with self.assertLogs('src.api.kosync_server', level='WARNING') as cm1:
+                kosync_server._schedule_auto_discovery(hash1, source='get')
+            msg1 = cm1.records[0].getMessage()
+            tpl1 = _make_template(scrub_diagnostic_text(msg1))
+
+            # Capture second warning
+            with self.assertLogs('src.api.kosync_server', level='WARNING') as cm2:
+                kosync_server._schedule_auto_discovery(hash2, source='get')
+            msg2 = cm2.records[0].getMessage()
+            tpl2 = _make_template(scrub_diagnostic_text(msg2))
+
+            # Templates must collapse to the same value
+            self.assertEqual(tpl1, tpl2)
+            # And the collapsed template must contain the t:# token
+            self.assertIn("t:#", tpl1)
+            # Verify the rest of the message shape is preserved
+            self.assertIn("KOSync: get-discovery for", tpl1)
+            self.assertIn("dropped \u2014 discovery queue full (#/#)", tpl1)
+
+        finally:
+            # Restore module globals and env var
+            kosync_server._queued_discovery_count = original_queued_count
+            if original_auto_create is None:
+                os.environ.pop('AUTO_CREATE_EBOOK_MAPPING', None)
+            else:
+                os.environ['AUTO_CREATE_EBOOK_MAPPING'] = original_auto_create
+
 
 class TestDiagnosticsHandler(unittest.TestCase):
     """Tests for DiagnosticsLogHandler core behaviour."""

@@ -1253,6 +1253,76 @@ class CleanFlaskIntegrationTest(unittest.TestCase):
         self.assertNotIn('Out of sync by 54.0%', html)
         self.assertNotIn('class="book-card out-of-sync"', html)
 
+    def test_index_marks_last_leader_service_on_dashboard(self):
+        """The card exposes the normalized last-instigator service and renders a
+        subtle leader dot on the matching service row."""
+        from src.db.models import Book
+
+        test_book = Book(
+            abs_id='leader-book-1',
+            abs_title='Leader Book',
+            ebook_filename='leader-book.epub',
+            kosync_doc_id='leader-doc',
+            sync_mode='audiobook',
+            status='active',
+            duration=3600,
+        )
+        self.mock_database_service.get_all_books.return_value = [test_book]
+        self.mock_database_service.get_all_states.return_value = []
+        self.mock_database_service.get_all_reading_stats.return_value = {
+            'leader-book-1': {
+                'listen_seconds': 100,
+                'read_seconds': 0,
+                'session_count': 1,
+                'avg_session_seconds': 100,
+                'last_session_time': 5000.0,
+                'last_leader': 'KoSync:kindle',
+            }
+        }
+        self._set_dashboard_integrations()
+
+        mapping = self._capture_index_mapping()
+        self.assertEqual(mapping['last_leader'], 'KoSync:kindle')
+        self.assertEqual(mapping['last_leader_service'], 'kosync')
+
+        # The CSS rule '.leader-dot' is always in the page; the rendered span
+        # 'class="leader-dot"' appears only when a dot is emitted.
+        html = self._render_index_template_source()
+        self.assertIn('class="leader-dot"', html)
+
+    def test_index_renders_no_leader_dot_for_tracker_leader(self):
+        """A write-only tracker leader is never a real instigator: no dot."""
+        from src.db.models import Book
+
+        test_book = Book(
+            abs_id='leader-book-2',
+            abs_title='Tracker Leader',
+            ebook_filename='tracker-leader.epub',
+            kosync_doc_id='tracker-doc',
+            sync_mode='audiobook',
+            status='active',
+            duration=3600,
+        )
+        self.mock_database_service.get_all_books.return_value = [test_book]
+        self.mock_database_service.get_all_states.return_value = []
+        self.mock_database_service.get_all_reading_stats.return_value = {
+            'leader-book-2': {
+                'listen_seconds': 0,
+                'read_seconds': 100,
+                'session_count': 1,
+                'avg_session_seconds': 100,
+                'last_session_time': 5000.0,
+                'last_leader': 'Hardcover',
+            }
+        }
+        self._set_dashboard_integrations()
+
+        mapping = self._capture_index_mapping()
+        self.assertIsNone(mapping['last_leader_service'])
+
+        html = self._render_index_template_source()
+        self.assertNotIn('class="leader-dot"', html)
+
     def test_index_sync_warning_maps_audio_axis_through_alignment(self):
         """A sentence-aligned book whose ABS time-axis % differs from the ebook
         text-axis % must not be flagged out of sync: the audio position is
@@ -1554,14 +1624,11 @@ class CleanFlaskIntegrationTest(unittest.TestCase):
         self.assertIn('class="book-grid collapsible-book-grid" id="not-started-grid"', html)
         self.assertNotIn('No books syncing yet', html)
 
-    def test_match_template_has_submit_feedback_hooks(self):
-        html = self._read_template_source('match.html')
+    def test_match_get_redirects_to_add_book_with_search(self):
+        response = self.client.get('/match?search=reader')
 
-        self.assertIn('id="submitFeedback"', html)
-        self.assertIn('data-working-label="Creating mapping..."', html)
-        self.assertIn('data-modal-label="Opening forge options..."', html)
-        self.assertIn('previewMatchSubmit(', html)
-        self.assertIn('mappingForm.requestSubmit(forgeBtn);', html)
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.location.endswith('/add-book?search=reader'))
 
     def test_kosync_document_review_lives_on_add_update_book(self):
         index_html = self._read_template_source('index.html')
@@ -1585,15 +1652,60 @@ class CleanFlaskIntegrationTest(unittest.TestCase):
         self.assertIn('likely match', add_book_html)
         self.assertIn('`File: ${doc.filename}`', add_book_html)
 
-    def test_batch_match_template_has_submit_feedback_hooks(self):
-        html = self._read_template_source('batch_match.html')
+    def test_batch_match_post_falls_back_to_unified_add_book_view(self):
+        response = self.client.post('/batch-match')
+        html = response.get_data(as_text=True)
 
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('<title>Add / Update Book · BookBridge</title>', html)
+        self.assertIn('action="/add-book"', html)
+        self.assertNotIn('action="/batch-match"', html)
+        self.assertIn('id="kosync-documents"', html)
         self.assertIn('id="selectionFeedback"', html)
-        self.assertIn('id="queueFeedback"', html)
         self.assertIn('data-working-label="Adding to queue..."', html)
-        self.assertIn('data-working-label="Processing queue..."', html)
-        self.assertIn('data-working-label="Forging + matching..."', html)
         self.assertIn('startBatchSubmitState(submitter)', html)
+
+    def test_add_book_multi_result_with_apostrophe_has_working_ebook_picker(self):
+        """Issue #339: multi-result cards must not interpolate titles into JS."""
+        import src.web_server as ws
+
+        ebooks = [
+            ws.EbookResult(
+                name="The Reader's Copy.epub",
+                title="The Reader's Copy",
+                authors="A. Author",
+                source="BookOrbit",
+                source_id="bo-1",
+            ),
+            ws.EbookResult(
+                name="The Readers Copy.epub",
+                title="The Readers Copy",
+                authors="B. Author",
+                source="BookOrbit",
+                source_id="bo-2",
+            ),
+        ]
+        with patch.object(ws, '_search_audiobooks_with_fallback', return_value=[]), \
+             patch.object(ws, '_search_ebooks_with_fallback', return_value=ebooks), \
+             patch.object(
+                 ws,
+                 '_promote_authoritative_ebook_matches',
+                 side_effect=lambda _audio, candidates: candidates,
+             ):
+            response = self.client.get('/add-book?search=reader')
+
+        html = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('data-value="The Reader&#39;s Copy.epub"', html)
+        self.assertIn(
+            'data-display-name="The Reader&#39;s Copy - A. Author"', html
+        )
+        self.assertIn('onclick="selectEbookCard(this)"', html)
+        self.assertNotIn('onclick="selectEbookCard(this,', html)
+        self.assertIn("const filename = element.dataset.value || '';", html)
+        self.assertIn(
+            'const display_name = element.dataset.displayName || filename;', html
+        )
 
     def test_suggestions_template_has_submit_feedback_hooks(self):
         html = self._read_template_source('suggestions.html')
@@ -1609,13 +1721,11 @@ class CleanFlaskIntegrationTest(unittest.TestCase):
         panel = self._read_template_source('_match_queue_panel.html')
         self.assertIn('id="queueFeedback"', panel)
 
-    def test_forge_template_has_submit_feedback_hooks(self):
-        html = self._read_template_source('forge.html')
+    def test_forge_get_redirects_to_add_book(self):
+        response = self.client.get('/forge')
 
-        self.assertIn('previewForgeState(', html)
-        self.assertIn('Opening forge options...', html)
-        self.assertIn('forgeRequestInFlight = true;', html)
-        self.assertIn("btn.textContent = 'Forging edition...';", html)
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.location.endswith('/add-book'))
 
     def test_clear_progress_endpoint_clean_di(self):
         """Test clear progress endpoint with clean dependency injection."""
