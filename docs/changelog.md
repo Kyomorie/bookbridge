@@ -4,13 +4,29 @@ For the full history of changes, please refer to the **[GitHub Releases](https:/
 
 ---
 
-## [Unreleased]
+## [7.3.2]
+
+The headline is **BookBridge leaves your disks alone when nothing is happening**: a background task was re-reading every book in your library once a minute, forever, which kept drives from ever spinning down. This release also makes shelving and book matching reliable across users, restores Grimmory shelf creation, reconnects instant sync behind HTTPS reverse proxies, and adds a dashboard indicator showing which app last moved each book.
+
+### What's New
+
+- **See which app last moved a book.** In Progress cards on the dashboard now mark the service that most recently updated your position — Audiobookshelf if you last listened in the ABS app, KoSync if you last read on your e-reader — so it's easy to tell which side drove the latest progress. (#333)
 
 ### Fixed
 
-- **Book editions with apostrophes can now be selected from multi-result matching
-  searches.** Add / Update Book no longer breaks the edition card's click handler
-  when a BookOrbit or other library result contains an apostrophe. (#339)
+- **Your book files are no longer read constantly when nothing is happening.** The list used for the optional KOReader managed-folder sync was rebuilt every minute, re-hashing your whole library even on installs that never use the feature. It is now built only when a KOReader device asks for it, and each book's hash is remembered until the file itself changes. (#342)
+- **Shelving and matching are reliable and private per user.** Add Book and Suggestions share one background processor, queued work is stamped to the reader who created it, a failed shelf move can no longer leave a book on neither shelf, and BookOrbit recognizes your configured shelf name regardless of capitalization.
+- **BookBridge can create Grimmory shelves again.** Shelving to a shelf that didn't exist yet silently did nothing on newer Grimmory builds; your configured Kobo and Up Next shelves are now created on first use.
+- **Audiobookshelf instant sync works behind HTTPS reverse proxies.** Affected installs fell back to scheduled polling; instant sync resumes after updating and restarting.
+- **Two e-readers opening the same new book at once no longer fails**, and KOReader managed-folder sync can recover Audiobookshelf ebooks with ordinary filenames.
+- **Positions in ebooks containing HTML comments now resolve** instead of dropping that book from the cycle. (#341)
+- **An expired StoryGraph login is reported once, clearly**, instead of failing silently for every book on every cycle — and syncing resumes as soon as you save fresh credentials.
+- **Book editions with apostrophes can now be selected from multi-result matching searches.** (#339)
+- **A round of log-noise fixes**, so what's left in your log is worth reading.
+
+### Maintenance
+
+- The legacy match, batch-match, and forge screens — long since replaced by Add / Update Book — were removed, along with a batch of unused code and dependencies. Their links now go straight to Add / Update Book, and the Shelfmark link opens the tool directly. No feature was lost.
 
 ---
 

@@ -1,84 +1,114 @@
-# Release Notes - 7.3.1
+# Release Notes - 7.3.2
 
-The headline change is **credential encryption at rest**. Every password, API token, sync key, and session cookie BookBridge stores for you — your own and every reader's — was previously written to `database.db` as the exact text you typed, so a copy of that file or of a backup exposed every account the bridge touches. Those values are now encrypted before they are stored and decrypted only in memory at the moment a credential is used. This release also fixes KOReader sync for readers who share a book file, adds HTTP Basic support for Calibre-Web Automated's KOSync endpoint, and tightens background transcription retries.
+The headline change is that **BookBridge leaves your disks alone when nothing is
+happening**. A background task that prepared the list for the optional KOReader
+managed-folder sync was re-reading — hashing — every book in your library once a
+minute, forever. It did this on installs that had never enabled that feature and on
+days you never opened a book, which meant hard drives could never spin down. That
+list is now built only when a KOReader device actually asks for it, and each book's
+hash is remembered until the file itself changes.
 
-Upgrading is automatic — there is nothing to re-enter and no migration to run — but **please read the Operational Notes below about backups and rollback** before updating.
+This release also makes shelving and book matching reliable and private per reader,
+restores Grimmory shelf creation, reconnects Audiobookshelf instant sync behind
+HTTPS reverse proxies, and adds a dashboard indicator showing which app last moved
+each book.
 
-This release does **not** change the BridgeSync KOReader plugin (still 0.5.4), so no plugin re-download is required. Highlight and note sync continues to require the **BridgeSync plugin from 7.1.0 or newer**; standard KOReader/KOSync progress sync works without it.
+This release does **not** change the BridgeSync KOReader plugin (still 0.5.4), so no
+plugin re-download is required. Highlight and note sync continues to require the
+**BridgeSync plugin from 7.1.0 or newer**; standard KOReader/KOSync progress sync
+works without it.
 
-## Security
+## What's New
 
-- **Stored credentials are now encrypted at rest.** Both stores are covered: each
-  reader's own service accounts under Account → My Integrations, and the
-  server-wide credentials in Settings — including the Audiobookshelf API token,
-  KOSync key, Hardcover token, StoryGraph session cookie, and BookBridge's own web
-  session signing key. Values are wrapped with Fernet (AES-128-CBC + HMAC-SHA256)
-  before they reach the database.
-
-  On first boot after upgrading, BookBridge generates an encryption key at
-  `DATA_DIR/secret.key` with `0600` permissions and rewrites every credential it
-  finds still stored in the clear, logging `🔐 Encrypted N plaintext credential(s)
-  at rest`. Usernames, server URLs, library IDs, and enable/disable toggles are
-  deliberately left readable so an install remains inspectable and supportable.
-
-  Credentials that cannot be decrypted are reported as "not configured" and logged
-  by name, rather than being sent to a service as though they were the password.
-
-  By default the key sits beside the database it protects, which defends a leaked
-  database file or a copied backup but not a compromised host. Set
-  `BOOKBRIDGE_SECRET_KEY` to any long random string to keep the key outside the
-  data volume instead. It is intentionally not a Settings-page option and is never
-  read from the database — a key stored inside the data it encrypts would defeat
-  the purpose. (#336)
+- **See at a glance which app last moved a book's position.** On the dashboard's In
+  Progress cards, a small green dot marks the service that most recently updated
+  where you are — Audiobookshelf if you last listened in the ABS app, KoSync if you
+  last read on your e-reader. It stays out of the way while making it obvious which
+  side drove the latest progress on books you're reading and listening to across
+  services. (#333)
 
 ## Fixed
 
-- **The primary admin can reset Grimmory to all libraries.** Under Account → My
-  Integrations, clear the optional Grimmory Library ID and save once. BookBridge now
-  clears the stale master value too and uses all Grimmory libraries on the next
-  refresh instead of showing `inherits master: 7` and remaining restricted. The
-  optional Audiobookshelf Library ID can be reset the same way. No database repair
-  or second restart is required. (#337)
-- **KOReader sync now recovers when two readers share one document hash.** A book
-  already claimed by another reader still returns a privacy-preserving 404, but
-  BookBridge now verifies the requesting reader's own EPUB in the background,
-  creates that reader's book claim, and allows the next GET/PUT to sync instead of
-  leaving them permanently stuck. (#335)
-- **External KoSync relays can now use HTTP Basic authentication.** Choose
-  **HTTP Basic (Calibre-Web Automated)** in a reader's KOReader / KoSync
-  integration when targeting CWA's built-in `/kosync` endpoint; classic KOSync
-  header authentication remains the default. (#334)
-- **Background transcription retries remain bounded.** Retried jobs preserve their
-  attempt count instead of resetting it, and an all-empty Whisper result now
-  invalidates its completed cache and retries rather than being reused as a
-  successful transcript.
-- **A round of reliability fixes.** KOSync null progress is handled as an empty
-  state, disabled Audiobookshelf cleanup no longer makes an invalid request, blank
-  Grimmory shelf names fall back to `Kobo`, completed slow state fetches are
-  retained, and expected missing Grimmory progress no longer emits warning noise.
-- **Log and status text renders its intended symbols.** Scan status text and
-  Grimmory, Hardcover, database, and ebook-resolution log lines no longer show
-  mojibake; obsolete file-boundary banners and patch-history labels were removed
-  without changing behavior.
+- **Your book files are no longer read constantly when nothing is happening.** The
+  KOReader managed-folder sync manifest was rebuilt on a fixed one-minute schedule,
+  hashing every book in the library each time regardless of whether any device ever
+  requested it. BookBridge now builds that list on demand and caches each book's
+  hash until the underlying file changes, so unchanged files are never re-read and
+  idle installs let drives spin down. (#342)
+
+- **Shelving and matching queues are consistent and private per reader.** Add Book
+  and Suggestions now share one atomic background processor covering BookOrbit
+  hashes, ownership claims, suggestion dismissal, and shelf-watch completion for
+  direct, Forge & Match, Forge only, audio-only, and ebook-only approvals. Queue
+  items are stamped to the reader who created them, so another user can no longer
+  view, remove, clear, or process them; pre-upgrade unowned items remain available
+  to the primary admin only, deleting a user removes their queued work, and
+  malformed queue owners are discarded on the next rewrite. **A Grimmory shelf move
+  can no longer lose a book** — the old shelf used to be cleared first, so a failed
+  write to the new shelf left the book on neither. BookOrbit now recognizes a
+  configured shelf name regardless of capitalization in every shelving path, so a
+  book can't be added to and then removed from the same collection.
+
+- **BookBridge can create Grimmory shelves again.** Shelving a book to a shelf that
+  didn't exist yet silently did nothing: the create request carried icon fields that
+  newer Grimmory builds reject outright, so the shelf was never created and the book
+  was never filed. BookBridge now retries without those fields, and your configured
+  Kobo and Up Next shelves are created on first use as intended. Installs whose
+  shelves already existed were unaffected.
+
+- **Audiobookshelf instant sync now connects through HTTPS reverse proxies.** Secure
+  Audiobookshelf URLs are handed to the WebSocket transport as `wss://` rather than
+  `https://`, which the socket client had been rejecting. Affected installs kept
+  working on scheduled polling; instant sync resumes automatically once you restart
+  on this version.
+
+- **Two devices opening the same new book at once no longer fails.** KoSync document
+  progress is written with an atomic conflict-safe upsert, so both devices update
+  one shared row instead of racing into a database error.
+
+- **KOReader managed-folder sync can recover Audiobookshelf ebooks with ordinary
+  filenames**, instead of requiring the legacy `{item_id}_abs.epub` naming
+  convention, and identifiers belonging to other ebook providers are no longer sent
+  to Audiobookshelf during that fallback.
+
+- **Positions in ebooks containing HTML comments now resolve.** Files produced by
+  conversion tools often carry HTML comments; when a CFI-based position landed on
+  one, resolution failed and that book was skipped for the cycle. Comment and
+  processing-instruction nodes are now skipped, as the EPUB CFI specification
+  requires. (#341)
+
+- **An expired StoryGraph login is reported once, clearly.** An expired session
+  cookie still looked configured, so every write attempt was redirected to the
+  sign-in page and logged as a failure — for every book, on every cycle. BookBridge
+  now logs one actionable warning and stops writing until the credentials change or
+  a write succeeds, so saving a fresh cookie resumes syncing on its own.
+
+- **Book editions with apostrophes can be selected from multi-result matching
+  searches.** The Add / Update Book picker reads each edition's card metadata rather
+  than embedding the filename and title in inline JavaScript. (#339)
+
+- **A round of log-noise fixes.** Cleaning up a book whose Audiobookshelf collection
+  no longer exists, and looking for a transcript on a book that has never been
+  transcribed, are both normal outcomes and no longer surface as warnings or errors.
+  When BookOrbit does refuse to create a collection, the log now reports the status
+  and response instead of a bare failure line.
+
+## Maintenance
+
+The standalone match, batch match, and forge screens had been fully superseded by the
+current Add / Update Book flow but were still shipping in the image. They have been
+removed and those entry points now redirect to Add / Update Book, so the only visible
+difference is which page you land on. The Shelfmark link now opens the configured
+tool directly rather than embedding it in a BookBridge page. A batch of unused Python
+code and four unused dependencies were dropped as well. No feature was lost.
 
 ## Operational Notes
 
 No database migration is required for this release, and the BridgeSync KOReader
-plugin is unchanged (0.5.4), so no plugin re-download is needed. Restart BookBridge
-after updating. Three points specific to credential encryption:
+plugin is unchanged (0.5.4), so no plugin re-download is needed. Pull the new image
+and restart BookBridge; the Audiobookshelf instant-sync and idle-hashing fixes take
+effect on that restart.
 
-- **Add `secret.key` to your backups.** It lives in the same `/data` volume as the
-  database, so a whole-volume backup already captures it. If your routine copies
-  `database.db` on its own, that backup is no longer self-sufficient — a database
-  restored without its key leaves those credentials unreadable and prompts you to
-  re-enter them.
-- **Rolling back to an earlier version costs your credentials.** Older BookBridge
-  builds do not recognise the encrypted form and will send it to your services as
-  the password. If you need to downgrade, restore a pre-upgrade database backup or
-  re-enter your credentials in the older version.
-- **Building from source rather than pulling the published image?** This release
-  adds `cryptography` to `requirements.txt`, so rebuild
-  (`docker compose up -d --build`) or run `pip install -r requirements.txt`. A plain
-  restart against the old dependencies logs `🔓 Credential encryption UNAVAILABLE`
-  and keeps storing credentials in the clear. Users of the published `latest` /
-  `dev` images simply pull the new image; the dependency is already in it.
+If you build from source rather than pulling the published image, `requirements.txt`
+now lists four fewer packages. Nothing needs to be installed — a plain restart is
+enough — and a rebuild simply produces a slightly smaller image.

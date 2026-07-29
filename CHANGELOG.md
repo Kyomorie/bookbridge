@@ -4,7 +4,7 @@
 
 All notable changes to BookBridge will be documented in this file.
 
-## [Unreleased]
+## [7.3.2] - 2026-07-29
 
 ### Added
 
@@ -75,6 +75,36 @@ All notable changes to BookBridge will be documented in this file.
   book was never filed. BookBridge now retries without the icon details, so your
   configured Kobo and Up Next shelves are created on first use as intended. If your
   shelves already existed you were unaffected.
+
+- **Positions in some ebooks no longer fail to resolve.** In books whose HTML
+  contains comments — common in files produced by conversion tools — reading a
+  position from a service that speaks in CFI locators could hit one of those
+  comments and give up, leaving that book out of the sync for the cycle. Those
+  nodes are now skipped as the ebook standard requires, so the position resolves
+  normally. (#341)
+
+- **An expired StoryGraph login now tells you once instead of failing quietly
+  forever.** When your saved StoryGraph session cookie expires, BookBridge could
+  no longer write progress but kept trying for every book on every cycle, filling
+  the log with hundreds of identical failures and hiding the real problem. It now
+  logs a single clear warning asking you to sign in again and stops writing until
+  you save fresh credentials, at which point it picks straight back up.
+
+- **A round of log-noise fixes.** Several harmless situations were being reported
+  as warnings or errors: cleaning up a book whose Audiobookshelf collection no
+  longer exists, looking for a transcript on a book that has never been
+  transcribed, and routine KOReader and Grimmory activity. These are now quiet or
+  logged at debug level, so what remains in your log is worth reading. When
+  BookOrbit does refuse to create a collection, the log now says why.
+
+### Changed
+
+- **Housekeeping.** The old match, batch-match, and forge screens had been fully
+  replaced by the current Add / Update Book flow but were still shipping in the
+  image; they have been removed and their links now go straight to Add / Update
+  Book. The Shelfmark link opens the tool directly instead of wrapping it in a
+  BookBridge page. A batch of unused code and four unused Python dependencies were
+  dropped as well. No feature was lost.
 
 ## [7.3.1] - 2026-07-21
 
