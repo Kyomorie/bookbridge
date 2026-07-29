@@ -377,11 +377,15 @@ class KOReaderDeviceSyncService:
             return False
 
         source_name = str(getattr(book, "ebook_source", "") or "").strip().lower()
-        item_id = str(getattr(book, "ebook_source_id", "") or "").strip()
-        if source_name != "abs" and not item_id:
+        item_id = str(getattr(book, "abs_ebook_item_id", "") or "").strip()
+        if not item_id and source_name == "abs":
+            item_id = str(getattr(book, "ebook_source_id", "") or "").strip()
+        if not item_id:
             match = self._ABS_FILENAME_RE.match(str(source_filename or ""))
             if match:
                 item_id = str(match.group("item_id") or "").strip()
+        if not item_id:
+            item_id = str(getattr(book, "abs_id", "") or "").strip()
         if not item_id:
             return False
 

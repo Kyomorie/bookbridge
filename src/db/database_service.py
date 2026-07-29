@@ -1453,15 +1453,50 @@ class DatabaseService:
 
     def save_kosync_document(self, doc: KosyncDocument) -> KosyncDocument:
         """Save or update a KOSync document."""
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
         if doc.user_id is None:
             doc.user_id = self._resolve_uid(None)
+        now = utcnow()
+        doc.last_updated = now
         with self.get_session() as session:
-            doc.last_updated = utcnow()
-            merged = session.merge(doc)
-            session.flush()
-            session.refresh(merged)
-            session.expunge(merged)
-            return merged
+            stmt = sqlite_insert(KosyncDocument).values(
+                document_hash=doc.document_hash,
+                progress=doc.progress,
+                percentage=doc.percentage,
+                device=doc.device,
+                device_id=doc.device_id,
+                timestamp=doc.timestamp,
+                linked_abs_id=doc.linked_abs_id,
+                first_seen=doc.first_seen or now,
+                last_updated=now,
+                user_id=doc.user_id,
+                filename=doc.filename,
+                source=doc.source,
+                booklore_id=doc.booklore_id,
+                mtime=doc.mtime,
+            )
+            excluded = stmt.excluded
+            session.execute(stmt.on_conflict_do_update(
+                index_elements=["document_hash"],
+                set_={
+                    "progress": excluded.progress,
+                    "percentage": excluded.percentage,
+                    "device": excluded.device,
+                    "device_id": excluded.device_id,
+                    "timestamp": excluded.timestamp,
+                    "linked_abs_id": excluded.linked_abs_id,
+                    "last_updated": now,
+                    "user_id": excluded.user_id,
+                    "filename": excluded.filename,
+                    "source": excluded.source,
+                    "booklore_id": excluded.booklore_id,
+                    "mtime": excluded.mtime,
+                },
+            ))
+            saved = session.get(KosyncDocument, doc.document_hash)
+            session.expunge(saved)
+            return saved
 
     def get_all_kosync_documents(self, user_id: int = None) -> List[KosyncDocument]:
         """Get all KOSync documents. When user_id is given, scope to that user."""

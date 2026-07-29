@@ -17,6 +17,17 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Simultaneous first-time KOReader updates no longer occasionally fail.** KoSync
+  document progress now uses SQLite's atomic conflict-safe upsert, so two devices
+  introducing the same ebook hash at once update one shared row instead of racing
+  into a unique-constraint error.
+
+- **KOReader managed-folder sync can recover ABS ebooks with ordinary filenames.**
+  When a cached ebook is missing, BookBridge now tries the mapping's dedicated ABS
+  ebook identity and its known ABS item identity instead of requiring the legacy
+  `{item_id}_abs.epub` filename convention. IDs belonging to other ebook providers
+  are no longer sent to Audiobookshelf during fallback.
+
 - **Audiobookshelf instant sync now connects through HTTPS reverse proxies.**
   BookBridge now hands secure Audiobookshelf URLs to the WebSocket transport as
   `wss://` instead of `https://`, preventing the socket client from rejecting the

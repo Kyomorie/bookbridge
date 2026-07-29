@@ -112,6 +112,45 @@ class TestKosyncDocument(unittest.TestCase):
 
         self.assertEqual(saved.user_id, user.id)
 
+    def test_save_kosync_document_uses_atomic_upsert_for_concurrent_create(self):
+        """Concurrent first PUTs must use one conflict-safe INSERT statement."""
+        from sqlalchemy import event
+
+        statements = []
+
+        def capture_statement(_conn, _cursor, statement, _params, _context, _many):
+            statements.append(statement)
+
+        event.listen(
+            self.db_service.db_manager.engine,
+            "before_cursor_execute",
+            capture_statement,
+        )
+        try:
+            self.db_service.save_kosync_document(
+                KosyncDocument(document_hash='2' * 32, percentage=0.25)
+            )
+            self.db_service.save_kosync_document(
+                KosyncDocument(document_hash='2' * 32, percentage=0.75)
+            )
+        finally:
+            event.remove(
+                self.db_service.db_manager.engine,
+                "before_cursor_execute",
+                capture_statement,
+            )
+
+        inserts = [
+            statement for statement in statements
+            if "INSERT INTO kosync_documents" in statement
+        ]
+        self.assertTrue(inserts)
+        self.assertTrue(all("ON CONFLICT" in statement for statement in inserts))
+        self.assertAlmostEqual(
+            float(self.db_service.get_kosync_document('2' * 32).percentage),
+            0.75,
+        )
+
     def test_try_find_epub_by_hash_handles_cached_filename_hash_collision(self):
         """A stale filename cache must not overwrite an existing document hash row."""
         from src.api import kosync_server
