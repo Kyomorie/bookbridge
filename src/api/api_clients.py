@@ -288,7 +288,10 @@ class ABSClient:
             return []
 
     def search_ebooks(self, query):
-        """Search for ebooks across all book libraries."""
+        """Search for ebooks across all book libraries.
+
+        Results carry "subtitle" and "seriesName" when ABS supplies them.
+        """
         if not self.is_configured(): return []
         self._update_session_headers()
         results = []
@@ -338,7 +341,9 @@ class ABSClient:
                                     "author": author,
                                     "libraryId": lib['id'],
                                     "source": "ABS",
-                                    "ext": "epub"
+                                    "ext": "epub",
+                                    "subtitle": metadata.get('subtitle'),
+                                    "seriesName": metadata.get('seriesName')
                                 })
                     else:
                         logger.debug(f"   No items found in library '{lib_name}'")

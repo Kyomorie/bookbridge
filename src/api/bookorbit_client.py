@@ -344,7 +344,9 @@ class BookOrbitClient:
         return self._refresh_book_cache()
 
     def _enrich_ebook(self, book_id, light: dict) -> Optional[dict]:
-        """Resolve an ebook's primary filename (via cached detail) for candidate use."""
+        """Resolve an ebook's primary filename (via cached detail) for candidate use.
+        Returns dict with keys: id, title, authors, fileName, subtitle, seriesName, seriesIndex.
+        """
         detail = self.get_book_detail(book_id)
         if not detail:
             return None
@@ -352,11 +354,17 @@ class BookOrbitClient:
         filename = (pf or {}).get("filename")
         if not filename:
             return None
+        subtitle = (detail.get("subtitle") or "").strip()
+        series_name = ((light or {}).get("seriesName") or detail.get("seriesName") or "").strip()
+        series_index = detail.get("seriesIndex")
         return {
             "id": book_id,
             "title": (light or {}).get("title") or detail.get("title") or "",
             "authors": (light or {}).get("authors") or self._format_authors(detail.get("authors")),
             "fileName": filename,
+            "subtitle": subtitle,
+            "seriesName": series_name,
+            "seriesIndex": series_index,
         }
 
     # BookOrbit's GET /books/search rejects limit > 20 with HTTP 400.
@@ -394,6 +402,7 @@ class BookOrbitClient:
 
         Mirrors BookloreClient.search_books: query BookOrbit's metadata search,
         keep ebook-format hits, and enrich just those few with their filename.
+        Returns dicts with keys: id, title, authors, fileName, subtitle, seriesName, seriesIndex.
         """
         out = []
         for hit in self._search_raw(search_term, limit):
@@ -401,7 +410,7 @@ class BookOrbitClient:
                 continue
             enriched = self._enrich_ebook(
                 hit.get("id"),
-                {"title": hit.get("title"), "authors": self._format_authors(hit.get("authors"))},
+                {"title": hit.get("title"), "authors": self._format_authors(hit.get("authors")), "seriesName": hit.get("seriesName")},
             )
             if enriched:
                 out.append(enriched)
@@ -415,6 +424,8 @@ class BookOrbitClient:
         per-book detail. An empty query lists every cached audiobook WITHOUT
         detail enrichment (a detail call per book would hit the request
         throttle on a large library — mirrors get_all_ebooks).
+        Returns dicts with keys: id, title, authors, duration_seconds, num_files,
+        total_size_bytes, subtitle, seriesName, seriesIndex.
         """
         safe_term = str(search_term or "").strip()
         if not safe_term:
@@ -433,6 +444,11 @@ class BookOrbitClient:
             if hit.get("id") is None:
                 continue
             info = self.get_audiobook_info(hit["id"]) or {}
+            # Fetch subtitle/series from book detail (cached per book id)
+            detail = self.get_book_detail(hit["id"]) or {}
+            subtitle = (detail.get("subtitle") or "").strip()
+            series_name = (hit.get("seriesName") or detail.get("seriesName") or "").strip()
+            series_index = detail.get("seriesIndex")
             tracks = info.get("tracks") or []
             total_size = 0
             for t in tracks:
@@ -447,6 +463,9 @@ class BookOrbitClient:
                 "duration_seconds": info.get("duration_seconds"),
                 "num_files": len(tracks),
                 "total_size_bytes": total_size,
+                "subtitle": subtitle,
+                "seriesName": series_name,
+                "seriesIndex": series_index,
             })
         return out
 

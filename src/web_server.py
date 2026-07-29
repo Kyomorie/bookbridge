@@ -2260,6 +2260,65 @@ class EbookResult:
         return self.name
 
 
+def _ebook_edition_label(book: dict) -> str:
+    """Return a short edition label that distinguishes same-titled books.
+
+    Priority:
+    1. Non-empty subtitle -> return it stripped.
+    2. Series name present:
+       - If series index exists and series name (case/whitespace-insensitive)
+         equals the book title, return "Book {index}".
+       - If series index exists and series name differs from title, return
+         "{series_name} #{index}".
+       - If only series name, return it.
+    3. Otherwise empty string.
+
+    Index is coerced from int/float/str, dropping a trailing .0. Any unparseable
+    index is treated as absent. All field access is defensive; never raises.
+    """
+    if not isinstance(book, dict):
+        return ""
+
+    subtitle = (book.get("subtitle") or "").strip()
+    if subtitle:
+        return subtitle
+
+    series_name = (book.get("seriesName") or "").strip()
+    if not series_name:
+        return ""
+
+    title = (book.get("title") or "").strip()
+
+    # Coerce series index defensively
+    raw_index = book.get("seriesIndex")
+    index_str = None
+    if raw_index is not None:
+        try:
+            if isinstance(raw_index, float):
+                if raw_index.is_integer():
+                    index_str = str(int(raw_index))
+                else:
+                    index_str = str(raw_index)
+            elif isinstance(raw_index, int):
+                index_str = str(raw_index)
+            else:
+                # str or other: try to parse as float then drop .0
+                parsed = float(str(raw_index).strip())
+                if parsed.is_integer():
+                    index_str = str(int(parsed))
+                else:
+                    index_str = str(parsed)
+        except (ValueError, TypeError):
+            index_str = None
+
+    if index_str:
+        if series_name.lower() == title.lower():
+            return f"Book {index_str}"
+        return f"{series_name} #{index_str}"
+
+    return series_name
+
+
 def get_searchable_audiobooks(search_term):
     """Get audiobook results from all configured audio providers."""
     adapters = {}
@@ -2494,7 +2553,7 @@ def get_searchable_ebooks(search_term):
                         results.append(EbookResult(
                             name=fname,
                             title=b.get('title'),
-                            subtitle=b.get('subtitle'),
+                            subtitle=_ebook_edition_label(b),
                             authors=b.get('authors'),
                             booklore_id=b.get('id'),
                             path=b.get('filePath') or b.get('filepath') or b.get('path'),
@@ -2533,6 +2592,7 @@ def get_searchable_ebooks(search_term):
                     path=b.get('filePath') or b.get('filepath') or b.get('path'),
                     source='BookOrbit',
                     source_id=b.get('id'),
+                    subtitle=_ebook_edition_label(b),
                 ))
         except Exception as e:
             logger.warning(f"⚠️ BookOrbit search failed: {e}")
@@ -2582,7 +2642,8 @@ def get_searchable_ebooks(search_term):
                                     title=ab.get('title'),
                                     authors=ab.get('author'),
                                     source='ABS',
-                                    source_id=ab.get('id')
+                                    source_id=ab.get('id'),
+                                    subtitle=_ebook_edition_label(ab)
                                 ))
                                 found_filenames.add(fname.lower())
                                 if ab.get('title'):

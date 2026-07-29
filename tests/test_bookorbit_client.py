@@ -332,6 +332,152 @@ def test_search_ebooks_empty_term_returns_empty(client):
     assert client.search_ebooks("") == []
 
 
+def test_search_ebooks_carries_edition_metadata_subtitle_series_index(client):
+    hits = [
+        {"id": 1, "title": "Warlock", "authors": ["D. Kensington"],
+         "libraryName": "Ebooks", "formats": ["epub"], "seriesName": "Warlock"},
+    ]
+
+    def fake_request(method, endpoint, payload=None):
+        assert method == "GET" and endpoint.startswith("/api/v1/books/search?q=")
+        return _Resp(hits)
+
+    details = {
+        1: {"id": 1, "title": "Warlock", "subtitle": "Book 2",
+            "authors": [{"name": "D. Kensington"}], "seriesName": "Warlock",
+            "seriesIndex": 2,
+            "files": [{"id": 11, "format": "epub", "role": "primary",
+                       "filename": "Warlock_Book2.epub"}]},
+    }
+    with patch.object(client, '_make_request', side_effect=fake_request), \
+         patch.object(client, 'get_book_detail', side_effect=lambda bid, force=False: details.get(bid)):
+        out = client.search_ebooks("warlock")
+
+    assert len(out) == 1
+    row = out[0]
+    assert row["id"] == 1
+    assert row["fileName"] == "Warlock_Book2.epub"
+    assert row["subtitle"] == "Book 2"
+    assert row["seriesName"] == "Warlock"
+    assert row["seriesIndex"] == 2
+
+
+def test_search_ebooks_standalone_book_no_subtitle_no_series(client):
+    hits = [
+        {"id": 2, "title": "Standalone", "authors": ["A. Author"],
+         "libraryName": "Ebooks", "formats": ["epub"]},
+    ]
+
+    def fake_request(method, endpoint, payload=None):
+        assert method == "GET" and endpoint.startswith("/api/v1/books/search?q=")
+        return _Resp(hits)
+
+    details = {
+        2: {"id": 2, "title": "Standalone", "authors": [{"name": "A. Author"}],
+            "files": [{"id": 22, "format": "epub", "role": "primary",
+                       "filename": "Standalone.epub"}]},
+    }
+    with patch.object(client, '_make_request', side_effect=fake_request), \
+         patch.object(client, 'get_book_detail', side_effect=lambda bid, force=False: details.get(bid)):
+        out = client.search_ebooks("standalone")
+
+    assert len(out) == 1
+    row = out[0]
+    assert row["id"] == 2
+    assert row["fileName"] == "Standalone.epub"
+    assert row["subtitle"] == ""
+    assert row["seriesName"] == ""
+    assert row["seriesIndex"] is None
+
+
+def test_search_ebooks_prefers_hit_seriesname_over_detail(client):
+    hits = [
+        {"id": 3, "title": "Warlock", "authors": ["D. Kensington"],
+         "libraryName": "Ebooks", "formats": ["epub"], "seriesName": "Warlock"},
+    ]
+
+    def fake_request(method, endpoint, payload=None):
+        assert method == "GET" and endpoint.startswith("/api/v1/books/search?q=")
+        return _Resp(hits)
+
+    details = {
+        3: {"id": 3, "title": "Warlock", "authors": [{"name": "D. Kensington"}],
+            "files": [{"id": 33, "format": "epub", "role": "primary",
+                       "filename": "Warlock.epub"}]},
+    }
+    with patch.object(client, '_make_request', side_effect=fake_request), \
+         patch.object(client, 'get_book_detail', side_effect=lambda bid, force=False: details.get(bid)):
+        out = client.search_ebooks("warlock")
+
+    assert len(out) == 1
+    row = out[0]
+    assert row["seriesName"] == "Warlock"
+    assert row["subtitle"] == ""
+    assert row["seriesIndex"] is None
+
+
+def test_search_audiobooks_carries_edition_metadata(client):
+    hits = [
+        {"id": 10, "title": "Warlock", "authors": ["D. Kensington"],
+         "libraryName": "Audiobooks", "formats": ["m4b"], "seriesName": "Warlock"},
+    ]
+
+    def fake_request(method, endpoint, payload=None):
+        assert method == "GET" and endpoint.startswith("/api/v1/books/search?q=")
+        return _Resp(hits)
+
+    detail = {
+        10: {"id": 10, "title": "Warlock", "subtitle": "Book 1",
+             "authors": [{"name": "D. Kensington"}], "seriesName": "Warlock",
+             "seriesIndex": 1,
+             "files": [{"id": 101, "format": "m4b", "role": "primary",
+                        "filename": "Warlock_Book1.m4b", "durationSeconds": 3600.0,
+                        "sizeBytes": 1000000}]},
+    }
+    audio_info = {
+        "duration_seconds": 3600.0,
+        "tracks": [{"id": 101, "duration_seconds": 3600.0, "size_bytes": 1000000}],
+    }
+    with patch.object(client, '_make_request', side_effect=fake_request), \
+         patch.object(client, 'get_book_detail', side_effect=lambda bid, force=False: detail.get(bid)), \
+         patch.object(client, 'get_audiobook_info', return_value=audio_info):
+        out = client.search_audiobooks("warlock")
+
+    assert len(out) == 1
+    row = out[0]
+    assert row["id"] == 10
+    assert row["title"] == "Warlock"
+    assert row["subtitle"] == "Book 1"
+    assert row["seriesName"] == "Warlock"
+    assert row["seriesIndex"] == 1
+    assert row["duration_seconds"] == 3600.0
+    assert row["num_files"] == 1
+
+
+def test_search_audiobooks_empty_term_does_not_enrich(client):
+    # The empty-query branch lists straight from the cached book index and
+    # deliberately skips per-book detail calls (a detail call per book would
+    # hit BookOrbit's request throttle on a large library).
+    cached = [
+        {"id": 5, "title": "Some Book", "authors": "A", "kind": "audiobook"},
+        {"id": 6, "title": "An Ebook", "authors": "B", "kind": "ebook"},
+    ]
+
+    with patch.object(client, 'get_all_books', return_value=cached), \
+         patch.object(client, 'get_book_detail') as mock_detail, \
+         patch.object(client, 'get_audiobook_info') as mock_audio:
+        out = client.search_audiobooks("")
+
+    assert len(out) == 1
+    row = out[0]
+    assert row["id"] == 5
+    assert row["title"] == "Some Book"
+    assert row["duration_seconds"] is None
+    assert row["num_files"] is None
+    mock_detail.assert_not_called()
+    mock_audio.assert_not_called()
+
+
 def test_download_book_returns_content(client):
     with patch.object(client, '_resolve_primary_file_id', return_value=12), \
          patch.object(client, '_make_request', return_value=_Resp(status_code=200, content=b"PK\x03\x04epub")):

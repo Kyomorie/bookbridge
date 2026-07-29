@@ -4,6 +4,21 @@
 
 All notable changes to BookBridge will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **Books that share a title are no longer impossible to tell apart when you add
+  them.** Picking the right book out of a series used to be guesswork: three separate
+  books all called "Warlock" showed up as three identical cards, with nothing to say
+  which was book one, two, or three. Both sides of the Add / Update Book picker now
+  show a small edition line under each result — the book's subtitle when your library
+  has one ("Book 2"), and otherwise its series position ("Warlock #2"). This pulls in
+  detail BookBridge was already fetching and quietly discarding, so libraries that
+  track subtitles or series see the difference immediately, and standalone books look
+  exactly as they did before. The label is only shown to help you choose; the title
+  BookBridge stores and displays on your dashboard is unchanged.
+
 ## [7.3.2] - 2026-07-29
 
 ### Added
