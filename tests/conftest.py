@@ -1,3 +1,4 @@
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -10,6 +11,41 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.db.database_service import DatabaseService
+
+# Env keys the per-module restore must NOT rewind (see restore_environ_after_module).
+_ENVIRON_CARRY_OVER = ("DATA_DIR",)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def restore_environ_after_module():
+    """Contain each module's os.environ writes so the suite passes in any order.
+
+    `create_app()` runs `ConfigLoader.load_settings()`, which mirrors every DB
+    setting into `os.environ` (DB wins over compose env, by design). Sixteen test
+    modules call `create_app()`, and that write used to outlive them and
+    reconfigure every later module in the same process — it left
+    `BOOKORBIT_ENABLED='false'` with blank credentials, so `is_configured()`
+    returned False and `test_bookorbit_client` / `test_booklore_client` failed
+    whenever they ran after one of those modules. Only file order hid it.
+
+    Snapshotting at module setup (not import) keeps every module's own
+    import-time env setup intact, because pytest imports all modules during
+    collection before any test runs. Restoring at module teardown leaves
+    behavior *within* a module untouched.
+    """
+    snapshot = dict(os.environ)
+    try:
+        yield
+    finally:
+        # DATA_DIR is test-harness plumbing, not a service setting: modules set it
+        # at import to point at their own temp dir, and rewinding it would retarget
+        # a DatabaseService/log path that a module is still holding open (on Windows
+        # that surfaces as a PermissionError in a test's own rmtree cleanup). Leave
+        # it exactly as it behaved before this fixture existed.
+        carry_over = {k: os.environ[k] for k in _ENVIRON_CARRY_OVER if k in os.environ}
+        os.environ.clear()
+        os.environ.update(snapshot)
+        os.environ.update(carry_over)
 
 
 @pytest.fixture(scope="session")
