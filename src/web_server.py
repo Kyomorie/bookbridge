@@ -3391,6 +3391,7 @@ def settings():
             'OLLAMA_LIBRARY_MATCH',
             'OLLAMA_EBOOK_TEXT_FALLBACK',
             'DIAGNOSTICS_OPT_IN',
+            'WHISPER_CPP_SEND_ORIGINAL',
         ]
 
         # Current settings in DB
@@ -9531,6 +9532,9 @@ def _run_test_connection(service: str, payload: dict):
             _coerce_test_str(data.get('OLLAMA_EMBED_MODEL')),
             _coerce_test_str(data.get('OLLAMA_CHAT_MODEL')),
         ),
+        'whispercpp': lambda data: _test_whispercpp(
+            _normalize_test_url(data.get('WHISPER_CPP_URL')),
+        ),
     }
     tester = testers.get(service)
     if not tester:
@@ -10014,6 +10018,21 @@ def _test_openai_compatible(provider: str, base_url: str, api_key: str, embed_mo
         "ok": True,
         "message": f"Connected. {embed_model} embeddings ready, {chat_model} judge ready",
     }
+
+
+def _test_whispercpp(url: str) -> dict:
+    """Test whisper.cpp / OpenAI-compatible transcription server reachability."""
+    if not url:
+        return {"ok": False, "message": "Missing Whisper.cpp server URL"}
+
+    try:
+        resp = requests.get(url, timeout=5)
+    except requests.exceptions.RequestException as e:
+        return {"ok": False, "message": _test_conn_error(e)}
+
+    # The transcription endpoint typically only accepts POST, so any HTTP
+    # response (including 404/405 on GET) proves the server is reachable.
+    return {"ok": True, "message": f"Server reachable at {url} (HTTP {resp.status_code})"}
 
 
 def _test_ollama(enabled: bool, url: str, embed_model: str, chat_model: str) -> dict:
