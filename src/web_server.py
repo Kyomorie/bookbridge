@@ -53,17 +53,19 @@ from src.utils.storyteller_transcript import StorytellerTranscript
 from src.utils.kosync_headers import kosync_request_kwargs
 
 def _reconfigure_logging():
-    """Force update of root logger level based on env var."""
+    """Force update of root logger and all handler levels based on env var."""
     try:
-            new_level_str = os.environ.get('LOG_LEVEL', 'INFO').upper()
-            new_level = getattr(logging, new_level_str, logging.INFO)
+        new_level_str = os.environ.get('LOG_LEVEL', 'INFO').upper()
+        new_level = getattr(logging, new_level_str, logging.INFO)
 
-            root = logging.getLogger()
-            root.setLevel(new_level)
+        root = logging.getLogger()
+        root.setLevel(new_level)
+        for handler in root.handlers:
+            handler.setLevel(new_level)
 
-            logger.info(f"📝 Logging level updated to {new_level_str}")
+        logger.info(f"📝 Logging level updated to {new_level_str}")
     except Exception as e:
-            logger.warning(f"⚠️ Failed to reconfigure logging: {e}")
+        logger.warning(f"⚠️ Failed to reconfigure logging: {e}")
 
 # ---------------- APP SETUP ----------------
 container = None
