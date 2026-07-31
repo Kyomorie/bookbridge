@@ -19,6 +19,14 @@ All notable changes to BookBridge will be documented in this file.
   exactly as they did before. The label is only shown to help you choose; the title
   BookBridge stores and displays on your dashboard is unchanged.
 
+### Fixed
+
+- **Diagnostics no longer exhaust their warning-template limit on short book IDs,
+  filenames, or XPath fragments.** Short values inside quotes now share a stable
+  diagnostic template while the original scrubbed warning remains available for
+  troubleshooting. The scrubber also no longer mistakes the closing quote of one
+  short value for the opening quote of another.
+
 ## [7.3.2] - 2026-07-29
 
 ### Added

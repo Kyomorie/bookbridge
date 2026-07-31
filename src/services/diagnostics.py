@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _URL_RE = re.compile(r'https?://[^\s"\'<>]+')
-_QUOTED_SINGLE = re.compile(r"'([^']{12,})'")
-_QUOTED_DOUBLE = re.compile(r'"([^"]{12,})"')
+_QUOTED_SINGLE = re.compile(r"(?<!\w)'([^']{12,})'(?!\w)")
+_QUOTED_DOUBLE = re.compile(r'(?<!\w)"([^"]{12,})"(?!\w)')
 _TRANSCRIPT_FAILURE_SUFFIX = \
     ": Failed to generate transcript from both SMIL and Whisper."
 _HTTP_STATUS_RE = re.compile(
@@ -44,6 +44,10 @@ _HARDCOVER_NO_MATCH_RE = re.compile(
 # Matches scrub placeholder tokens: t:<8hex>, path:<8hex><ext>, url:<8hex>
 # Captures the prefix (t|path|url) so we can collapse the hash to a single #.
 _SCRUB_TOKEN_RE = re.compile(r'\b(t|path|url):[0-9a-f]{8}')
+_SHORT_QUOTED_RE = re.compile(
+    r'''(?:"(?!\b(?:t|path|url):#)[^"]{0,11}"|'''
+    r'''(?<!\w)'(?!\b(?:t|path|url):#)[^']{0,11}'(?!\w))'''
+)
 
 
 def _sha1_prefix(text: str, length: int = 8) -> str:
@@ -123,6 +127,10 @@ def _make_template(message: str) -> str:
     # Only the 8-hex hash is matched, so a path's trailing extension (".epub")
     # stays in the surrounding text and survives as "path:#.epub".
     normalized = _SCRUB_TOKEN_RE.sub(lambda m: f"{m.group(1)}:#", normalized)
+    normalized = _SHORT_QUOTED_RE.sub(
+        lambda m: f"{m.group(0)[0]}<value>{m.group(0)[-1]}",
+        normalized,
+    )
 
     parts = []
     last_end = 0

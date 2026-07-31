@@ -109,6 +109,10 @@ class TestScrubDiagnosticText(unittest.TestCase):
         self.assertIn('"short"', result)
         self.assertNotIn("t:", result)
 
+    def test_adjacent_short_quoted_spans_are_not_mispaired(self):
+        text = "Hash 'abc' resolved to book 'one'"
+        self.assertEqual(scrub_diagnostic_text(text), text)
+
     def test_plain_text_untouched(self):
         text = "Sync completed successfully"
         result = scrub_diagnostic_text(text)
@@ -139,6 +143,17 @@ class TestMakeTemplate(unittest.TestCase):
 
         self.assertEqual(unauthorized, "Failed to fetch all progress: 401")
         self.assertEqual(unavailable, "Failed to fetch all progress: 502")
+
+    def test_short_quoted_values_share_templates(self):
+        """Short dynamic values must not consume one template each."""
+        self.assertEqual(
+            _make_template("KOSync: hash 'abc' resolved to book 'one'"),
+            _make_template("KOSync: hash 'xyz' resolved to book 'two'"),
+        )
+        self.assertEqual(
+            _make_template('Failed to inspect "alpha.epub" at XPath "/a/b"'),
+            _make_template('Failed to inspect "omega.epub" at XPath "/x/y"'),
+        )
 
     def test_book_titles_collapse_for_shared_transcript_failure(self):
         first = _make_template(
@@ -560,6 +575,31 @@ class TestDiagnosticsHandler(unittest.TestCase):
         with handler._lock:
             self.assertEqual(len(handler._entries), 3)
             self.assertEqual(handler._dropped, 1)
+
+    def test_short_quoted_values_do_not_exhaust_template_cap(self):
+        """Regression for diagnostics findings #940, #1034, and #1289."""
+        os.environ['DIAGNOSTICS_OPT_IN'] = 'true'
+        handler = self._make_handler(max_templates=2)
+
+        for value in ('abc', 'def', 'ghi'):
+            self._test_logger.warning(
+                "KOSync: hash '%s' resolved to book '%s'", value, value,
+            )
+            self._test_logger.warning(
+                'Failed to inspect "%s.epub" at XPath "/%s"', value, value,
+            )
+
+        with handler._lock:
+            self.assertEqual(len(handler._entries), 2)
+            self.assertEqual(handler._dropped, 0)
+            self.assertEqual(
+                sorted(entry['count'] for entry in handler._entries.values()),
+                [3, 3],
+            )
+            self.assertTrue(any(
+                "'abc'" in entry['message']
+                for entry in handler._entries.values()
+            ))
 
 
 class TestPersistence(unittest.TestCase):
