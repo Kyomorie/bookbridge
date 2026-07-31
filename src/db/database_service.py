@@ -1554,18 +1554,22 @@ class DatabaseService:
         """
         if not document_hash or not abs_id:
             return False
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        now = utcnow()
         with self.get_session() as session:
-            doc = session.query(KosyncDocument).filter(
-                KosyncDocument.document_hash == document_hash
-            ).first()
-            if doc is None:
-                session.add(KosyncDocument(document_hash=document_hash, linked_abs_id=abs_id))
-                return True
-            if doc.linked_abs_id != abs_id:
-                doc.linked_abs_id = abs_id
-                doc.last_updated = utcnow()
-                return True
-            return False
+            stmt = sqlite_insert(KosyncDocument).values(
+                document_hash=document_hash,
+                linked_abs_id=abs_id,
+                first_seen=now,
+                last_updated=now,
+            )
+            result = session.execute(stmt.on_conflict_do_update(
+                index_elements=["document_hash"],
+                set_={"linked_abs_id": abs_id, "last_updated": now},
+                where=KosyncDocument.linked_abs_id.is_distinct_from(abs_id),
+            ))
+            return bool(result.rowcount)
 
     def unlink_kosync_document(self, document_hash: str) -> bool:
         """Remove the ABS book link from a KOSync document."""

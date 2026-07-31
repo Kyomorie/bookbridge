@@ -21,6 +21,11 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Concurrent KOReader manifest builds no longer collide while linking the same
+  ebook hash.** Manifest hash linking now uses the same conflict-safe SQLite upsert
+  strategy as KoSync progress writes, preserving existing progress and metadata
+  while ensuring concurrent builders produce one shared document row.
+
 - **Diagnostics no longer exhaust their warning-template limit on short book IDs,
   filenames, or XPath fragments.** Short values inside quotes now share a stable
   diagnostic template while the original scrubbed warning remains available for
