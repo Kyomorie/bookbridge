@@ -437,7 +437,11 @@ audio ↔ text alignment; it runs locally by default and needs no external servi
 | Whisper Model | `WHISPER_MODEL` | `tiny` | Local Whisper model size or a custom Whisper.cpp model name. |
 | Whisper Device | `WHISPER_DEVICE` | `auto` | `auto`, `cpu`, or `cuda`. |
 | Whisper Compute Type | `WHISPER_COMPUTE_TYPE` | `auto` | Precision mode for local Whisper. |
-| Whisper.cpp URL | `WHISPER_CPP_URL` | empty | URL to your Whisper.cpp HTTP endpoint. |
+| Whisper.cpp URL | `WHISPER_CPP_URL` | empty | Full endpoint URL, including the path — e.g. `http://HOST:8080/v1/audio/transcriptions`. |
+| Whisper.cpp Timeout | `WHISPER_CPP_TIMEOUT` | `600` | Seconds to wait for a single transcription request. Raise it for slow servers or long uploads. |
+| Split Uploads | `WHISPER_CPP_CHUNK_MINUTES` | `0` | Split each upload into sub-requests of this many minutes and offset the returned timestamps. `0` disables. |
+| Send Original Audio | `WHISPER_CPP_SEND_ORIGINAL` | `false` | Upload the original mp3/m4b instead of converting to WAV and splitting locally. |
+| Audio Split Length | `AUDIO_SPLIT_DURATION_MINUTES` | `45` | Chunk length audio is split into before transcription. Lower it if a small GPU runs out of memory. |
 | Deepgram API Key | `DEEPGRAM_API_KEY` | empty | Deepgram API key. |
 | Deepgram Model | `DEEPGRAM_MODEL` | `nova-2` | Deepgram model tier. |
 | SMIL Validation Threshold | `SMIL_VALIDATION_THRESHOLD` | `60` | Minimum token match percentage for accepting SMIL timing data. |
@@ -445,6 +449,9 @@ audio ↔ text alignment; it runs locally by default and needs no external servi
 Transcription notes:
 
 - The **Whisper Model** field in Settings is a text box with common suggestions. You can use a normal preset like `tiny` or enter a custom model name directly.
+- The `whispercpp` provider works with any OpenAI-compatible transcription endpoint — whisper.cpp server, speaches, parakeet, or a proxy such as llama-swap — not just whisper.cpp itself. Use the 🔗 **Test** button next to the URL to check the endpoint before saving. Inside Docker, do not use `localhost`; use the host's LAN IP or the whisper container's service name.
+- **Split Uploads** exists for servers that return one merged segment per request (parakeet does this). Alignment can only be as precise as the segments it gets back, so on those servers set it low — 2 or 3 minutes — and leave it at `0` for servers that already return fine-grained segments.
+- **Send Original Audio** skips local ffmpeg normalization and splitting, which saves minutes per book, but only works on servers that decode arbitrary formats *and* chunk long audio themselves (e.g. parakeet with `-long-audio`). Leave it off for whisper.cpp, which requires 16kHz WAV input. When it is on, **Audio Split Length** no longer applies — the server controls chunking.
 
 ### Sync Tuning
 

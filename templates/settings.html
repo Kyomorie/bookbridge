@@ -2101,8 +2101,14 @@
                         </select>
 
                         <div class="help-text">
-                            Local = faster‑whisper. Deepgram = cloud. Whisper.cpp = external HTTP server.
+                            Local = faster‑whisper. Deepgram = cloud. Whisper.cpp = external HTTP server (whisper.cpp, speaches, parakeet, or any OpenAI-compatible endpoint).
                         </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Audio Split Length (minutes)</label>
+                        <input type="number" name="AUDIO_SPLIT_DURATION_MINUTES" value="{{ get_val('AUDIO_SPLIT_DURATION_MINUTES', '45') }}"
+                            min="1" max="120" step="1" placeholder="45" />
+                        <div class="help-text">Audio is normalized to WAV and split into chunks of this length before transcription. Lower it (e.g. 15) if a small GPU runs out of memory on long books. Ignored when <strong>Send Original Audio</strong> is enabled, since the server then does its own chunking.</div>
                     </div>
                     <!-- Wrapper: Whisper.cpp -->
                     <div id="group_whispercpp" class="dynamic-group full-width" style="display:contents;">
@@ -2110,13 +2116,29 @@
                             <label>Whisper.cpp Server URL</label>
                             <input type="text" name="WHISPER_CPP_URL" value="{{ get_val('WHISPER_CPP_URL', '') }}"
                                 placeholder="http://192.168.178.132:8080/v1/audio/transcriptions" />
+                            <button class="btn btn-sm" type="button" onclick="testConnection('whispercpp', this)">🔗 Test</button>
                             <div class="help-text">Full endpoint URL, including the path — e.g.
                                 <code>http://HOST:8080/v1/audio/transcriptions</code>. Works with whisper.cpp
-                                server and OpenAI-compatible proxies (e.g. llama-swap). Inside Docker, do not use
+                                server and OpenAI-compatible ASR servers and proxies (speaches, parakeet, llama-swap). Inside Docker, do not use
                                 <code>localhost</code> — use the host's LAN IP or the whisper container's service name.
                                 Set this here in the UI: dashboard settings are stored in the database and take
                                 precedence over <code>docker-compose</code> environment variables.
                             </div>
+                        </div>
+                        <div class="form-group full-width">
+                            <label>Split Uploads (minutes)</label>
+                            <input type="number" name="WHISPER_CPP_CHUNK_MINUTES" value="{{ get_val('WHISPER_CPP_CHUNK_MINUTES', '0') }}"
+                                min="0" max="60" step="1" placeholder="0" />
+                            <div class="help-text">Split each audio file into sub-uploads of this many minutes and offset the returned timestamps. Use for servers that return one merged segment per request (e.g. parakeet) — the value sets the sync alignment resolution, so keep it small (2–3). Leave at 0 for servers that return fine-grained segments (whisper.cpp, speaches).</div>
+                        </div>
+                        <div class="form-group full-width" style="align-items: center;">
+                            <label>Send Original Audio</label>
+                            <label class="toggle-switch">
+                                <input type="checkbox" name="WHISPER_CPP_SEND_ORIGINAL"
+                                    {% if get_bool('WHISPER_CPP_SEND_ORIGINAL') %}checked{% endif %}>
+                                <span class="slider"></span>
+                            </label>
+                            <div class="help-text">Upload the original audio files (mp3/m4b) instead of converting to WAV and splitting locally. Enable only when the server decodes any format and chunks long audio itself (e.g. parakeet with <code>-long-audio</code>). Skips minutes of local ffmpeg work per book. Leave off for whisper.cpp, which requires 16kHz WAV input.</div>
                         </div>
                     </div>
 
@@ -2463,6 +2485,7 @@
                 'LLM_EMBED_MODEL', 'LLM_CHAT_MODEL',
                 'OLLAMA_URL', 'OLLAMA_EMBED_MODEL', 'OLLAMA_CHAT_MODEL'
             ],
+            whispercpp: ['WHISPER_CPP_URL'],
         };
 
         function getTestConnectionPayload(service) {

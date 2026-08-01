@@ -6,6 +6,24 @@ All notable changes to BookBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Transcription can now run on an external GPU server, including ones that are not
+  whisper.cpp.** The Whisper.cpp provider works against any OpenAI-compatible
+  transcription endpoint — speaches, NVIDIA parakeet, or a proxy such as llama-swap —
+  so a spare GPU elsewhere on your network can do the work without giving the
+  BookBridge container a GPU of its own. A 🔗 **Test** button next to the server URL
+  confirms the endpoint is reachable before you save. Two new options cover servers
+  that behave differently from whisper.cpp: **Split Uploads** breaks each upload into
+  short sub-requests and re-times the results, which restores sync accuracy on servers
+  that return one merged segment per request, and **Send Original Audio** hands the
+  original mp3/m4b straight to servers that decode and chunk it themselves, skipping
+  minutes of local conversion per book. (#330)
+
+- **Audio Split Length is now adjustable from Settings.** The size of the chunks audio
+  is cut into before transcription was previously fixed at 45 minutes; lowering it
+  helps a smaller GPU get through long books without running out of memory.
+
 ### Changed
 
 - **Books that share a title are no longer impossible to tell apart when you add
@@ -20,6 +38,14 @@ All notable changes to BookBridge will be documented in this file.
   BookBridge stores and displays on your dashboard is unchanged.
 
 ### Fixed
+
+- **Raising the log level now actually produces the extra detail.** Choosing DEBUG in
+  Settings updated the logger but left the existing log handler at its previous level,
+  so the messages were generated and then discarded before reaching the log.
+
+- **A failed transcription against an external server now reports the server's error.**
+  When Send Original Audio was enabled, the failure path crashed while composing its
+  own error message and buried the real cause from the transcription server.
 
 - **Diagnostics no longer exhaust their warning-template limit on short book IDs,
   filenames, or XPath fragments.** Short values inside quotes now share a stable
