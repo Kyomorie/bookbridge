@@ -667,6 +667,54 @@ class TestBookOrbitClientFindBookByFilenameQueries(unittest.TestCase):
         # Both prefix and suffix stripped variant
         self.assertIn("Agent in Place", self.recorded_queries)
 
+    def test_real_world_filename_with_author_tail_produces_title_query(self):
+        """
+        Real-world filename with " - Author (Year)" tail produces the bare title query.
+
+        The defect: '07. Naomi's Room - Jonathan Aycliffe (2018).epub' must issue the
+        query "Naomi's Room" (series prefix AND author tail AND year all stripped).
+        This variant was previously generated at position 6 and cut by the cap of 5.
+        Assert that exact query string is in the recorded queries.
+        Also assert raw stem is still first and total queries <= _MAX_FILENAME_QUERIES.
+        """
+        self._stub_search_and_detail([], {})
+
+        filename = "07. Naomi's Room - Jonathan Aycliffe (2018).epub"
+        result = self.client.find_book_by_filename(filename)
+
+        self.assertIsNone(result)
+        # Raw stem is first
+        self.assertEqual(self.recorded_queries[0], "07. Naomi's Room - Jonathan Aycliffe (2018)")
+        # The critical variant that actually resolves
+        self.assertIn("Naomi's Room", self.recorded_queries)
+        # Cap respected
+        self.assertLessEqual(len(self.recorded_queries), _MAX_FILENAME_QUERIES)
+
+    def test_widened_queries_still_reject_wrong_book_with_author_tail(self):
+        """
+        Widened queries still reject a wrong book for the real-world shape.
+
+        _search_raw returns a hit for one of the derived queries, but get_book_detail
+        returns a detail whose files[].filename does not match — the method must still
+        return None.
+        """
+        ebook_filename = "07. Naomi's Room - Jonathan Aycliffe (2018).epub"
+        target_name = ebook_filename.lower()
+        hit_id = 99
+        search_returns = [{"id": hit_id, "title": "Naomi's Room", "formats": ["epub"]}]
+        detail_returns = {
+            hit_id: {
+                "id": hit_id,
+                "title": "Naomi's Room",
+                "files": [{"filename": "Different Book.epub", "format": "epub", "role": "primary"}],
+            }
+        }
+        self._stub_search_and_detail(search_returns, detail_returns)
+
+        result = self.client.find_book_by_filename(ebook_filename)
+
+        self.assertIsNone(result)
+
     def test_query_count_is_capped(self):
         """
         Query count is capped.

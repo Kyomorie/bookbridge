@@ -43,7 +43,7 @@ _TOKEN_MAX_AGE = 840
 _LOGIN_RETRY_COOLDOWN = 60
 _EBOOK_FORMATS = {"epub", "kepub", "pdf", "cbz", "cbr", "cb7", "mobi", "azw3", "azw", "fb2"}
 _AUDIO_FORMATS = {"m4b", "mp3", "m4a", "opus", "ogg", "flac", "aax", "aac"}
-_MAX_FILENAME_QUERIES = 5
+_MAX_FILENAME_QUERIES = 6
 
 
 class BookOrbitClient:
@@ -568,10 +568,12 @@ class BookOrbitClient:
         Query variants tried (in order, deduplicated, capped at _MAX_FILENAME_QUERIES):
         - the raw stem
         - the portion before the first " - " (often the title)
-        - stem with leading volume/series prefix stripped (e.g. "07. ", "1 - ")
-        - stem with trailing parenthesised year stripped (e.g. " (2018)")
-        - stem with both of the above applied
-        - for any variant still containing " - ", the portion before it
+        - stem with leading volume/series prefix AND trailing year both stripped
+        - the portion before the first " - " of the above
+        - stem with leading volume/series prefix stripped
+        - the portion before the first " - " of the above
+        - stem with trailing parenthesised year stripped
+        - the portion before the first " - " of the above
         """
         if not ebook_filename:
             return None
@@ -606,18 +608,21 @@ class BookOrbitClient:
         if " - " in stem:
             _add_query(queries, stem.split(" - ", 1)[0].strip())
 
-        # Derived variants
+        # Derived variants: for each base form, emit the base then its " - " prefix
+        stem_no_both = _strip_trailing_year(_strip_leading_series(stem))
+        _add_query(queries, stem_no_both)
+        if " - " in stem_no_both:
+            _add_query(queries, stem_no_both.split(" - ", 1)[0].strip())
+
         stem_no_series = _strip_leading_series(stem)
         _add_query(queries, stem_no_series)
+        if " - " in stem_no_series:
+            _add_query(queries, stem_no_series.split(" - ", 1)[0].strip())
+
         stem_no_year = _strip_trailing_year(stem)
         _add_query(queries, stem_no_year)
-        stem_no_both = _strip_trailing_year(stem_no_series)
-        _add_query(queries, stem_no_both)
-
-        # For any variant that still has " - ", add the portion before it
-        for variant in list(queries):
-            if " - " in variant:
-                _add_query(queries, variant.split(" - ", 1)[0].strip())
+        if " - " in stem_no_year:
+            _add_query(queries, stem_no_year.split(" - ", 1)[0].strip())
 
         # Cap total queries
         queries = queries[:_MAX_FILENAME_QUERIES]
