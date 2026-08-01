@@ -7,7 +7,12 @@ from pathlib import Path
 # Add src to path
 sys.path.append(str(Path(__file__).parent.parent / "src"))
 
-from utils.transcription_providers import LocalWhisperProvider, DeepgramProvider, get_transcription_provider
+from utils.transcription_providers import (
+    LocalWhisperProvider,
+    DeepgramProvider,
+    WhisperCppServerProvider,
+    get_transcription_provider,
+)
 
 class TestLocalWhisperProvider(unittest.TestCase):
     
@@ -165,6 +170,149 @@ class TestDeepgramProvider(unittest.TestCase):
                 self.assertEqual(segments[0]['text'], "Hello world")
                 self.assertEqual(segments[0]['start'], 0.5)
                 self.assertEqual(segments[0]['end'], 2.5)
+
+class TestWhisperCppServerProvider(unittest.TestCase):
+
+    def test_init_without_url_raises(self):
+        """Missing WHISPER_CPP_URL must fail loudly."""
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(ValueError):
+                WhisperCppServerProvider()
+
+    def test_defaults(self):
+        """Raw upload is off by default and does not advertise supports_raw_audio."""
+        with patch.dict(os.environ, {"WHISPER_CPP_URL": "http://x/v1/audio/transcriptions"}, clear=True):
+            provider = WhisperCppServerProvider()
+            self.assertFalse(provider.send_original)
+            self.assertFalse(provider.supports_raw_audio)
+            self.assertEqual(provider.timeout, 600)
+
+    def test_send_original_enables_raw_audio(self):
+        """WHISPER_CPP_SEND_ORIGINAL=true makes the pipeline skip WAV normalization."""
+        with patch.dict(os.environ, {
+            "WHISPER_CPP_URL": "http://x/v1/audio/transcriptions",
+            "WHISPER_CPP_SEND_ORIGINAL": "true",
+        }, clear=True):
+            provider = WhisperCppServerProvider()
+            self.assertTrue(provider.send_original)
+            self.assertTrue(provider.supports_raw_audio)
+
+    def test_transcribe_local_file_parses_segments(self):
+        """Local file upload posts verbose_json and parses segment timestamps."""
+        with patch.dict(os.environ, {"WHISPER_CPP_URL": "http://x/v1/audio/transcriptions"}, clear=True):
+            provider = WhisperCppServerProvider()
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "segments": [{"start": 1.0, "end": 2.5, "text": " hello world "}]
+        }
+        with patch("requests.post", return_value=mock_resp) as mock_post, \
+             patch("builtins.open", unittest.mock.mock_open(read_data=b"wav")):
+            segments = provider.transcribe(Path("chunk.wav"))
+
+        self.assertEqual(segments, [{"start": 1.0, "end": 2.5, "text": "hello world"}])
+        _, kwargs = mock_post.call_args
+        self.assertEqual(kwargs["data"]["response_format"], "verbose_json")
+        self.assertEqual(kwargs["timeout"], 600)
+
+    def test_transcribe_url_source_downloads_then_uploads(self):
+        """A stream URL source is buffered to a temp file and uploaded."""
+        with patch.dict(os.environ, {
+            "WHISPER_CPP_URL": "http://x/v1/audio/transcriptions",
+            "WHISPER_CPP_SEND_ORIGINAL": "true",
+        }, clear=True):
+            provider = WhisperCppServerProvider()
+
+        mock_get_resp = MagicMock()
+        mock_get_resp.__enter__ = MagicMock(return_value=mock_get_resp)
+        mock_get_resp.__exit__ = MagicMock(return_value=False)
+        mock_get_resp.iter_content.return_value = [b"audio-bytes"]
+
+        mock_post_resp = MagicMock()
+        mock_post_resp.json.return_value = {
+            "segments": [{"start": 0.0, "end": 3.0, "text": "streamed"}]
+        }
+
+        with patch("requests.get", return_value=mock_get_resp) as mock_get, \
+             patch("requests.post", return_value=mock_post_resp) as mock_post:
+            segments = provider.transcribe("http://abs/stream/part.m4b?token=abc")
+
+        mock_get.assert_called_once()
+        self.assertEqual(mock_get.call_args[0][0], "http://abs/stream/part.m4b?token=abc")
+        mock_post.assert_called_once()
+        # Upload uses the source filename (query string stripped)
+        upload_name = mock_post.call_args[1]["files"]["file"][0]
+        self.assertEqual(upload_name, "part.m4b")
+        self.assertEqual(segments, [{"start": 0.0, "end": 3.0, "text": "streamed"}])
+
+    def test_text_only_response_warns_and_degrades(self):
+        """Servers ignoring verbose_json still return a usable (untimed) segment."""
+        with patch.dict(os.environ, {"WHISPER_CPP_URL": "http://x/v1/audio/transcriptions"}, clear=True):
+            provider = WhisperCppServerProvider()
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"text": "plain transcript"}
+        with patch("requests.post", return_value=mock_resp), \
+             patch("builtins.open", unittest.mock.mock_open(read_data=b"wav")):
+            segments = provider.transcribe(Path("chunk.wav"))
+
+        self.assertEqual(segments, [{"start": 0.0, "end": 0.0, "text": "plain transcript"}])
+
+    def test_chunked_wav_upload_offsets_timestamps(self):
+        """WHISPER_CPP_CHUNK_MINUTES splits WAVs and offsets returned timestamps."""
+        import io
+        import tempfile
+        import wave
+
+        with patch.dict(os.environ, {
+            "WHISPER_CPP_URL": "http://x/v1/audio/transcriptions",
+            "WHISPER_CPP_CHUNK_MINUTES": "1",
+        }, clear=True):
+            provider = WhisperCppServerProvider()
+
+        # 90 seconds of silence at 16kHz mono -> two chunks (60s + 30s)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            with wave.open(tmp, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(b"\x00\x00" * 16000 * 90)
+            wav_path = Path(tmp.name)
+
+        durations = []
+
+        def fake_post(url, files=None, data=None, timeout=None):
+            buf = files["file"][1]
+            with wave.open(io.BytesIO(buf.read()), "rb") as wf:
+                dur = wf.getnframes() / wf.getframerate()
+            durations.append(dur)
+            resp = MagicMock()
+            resp.json.return_value = {
+                "segments": [{"start": 0.0, "end": dur, "text": f"part {len(durations)}"}]
+            }
+            return resp
+
+        try:
+            with patch("requests.post", side_effect=fake_post):
+                segments = provider.transcribe(wav_path)
+        finally:
+            wav_path.unlink()
+
+        self.assertEqual(durations, [60.0, 30.0])
+        self.assertEqual(segments, [
+            {"start": 0.0, "end": 60.0, "text": "part 1"},
+            {"start": 60.0, "end": 90.0, "text": "part 2"},
+        ])
+
+    def test_factory_returns_whispercpp(self):
+        """Factory selects WhisperCppServerProvider when configured."""
+        with patch.dict(os.environ, {
+            "TRANSCRIPTION_PROVIDER": "whispercpp",
+            "WHISPER_CPP_URL": "http://x/v1/audio/transcriptions",
+        }, clear=True):
+            provider = get_transcription_provider()
+            self.assertIsInstance(provider, WhisperCppServerProvider)
+
 
 if __name__ == '__main__':
     unittest.main()
