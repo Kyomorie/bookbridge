@@ -21,6 +21,21 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Books matched from a library BookBridge reaches only over the network now
+  actually download.** If your ebooks live in BookOrbit or Grimmory and you have
+  not mounted that library's folder into BookBridge, matching a book could still
+  end in `EPUB not found in BookOrbit` and a job stuck on "failed, retry later" —
+  even though the match had recorded exactly which book you picked. BookBridge was
+  throwing that away and searching the library again by filename, which only worked
+  when the filename happened to read like the book's title; anything with a series
+  number or a year in it (`07. Agent in Place (2018).epub`) failed. It now fetches
+  the exact book you matched, by id. Three further improvements come with it: a
+  book you match is downloaded once and kept, instead of being fetched again later;
+  the filename search still used for older matches now copes with series numbers
+  and years; and an explicitly matched book is never quietly swapped for a
+  different edition found by searching. Affected books recover on their own — they
+  are retried automatically. (#352)
+
 - **"Add all exact" on the Suggestions page no longer silently does nothing.** After
   a long library scan, the results were held only in memory — so if BookBridge
   restarted, or you came back to a tab that had been sitting open, clicking **Add all

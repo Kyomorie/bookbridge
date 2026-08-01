@@ -43,6 +43,7 @@ _TOKEN_MAX_AGE = 840
 _LOGIN_RETRY_COOLDOWN = 60
 _EBOOK_FORMATS = {"epub", "kepub", "pdf", "cbz", "cbr", "cb7", "mobi", "azw3", "azw", "fb2"}
 _AUDIO_FORMATS = {"m4b", "mp3", "m4a", "opus", "ogg", "flac", "aax", "aac"}
+_MAX_FILENAME_QUERIES = 5
 
 
 class BookOrbitClient:
@@ -563,6 +564,14 @@ class BookOrbitClient:
         Search hits omit filenames, so we run the metadata search (GET
         /books/search?q=) on the filename stem and confirm against each
         candidate's detail files. Resolved filenames are indexed for O(1) repeats.
+
+        Query variants tried (in order, deduplicated, capped at _MAX_FILENAME_QUERIES):
+        - the raw stem
+        - the portion before the first " - " (often the title)
+        - stem with leading volume/series prefix stripped (e.g. "07. ", "1 - ")
+        - stem with trailing parenthesised year stripped (e.g. " (2018)")
+        - stem with both of the above applied
+        - for any variant still containing " - ", the portion before it
         """
         if not ebook_filename:
             return None
@@ -578,12 +587,45 @@ class BookOrbitClient:
         stem = Path(ebook_filename).stem
         target_stem_norm = self._normalize_string(stem)
         seen_ids = set()
+
+        def _add_query(qs: list[str], q: str) -> None:
+            q = q.strip()
+            if q and q not in qs:
+                qs.append(q)
+
+        def _strip_leading_series(s: str) -> str:
+            # Strip leading digits + separator (. - _ or whitespace) at the very start
+            return re.sub(r"^\d+[\.\-_]\s*", "", s)
+
+        def _strip_trailing_year(s: str) -> str:
+            # Strip trailing (1900)-(2099) at the end
+            return re.sub(r"\s*\((19|20)\d{2}\)\s*$", "", s)
+
+        queries: list[str] = []
+        _add_query(queries, stem)
+        if " - " in stem:
+            _add_query(queries, stem.split(" - ", 1)[0].strip())
+
+        # Derived variants
+        stem_no_series = _strip_leading_series(stem)
+        _add_query(queries, stem_no_series)
+        stem_no_year = _strip_trailing_year(stem)
+        _add_query(queries, stem_no_year)
+        stem_no_both = _strip_trailing_year(stem_no_series)
+        _add_query(queries, stem_no_both)
+
+        # For any variant that still has " - ", add the portion before it
+        for variant in list(queries):
+            if " - " in variant:
+                _add_query(queries, variant.split(" - ", 1)[0].strip())
+
+        # Cap total queries
+        queries = queries[:_MAX_FILENAME_QUERIES]
+
         # BookOrbit search matches on metadata (title), so a "Title - Author.epub"
         # stem often returns nothing. Try the full stem, then the portion before
-        # the first " - " (usually the title), confirming by the real filename.
-        queries = [stem]
-        if " - " in stem:
-            queries.append(stem.split(" - ", 1)[0].strip())
+        # the first " - " (usually the title), plus the derived variants above,
+        # confirming by the real filename.
         for q in queries:
             for hit in self._search_raw(q, limit=20):
                 if not isinstance(hit, dict) or hit.get("id") in seen_ids:

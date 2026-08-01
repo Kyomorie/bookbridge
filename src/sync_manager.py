@@ -932,6 +932,93 @@ class SyncManager:
 
 
 
+    def _download_epub_by_source_id(
+        self, ebook_filename: str, cached_path: Path
+    ) -> Path | None:
+        """
+        Try to download an EPUB using the stored library mapping (ebook_source + ebook_source_id).
+
+        This runs after local filesystem and cache checks, before falling back to
+        filename-based search. It avoids the fragile metadata search when we already
+        know the exact library book ID.
+        """
+        # 1. Skip Storyteller artifacts — they have their own materialization path
+        #    and caching the library bytes under a Storyteller filename would be wrong.
+        if ebook_filename.startswith("storyteller_"):
+            return None
+
+        # 2. Look up the mapping row by ebook_filename (matches current or original).
+        book = None
+        try:
+            book = self.database_service.get_book_by_ebook_filename(ebook_filename)
+        except Exception as e:
+            logger.debug(
+                "Database lookup failed for '%s': %s",
+                sanitize_log_data(ebook_filename),
+                e,
+            )
+            return None
+
+        if not book:
+            return None
+
+        ebook_source = getattr(book, "ebook_source", None)
+        ebook_source_id = getattr(book, "ebook_source_id", None)
+        if not ebook_source or not ebook_source_id:
+            return None
+
+        # 3. Map source to the appropriate client and download by ID.
+        client = None
+        if ebook_source == "BookOrbit":
+            client = self.active_bookorbit_client
+        elif ebook_source == "BookLore":
+            client = self.active_booklore_client
+        else:
+            return None
+
+        if not client or not hasattr(client, "is_configured") or not client.is_configured():
+            return None
+
+        logger.info(
+            "⚡ Downloading EPUB from %s by mapped id '%s': %s",
+            ebook_source,
+            ebook_source_id,
+            sanitize_log_data(ebook_filename),
+        )
+
+        try:
+            content = client.download_book(ebook_source_id)
+        except Exception as e:
+            logger.warning(
+                "⚠️ %s by-id download failed for '%s': %s",
+                ebook_source,
+                sanitize_log_data(ebook_filename),
+                e,
+            )
+            return None
+
+        if not content:
+            logger.warning(
+                "⚠️ %s by-id download returned empty content for '%s'",
+                ebook_source,
+                sanitize_log_data(ebook_filename),
+            )
+            return None
+
+        try:
+            with open(cached_path, "wb") as f:
+                f.write(content)
+        except Exception as e:
+            logger.warning(
+                "⚠️ Failed to write cached EPUB for '%s': %s",
+                sanitize_log_data(ebook_filename),
+                e,
+            )
+            return None
+
+        logger.info(f"✅ Downloaded EPUB to cache: '{cached_path}'")
+        return cached_path
+
     def _resolve_local_epub_uncached(self, ebook_filename):
         """
         Get local path to EPUB file, downloading from Grimmory if necessary.
@@ -968,6 +1055,12 @@ class SyncManager:
         if cached_path.exists():
             logger.info(f"🔍 Found EPUB in cache: '{cached_path}'")
             return cached_path
+
+        # 3. Try to download using the stored library mapping (ebook_source + ebook_source_id)
+        #    before falling back to filename-based search.
+        by_id_result = self._download_epub_by_source_id(ebook_filename, cached_path)
+        if by_id_result is not None:
+            return by_id_result
 
         # Try to download from Grimmory API
         # Note: We use hasattr to prevent crashes if BookloreClient wasn't updated with these methods yet
@@ -1739,9 +1832,11 @@ class SyncManager:
 
             epub_path = None
             library_service = library_service or self.active_library_service
-            if library_service and item_details:
-                # Try Priority Chain (ABS Direct -> Grimmory -> CWA -> ABS Search)
-                epub_path = library_service.acquire_ebook(item_details)
+            if library_service:
+                # Try Priority Chain (Explicit mapping -> ABS Direct -> Grimmory -> CWA
+                # -> ABS Search). Priority 0 needs no ABS item, so this runs even when
+                # the item lookup was skipped (ebook-only / non-ABS audio sources).
+                epub_path = library_service.acquire_ebook(item_details, book)
 
             # Fallback to legacy logic (Local Filesystem / Cache / Grimmory Classic)
             if not epub_path:

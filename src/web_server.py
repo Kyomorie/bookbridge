@@ -1652,6 +1652,14 @@ def get_kosync_id_for_ebook(ebook_filename, booklore_id=None, original_filename=
                     kosync_id = container.ebook_parser().get_kosync_id_from_bytes(ebook_filename, content)
                     if kosync_id:
                         logger.debug(f"🔍 Computed KOSync ID from BookOrbit download: '{kosync_id}'")
+                        if cached_path:
+                            try:
+                                if not epub_cache.exists():
+                                    epub_cache.mkdir(parents=True, exist_ok=True)
+                                cached_path.write_bytes(content)
+                                logger.info(f"   ✅ Cached BookOrbit download to '{cached_path}'")
+                            except Exception as cache_err:
+                                logger.warning(f"⚠️ Failed to cache BookOrbit download: {cache_err}")
                         return kosync_id
         except Exception as e:
             logger.warning(f"⚠️ Failed to get KOSync ID from BookOrbit: {e}")

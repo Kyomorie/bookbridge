@@ -12,16 +12,18 @@ from src.db.models import Book
 from src.db.database_service import DatabaseService
 from src.api.api_clients import ABSClient
 from src.api.cwa_client import CWAClient
+from src.utils.cache_paths import safe_cache_path
 
 logger = logging.getLogger(__name__)
 
 class LibraryService:
-    def __init__(self, database_service: DatabaseService, booklore_client, cwa_client: CWAClient, abs_client: ABSClient, epub_cache_dir: str):
+    def __init__(self, database_service: DatabaseService, booklore_client, cwa_client: CWAClient, abs_client: ABSClient, epub_cache_dir: str, bookorbit_client=None):
         self.database_service = database_service
         self.booklore = booklore_client
         self.cwa_client = cwa_client
         self.abs_client = abs_client
         self.epub_cache_dir = epub_cache_dir
+        self.bookorbit_client = bookorbit_client
         
         if not os.path.exists(self.epub_cache_dir):
             try:
@@ -36,10 +38,11 @@ class LibraryService:
         # This wraps the low-level DB query
         return self.database_service.get_all_books()
 
-    def acquire_ebook(self, abs_item: dict) -> Optional[str]:
+    def acquire_ebook(self, abs_item: dict, book: Optional[Book] = None) -> Optional[str]:
         """
         Attempt to acquire an ebook for the given audiobook item.
         Priority Chain:
+        0. Explicit mapping (book.ebook_source + book.ebook_source_id)
         1. ABS Direct Match (Audiobook item has ebook file)
         2. Grimmory (Curated DB Match)
         3. CWA (Automated Library Search via OPDS)
@@ -49,6 +52,56 @@ class LibraryService:
         Returns:
             Absolute path to the downloaded/found ebook, or None.
         """
+        # Priority 0 — Explicit mapping (runs before abs_item guard so a mapping
+        # with no usable ABS item can still resolve its ebook from the source library)
+        if book and book.ebook_source and book.ebook_source_id:
+            # Skip tri-linked mappings where ebook_filename names the Storyteller artifact
+            # while ebook_source_id points at the source library book.
+            if book.ebook_filename and book.ebook_filename.startswith("storyteller_"):
+                logger.debug("   Priority 0 (Explicit mapping): Skipped — ebook_filename is a Storyteller artifact")
+            else:
+                # Map source to client
+                client = None
+                source_name = book.ebook_source
+                if source_name == "BookOrbit":
+                    client = self.bookorbit_client
+                elif source_name == "BookLore":
+                    client = self.booklore
+                # Any other source is not supported here
+                
+                if client and getattr(client, "is_configured", lambda: True)():
+                    # Resolve cache destination using the mapping's own filename
+                    if book.ebook_filename:
+                        cache_path = safe_cache_path(self.epub_cache_dir, book.ebook_filename)
+                        if cache_path:
+                            # Return cached file if it exists and is substantial
+                            if cache_path.exists() and cache_path.stat().st_size > 1024:
+                                logger.info(f"   ✅ Priority 0 (Explicit mapping): Using cached ebook: {cache_path}")
+                                return str(cache_path)
+
+                            # Download from the source library
+                            try:
+                                logger.info(f"   📥 Priority 0 (Explicit mapping): Downloading from {source_name} ({book.ebook_source_id})")
+                                content = client.download_book(book.ebook_source_id)
+                                if content:
+                                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                                    cache_path.write_bytes(content)
+                                    if cache_path.stat().st_size > 1024:
+                                        logger.info(f"   ✅ Priority 0 (Explicit mapping): Downloaded to {cache_path}")
+                                        return str(cache_path)
+                                    else:
+                                        logger.warning(f"   Priority 0 (Explicit mapping): Downloaded content too small, falling through")
+                                else:
+                                    logger.warning(f"   Priority 0 (Explicit mapping): Empty download from {source_name} ({book.ebook_source_id}), falling through")
+                            except Exception as e:
+                                logger.warning(f"   Priority 0 (Explicit mapping): Download failed for {source_name} ({book.ebook_source_id}): {e}")
+                        else:
+                            logger.debug("   Priority 0 (Explicit mapping): Skipped — safe_cache_path returned None")
+                    else:
+                        logger.debug("   Priority 0 (Explicit mapping): Skipped — empty ebook_filename")
+                else:
+                    logger.debug(f"   Priority 0 (Explicit mapping): Skipped — client for {source_name} not available or not configured")
+
         if not abs_item:
             return None
 
@@ -64,6 +117,8 @@ class LibraryService:
         logger.debug(f"   Author: {author}")
         logger.debug(f"   ABS Client available: {self.abs_client is not None}")
         logger.debug(f"   CWA Client available: {self.cwa_client is not None}, configured: {self.cwa_client.is_configured() if self.cwa_client else 'N/A'}")
+        if self.bookorbit_client:
+            logger.debug(f"   BookOrbit Client available: {self.bookorbit_client is not None}, configured: {self.bookorbit_client.is_configured() if self.bookorbit_client else 'N/A'}")
 
         # 1. ABS Direct Match
         if self.abs_client:

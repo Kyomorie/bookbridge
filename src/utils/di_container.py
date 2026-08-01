@@ -162,7 +162,8 @@ class Container(containers.DeclarativeContainer):
         booklore_client=booklore_client,
         cwa_client=cwa_client,
         abs_client=abs_client,
-        epub_cache_dir=epub_cache_dir
+        epub_cache_dir=epub_cache_dir,
+        bookorbit_client=bookorbit_client
     )
 
     koreader_device_sync_service = providers.Singleton(
