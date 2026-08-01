@@ -18,11 +18,13 @@ All notable changes to BookBridge will be documented in this file.
   short sub-requests and re-times the results, which restores sync accuracy on servers
   that return one merged segment per request, and **Send Original Audio** hands the
   original mp3/m4b straight to servers that decode and chunk it themselves, skipping
-  minutes of local conversion per book. (#330)
+  minutes of local conversion per book. Contributed by
+  [@chelming](https://github.com/chelming). (#330)
 
 - **Audio Split Length is now adjustable from Settings.** The size of the chunks audio
   is cut into before transcription was previously fixed at 45 minutes; lowering it
   helps a smaller GPU get through long books without running out of memory.
+  Contributed by [@chelming](https://github.com/chelming).
 
 ### Changed
 
@@ -69,13 +71,16 @@ All notable changes to BookBridge will be documented in this file.
   ebook hash.** Manifest hash linking now uses the same conflict-safe SQLite upsert
   strategy as KoSync progress writes, preserving existing progress and metadata
   while ensuring concurrent builders produce one shared document row.
+
 - **Raising the log level now actually produces the extra detail.** Choosing DEBUG in
   Settings updated the logger but left the existing log handler at its previous level,
   so the messages were generated and then discarded before reaching the log.
+  Contributed by [@chelming](https://github.com/chelming).
 
 - **A failed transcription against an external server now reports the server's error.**
   When Send Original Audio was enabled, the failure path crashed while composing its
   own error message and buried the real cause from the transcription server.
+  Contributed by [@chelming](https://github.com/chelming).
 
 - **Diagnostics no longer exhaust their warning-template limit on short book IDs,
   filenames, or XPath fragments.** Short values inside quotes now share a stable
