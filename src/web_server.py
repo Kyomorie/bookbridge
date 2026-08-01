@@ -6709,6 +6709,42 @@ def _save_persisted_suggestions_cache(payload):
                 pass
 
 
+def _rehydrate_suggestions_state_from_cache(suggestions_state: dict) -> dict:
+    """Rehydrate in-memory suggestions state from the persisted per-user cache.
+
+    If the state already has scan results (non-empty scan_cache_by_abs), the
+    in-memory state wins and the cache is not applied. Otherwise, loads the
+    persisted cache and populates the state with its contents, including
+    rebuilding scan_results sorted by top match score descending.
+    """
+    if not suggestions_state:
+        return suggestions_state
+
+    if suggestions_state.get('scan_cache_by_abs'):
+        return suggestions_state
+
+    persisted = _load_persisted_suggestions_cache()
+    cache_by_abs = persisted.get('scan_cache_by_abs', {}) or {}
+    if not cache_by_abs:
+        return suggestions_state
+
+    suggestions_state['scan_cache_by_abs'] = cache_by_abs
+    suggestions_state['scan_cache_no_match_abs_ids'] = persisted.get('scan_cache_no_match_abs_ids', []) or []
+    suggestions_state['scan_last_stats'] = persisted.get('scan_last_stats', {}) or {}
+    suggestions_state['scan_has_run'] = True
+    suggestions_state['updated_at'] = time.time()
+
+    suggestions_list = list(cache_by_abs.values())
+    suggestions_list.sort(
+        key=lambda s: (s.get('matches', [{}])[0].get('score', 0) if s.get('matches') else 0),
+        reverse=True,
+    )
+    suggestions_state['scan_results'] = suggestions_list
+
+    logger.info(f"♻️ Restored {len(suggestions_list)} cached suggestion(s) from the persisted scan cache")
+    return suggestions_state
+
+
 def _match_queue_file_path():
     return DATA_DIR / MATCH_QUEUE_FILE_NAME
 
@@ -7080,11 +7116,37 @@ def suggestions_page():
 
         elif action == 'add_many_to_queue':
             keys = request.form.getlist('bridge_keys')
+            suggestions_state = _rehydrate_suggestions_state_from_cache(suggestions_state)
             cache_by_abs = suggestions_state.get('scan_cache_by_abs', {}) or {}
+
+            requested = len(keys)
+            added = 0
+            skipped_missing = 0
+            skipped_no_item = 0
+            already_queued = 0
+
             for key in keys:
-                item = _queue_item_from_suggestion(cache_by_abs.get(key))
-                if item:
-                    _match_queue_add(item)
+                suggestion = cache_by_abs.get(key)
+                if not suggestion:
+                    skipped_missing += 1
+                    continue
+                item = _queue_item_from_suggestion(suggestion)
+                if not item:
+                    skipped_no_item += 1
+                    continue
+                if _match_queue_add(item):
+                    added += 1
+                else:
+                    already_queued += 1
+
+            if requested > 0 and added == 0 and skipped_missing == requested:
+                logger.warning(
+                    f"⚠️ add_many_to_queue: {requested} key(s) requested but scan cache had no entry for any of them"
+                )
+            else:
+                logger.info(
+                    f"✅ add_many_to_queue: requested={requested} added={added} skipped_missing={skipped_missing} skipped_no_item={skipped_no_item} already_queued={already_queued}"
+                )
             return _match_queue_response()
 
         elif action == 'forge_and_match_queue':
@@ -7136,6 +7198,9 @@ def suggestions_page():
                     SUGGESTIONS_SCAN_JOBS.pop(job_id, None)
             else:
                 scan_in_progress = True
+
+    if not scan_in_progress:
+        suggestions_state = _rehydrate_suggestions_state_from_cache(suggestions_state)
 
     ignored_source_ids = _get_ignored_suggestion_source_ids()
     scan_results = suggestions_state.get('scan_results', [])

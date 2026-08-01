@@ -1,6 +1,6 @@
 {% if queue %}
 {% for item in queue %}
-<div class="queue-item">
+<div class="queue-item" data-bridge-key="{{ item.bridge_key or item.abs_id }}">
     <img src="{{ item.cover_url }}" alt="Cover" class="queue-item-cover" onerror="this.style.opacity='0.25';">
     <div class="queue-item-info">
         <p class="queue-item-title" title="{{ item.abs_title }}">{{ item.abs_title }}</p>

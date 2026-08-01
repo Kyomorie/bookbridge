@@ -21,6 +21,17 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **"Add all exact" on the Suggestions page no longer silently does nothing.** After
+  a long library scan, the results were held only in memory — so if BookBridge
+  restarted, or you came back to a tab that had been sitting open, clicking **Add all
+  exact** or **Add selected** queued nothing at all. The counter still dropped to
+  zero and every card still greyed out, so it looked like it had worked, and the only
+  way to get a book onto the dashboard was to add it by hand from Add Book. Scan
+  results are now restored from the cache BookBridge already writes to disk, so a
+  restart no longer throws away a scan that took minutes to run. If a suggestion
+  genuinely can't be queued, the page now says so instead of quietly pretending
+  otherwise, and the affected cards stay selectable. (#351)
+
 - **Concurrent KOReader manifest builds no longer collide while linking the same
   ebook hash.** Manifest hash linking now uses the same conflict-safe SQLite upsert
   strategy as KoSync progress writes, preserving existing progress and metadata
