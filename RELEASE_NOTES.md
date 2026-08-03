@@ -132,9 +132,7 @@ unchanged (0.5.4) so no plugin re-download is needed, and `requirements.txt` and
 Dockerfile are untouched. Pull the new image and restart BookBridge.
 
 The cover fix needs nothing from you: existing dashboard entries are rewritten to the
-proxied routes as each page is drawn. If your Audiobookshelf API token was previously
-being served to browsers on your network and that concerns you, this is a good moment to
-rotate it in Audiobookshelf and re-enter it in BookBridge Settings.
+proxied routes as each page is drawn.
 
 The new external-transcription options are off by default, so nothing changes for
 installs using local Whisper or a plain whisper.cpp server. See
