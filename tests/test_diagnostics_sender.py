@@ -341,6 +341,39 @@ class TestMaybeSendPaths(unittest.TestCase):
         self.assertEqual(payload['user_message'], 'It stopped at 50%.')
 
     @patch('src.services.diagnostics.requests.post')
+    def test_comment_only_manual_report_includes_recent_logs(self, mock_post):
+        """Report #631: a manual comment must not arrive without its recent logs."""
+        mock_resp = Mock(status_code=200)
+        mock_resp.json.return_value = {'ok': True, 'batch_id': 631}
+        mock_post.return_value = mock_resp
+
+        with self.handler._lock:
+            self.handler._entries.clear()
+            self.handler._ring.clear()
+        self.handler.emit(_make_record(
+            'src.sync_manager',
+            logging.INFO,
+            'Preparing ABS audio files for transcription' + ('x' * 500),
+        ))
+
+        result = maybe_send_diagnostics(
+            self.db,
+            force=True,
+            manual=True,
+            user_message="BookBridge can't download ABS audio files to transcript",
+        )
+
+        payload = mock_post.call_args.kwargs['json']
+        self.assertTrue(result['sent'])
+        self.assertEqual(payload['warnings'], [])
+        self.assertEqual(len(payload['recent_logs']), 1)
+        self.assertEqual(len(payload['recent_logs'][0]), 400)
+        self.assertIn(
+            'Preparing ABS audio files for transcription',
+            payload['recent_logs'][0],
+        )
+
+    @patch('src.services.diagnostics.requests.post')
     def test_concurrent_sends_serialize_snapshot_post_and_clear(self, mock_post):
         first_post_started = threading.Event()
         release_first_post = threading.Event()

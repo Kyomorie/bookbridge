@@ -41,6 +41,13 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Manual bug reports now include the recent logs needed to investigate them.**
+  A written report could previously arrive with no technical evidence whenever no
+  warning was buffered at that moment. Manual reports now attach up to 200 recent,
+  scrubbed INFO-and-higher log lines even when their warning list is empty. These
+  lines are shown only on the private report detail page and do not create anomaly
+  findings.
+
 - **Ebooks in an Audiobookshelf library are no longer offered as audiobooks to match.**
   If your Audiobookshelf holds ebooks alongside audiobooks, every one of those ebooks
   was being treated as an audiobook by the Suggestions scan, so it appeared as its own

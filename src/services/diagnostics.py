@@ -341,6 +341,7 @@ class DiagnosticsLogHandler(logging.Handler):
                 snapshot_keys[key] = entry['count']
             return {
                 'entries': entries_copy,
+                'recent_logs': [_truncate(line) for line in self._ring],
                 'dropped': self._dropped,
                 'window_start': self._window_start,
                 'taken_at': taken_at,
@@ -460,6 +461,7 @@ def build_diagnostics_payload(
     if manual:
         payload['manual'] = True
         payload['user_message'] = user_message
+        payload['recent_logs'] = list(snapshot.get('recent_logs', []))
     return payload
 
 
