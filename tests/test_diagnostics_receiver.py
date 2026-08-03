@@ -264,6 +264,17 @@ class TestPostDiagnostics(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(data["warnings_stored"], 0)
 
+    def test_rejects_non_object_warning_entries(self) -> None:
+        payload = _valid_payload(warnings=[None])
+
+        resp = self._client.post("/api/v1/diagnostics", json=payload)
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.get_json(), {
+            "ok": False,
+            "error": "warnings entries must be objects",
+        })
+
 
 class TestExport(unittest.TestCase):
     def setUp(self) -> None:
@@ -1896,10 +1907,12 @@ class TestSubmissionSchemaUpgrade(unittest.TestCase):
                 }
                 row = dict(conn.execute("SELECT * FROM batches").fetchone())
             self.assertTrue({
-                "is_manual", "user_message", "response_md", "response_at",
+                "is_manual", "user_message", "recent_logs_json", "response_md",
+                "response_at",
             }.issubset(columns))
             self.assertEqual(row["is_manual"], 0)
             self.assertIsNone(row["user_message"])
+            self.assertIsNone(row["recent_logs_json"])
             self.assertIsNone(row["response_md"])
             self.assertIsNone(row["response_at"])
 
@@ -1972,6 +1985,75 @@ class TestManualSubmissions(unittest.TestCase):
         self.assertNotIn("```", row["user_message"])
         self.assertNotIn("](", row["user_message"])
         self.assertIn(r"\# heading", row["user_message"])
+
+    def test_comment_only_report_stores_recent_logs_without_findings(self) -> None:
+        """Report #631 keeps recent logs separate from anomaly aggregation."""
+        os.environ["DIAG_READ_TOKEN"] = "maintainer-token"
+        response = self._post(_valid_payload(
+            manual=True,
+            user_message="BookBridge can't download ABS audio files to transcript",
+            warnings=[],
+            recent_logs=[
+                "2026-08-01T19:06:00+00:00 INFO src.sync_manager: Preparing ABS audio",
+                "2026-08-01T19:06:01+00:00 INFO src.api.api_clients: <script>private</script>",
+            ],
+        ))
+        self.assertEqual(response.status_code, 200)
+        submission_id = response.get_json()["batch_id"]
+
+        with sqlite3.connect(self._db_path) as conn:
+            stored = conn.execute(
+                "SELECT recent_logs_json FROM batches WHERE id = ?",
+                (submission_id,),
+            ).fetchone()[0]
+            warning_count = conn.execute("SELECT COUNT(*) FROM warnings").fetchone()[0]
+            finding_count = conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
+
+        self.assertEqual(len(json.loads(stored)), 2)
+        self.assertEqual(warning_count, 0)
+        self.assertEqual(finding_count, 0)
+
+        listing = self._client.get(
+            "/api/v1/submissions", headers=self._admin_headers(),
+        ).get_json()["submissions"][0]
+        self.assertNotIn("recent_logs", listing)
+
+        detail = self._client.get(
+            f"/api/v1/submissions/{submission_id}",
+            headers=self._admin_headers(),
+        ).get_json()
+        self.assertEqual(len(detail["recent_logs"]), 2)
+
+        exported = self._client.get(
+            "/api/v1/export", headers=self._admin_headers(),
+        ).get_json()["batches"][0]
+        self.assertNotIn("recent_logs_json", exported)
+
+    def test_recent_logs_must_be_a_list_of_strings(self) -> None:
+        bad_list = self._post(_valid_payload(
+            manual=True, warnings=[], recent_logs="not-a-list",
+        ))
+        self.assertEqual(bad_list.status_code, 400)
+
+        bad_line = self._post(_valid_payload(
+            manual=True, warnings=[], recent_logs=[{"not": "a string"}],
+        ))
+        self.assertEqual(bad_line.status_code, 400)
+
+        capped = self._post(_valid_payload(
+            manual=True,
+            warnings=[],
+            recent_logs=[f"line {index} " + ("x" * 500) for index in range(205)],
+        ))
+        self.assertEqual(capped.status_code, 200)
+        with sqlite3.connect(self._db_path) as conn:
+            stored = conn.execute(
+                "SELECT recent_logs_json FROM batches WHERE id = ?",
+                (capped.get_json()["batch_id"],),
+            ).fetchone()[0]
+        recent_logs = json.loads(stored)
+        self.assertEqual(len(recent_logs), 200)
+        self.assertTrue(all(len(line) == 400 for line in recent_logs))
 
     def test_manual_and_automatic_quotas_are_independent(self) -> None:
         iid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

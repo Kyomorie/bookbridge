@@ -20,6 +20,7 @@ class AudioResult:
     source_id: str
     title: str
     subtitle: str = ""
+    series_label: str = ""
     authors: str = ""
     cover_url: str = ""
     duration: Optional[float] = None
@@ -27,6 +28,40 @@ class AudioResult:
     provider_book_id: Optional[str] = None
     provider_file_id: Optional[str] = None
     path: str = ""
+
+
+def _series_label(series_name: str | None, series_index: str | int | float | None, title: str) -> str:
+    """Format a series label for display.
+
+    When there is an index and the series name equals the book title
+    (case-insensitive, ignoring surrounding whitespace), use "Book {index}"
+    to avoid redundancy. When there is an index and the name differs, use
+    "{seriesName} #{index}". When there is a name but no usable index, use
+    the name alone. Otherwise return an empty string.
+    """
+    name = (series_name or "").strip()
+    if not name:
+        return ""
+    idx: int | None = None
+    if series_index is not None:
+        try:
+            if isinstance(series_index, float):
+                if series_index.is_integer():
+                    idx = int(series_index)
+            elif isinstance(series_index, int):
+                idx = series_index
+            else:
+                s = str(series_index).strip()
+                if s.endswith(".0"):
+                    s = s[:-2]
+                idx = int(float(s))
+        except (TypeError, ValueError):
+            idx = None
+    if idx is not None:
+        if name.lower() == title.strip().lower():
+            return f"Book {idx}"
+        return f"{name} #{idx}"
+    return name
 
 
 class AudioSourceAdapter:
@@ -173,6 +208,7 @@ class ABSAudioSourceAdapter(AudioSourceAdapter):
                     title = self._get_title(item)
             authors = self._get_authors(item)
             subtitle = metadata.get("subtitle") or ""
+            series_label = (metadata.get("seriesName") or "").strip()
             cover_url = self.get_cover_url(item_id) or ""
             duration = media.get("duration")
             results.append(
@@ -181,6 +217,7 @@ class ABSAudioSourceAdapter(AudioSourceAdapter):
                     source_id=item_id,
                     title=title,
                     subtitle=subtitle,
+                    series_label=series_label,
                     authors=authors,
                     cover_url=cover_url,
                     duration=float(duration) if duration is not None else None,
@@ -197,7 +234,7 @@ class ABSAudioSourceAdapter(AudioSourceAdapter):
     def get_cover_url(self, source_id: str) -> Optional[str]:
         if not self.abs_client.is_configured():
             return None
-        return f"{self.abs_client.base_url}/api/items/{source_id}/cover?token={self.abs_client.token}"
+        return f"/api/cover-proxy/{source_id}"
 
     def get_audio_files(self, source_id: str, bridge_key: str | None = None) -> list[dict]:
         return self.abs_client.get_audio_files(source_id)
@@ -337,12 +374,29 @@ class BookLoreAudioSourceAdapter(AudioSourceAdapter):
             duration = self._extract_duration_seconds(info)
             title = book.get("title") or book.get("fileName") or f"Grimmory {book_id}"
             provider_file_id = info.get("bookFileId") or book.get("bookFileId")
+            subtitle = (book.get("subtitle") or "").strip()
+            series_name_raw = (
+                book.get("seriesName")
+                or book.get("series_name")
+                or book.get("series")
+            )
+            if isinstance(series_name_raw, dict):
+                series_name = series_name_raw.get("name")
+            else:
+                series_name = series_name_raw
+            series_index = (
+                book.get("seriesNumber")
+                or book.get("seriesIndex")
+                or book.get("series_number")
+            )
+            series_label = _series_label(series_name, series_index, title)
             results.append(
                 AudioResult(
                     source="BookLore",
                     source_id=str(book_id),
                     title=title,
-                    subtitle=book.get("subtitle") or "",
+                    subtitle=subtitle,
+                    series_label=series_label,
                     authors=self._format_authors(book),
                     cover_url=self.get_cover_url(str(book_id)) or "",
                     duration=duration,
@@ -664,11 +718,17 @@ class BookOrbitAudioSourceAdapter(AudioSourceAdapter):
                 continue
             title = book.get("title") or f"BookOrbit {book_id}"
             duration = book.get("duration_seconds")
+            subtitle = (book.get("subtitle") or "").strip()
+            series_name = book.get("seriesName")
+            series_index = book.get("seriesIndex")
+            series_label = _series_label(series_name, series_index, title)
             results.append(
                 AudioResult(
                     source="BookOrbit",
                     source_id=str(book_id),
                     title=title,
+                    subtitle=subtitle,
+                    series_label=series_label,
                     authors=book.get("authors") or "",
                     cover_url=self.get_cover_url(str(book_id)) or "",
                     duration=float(duration) if duration else None,

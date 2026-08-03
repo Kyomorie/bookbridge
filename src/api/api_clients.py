@@ -158,23 +158,45 @@ class ABSClient:
         except (TypeError, ValueError):
             return False
 
+    @staticmethod
+    def _filter_audiobooks_or_fallback(items: list[dict]) -> list[dict]:
+        """Filter items to keep only those with audio metadata.
+
+        If the raw list is non-empty but filtering would remove everything,
+        return the unfiltered list instead. This guards against servers that
+        omit audio metadata entirely, which would otherwise make a user's
+        entire library vanish from Add Book and Suggestions.
+        """
+        if not items:
+            return []
+        filtered = [item for item in items if ABSClient._item_has_audio(item)]
+        if filtered:
+            return filtered
+        logger.debug(
+            "ABS: library listing had %d item(s) but none carried audio metadata; "
+            "returning the unfiltered list as a safety fallback",
+            len(items),
+        )
+        return items
+
     def get_audiobooks_for_lib(self, lib: str):
-        if not self.is_configured(): return []
+        if not self.is_configured():
+            return []
         self._update_session_headers()
         items_url = f"{self.base_url}/api/libraries/{lib}/items"
 
         # Preferred path for dedicated audiobook libraries.
         r_items = self.session.get(items_url, params={"mediaType": "audiobook"}, timeout=self.timeout)
         if r_items.status_code == 200:
-            filtered = r_items.json().get('results', []) or []
-            if filtered:
-                return filtered
+            items = r_items.json().get('results', []) or []
+            if items:
+                return self._filter_audiobooks_or_fallback(items)
 
         # Fallback for ABS "book" libraries where audio and ebook content are mixed.
         r_fallback = self.session.get(items_url, timeout=self.timeout)
         if r_fallback.status_code == 200:
             all_items = r_fallback.json().get('results', []) or []
-            return [item for item in all_items if self._item_has_audio(item)]
+            return self._filter_audiobooks_or_fallback(all_items)
 
         logger.warning(f"ABS: Failed to fetch audiobooks for library '{lib}'")
         return []
@@ -288,7 +310,10 @@ class ABSClient:
             return []
 
     def search_ebooks(self, query):
-        """Search for ebooks across all book libraries."""
+        """Search for ebooks across all book libraries.
+
+        Results carry "subtitle" and "seriesName" when ABS supplies them.
+        """
         if not self.is_configured(): return []
         self._update_session_headers()
         results = []
@@ -338,7 +363,9 @@ class ABSClient:
                                     "author": author,
                                     "libraryId": lib['id'],
                                     "source": "ABS",
-                                    "ext": "epub"
+                                    "ext": "epub",
+                                    "subtitle": metadata.get('subtitle'),
+                                    "seriesName": metadata.get('seriesName')
                                 })
                     else:
                         logger.debug(f"   No items found in library '{lib_name}'")

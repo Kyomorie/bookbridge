@@ -53,17 +53,19 @@ from src.utils.storyteller_transcript import StorytellerTranscript
 from src.utils.kosync_headers import kosync_request_kwargs
 
 def _reconfigure_logging():
-    """Force update of root logger level based on env var."""
+    """Force update of root logger and all handler levels based on env var."""
     try:
-            new_level_str = os.environ.get('LOG_LEVEL', 'INFO').upper()
-            new_level = getattr(logging, new_level_str, logging.INFO)
+        new_level_str = os.environ.get('LOG_LEVEL', 'INFO').upper()
+        new_level = getattr(logging, new_level_str, logging.INFO)
 
-            root = logging.getLogger()
-            root.setLevel(new_level)
+        root = logging.getLogger()
+        root.setLevel(new_level)
+        for handler in root.handlers:
+            handler.setLevel(new_level)
 
-            logger.info(f"📝 Logging level updated to {new_level_str}")
+        logger.info(f"📝 Logging level updated to {new_level_str}")
     except Exception as e:
-            logger.warning(f"⚠️ Failed to reconfigure logging: {e}")
+        logger.warning(f"⚠️ Failed to reconfigure logging: {e}")
 
 # ---------------- APP SETUP ----------------
 container = None
@@ -1652,6 +1654,14 @@ def get_kosync_id_for_ebook(ebook_filename, booklore_id=None, original_filename=
                     kosync_id = container.ebook_parser().get_kosync_id_from_bytes(ebook_filename, content)
                     if kosync_id:
                         logger.debug(f"🔍 Computed KOSync ID from BookOrbit download: '{kosync_id}'")
+                        if cached_path:
+                            try:
+                                if not epub_cache.exists():
+                                    epub_cache.mkdir(parents=True, exist_ok=True)
+                                cached_path.write_bytes(content)
+                                logger.info(f"   ✅ Cached BookOrbit download to '{cached_path}'")
+                            except Exception as cache_err:
+                                logger.warning(f"⚠️ Failed to cache BookOrbit download: {cache_err}")
                         return kosync_id
         except Exception as e:
             logger.warning(f"⚠️ Failed to get KOSync ID from BookOrbit: {e}")
@@ -2260,6 +2270,65 @@ class EbookResult:
         return self.name
 
 
+def _ebook_edition_label(book: dict) -> str:
+    """Return a short edition label that distinguishes same-titled books.
+
+    Priority:
+    1. Non-empty subtitle -> return it stripped.
+    2. Series name present:
+       - If series index exists and series name (case/whitespace-insensitive)
+         equals the book title, return "Book {index}".
+       - If series index exists and series name differs from title, return
+         "{series_name} #{index}".
+       - If only series name, return it.
+    3. Otherwise empty string.
+
+    Index is coerced from int/float/str, dropping a trailing .0. Any unparseable
+    index is treated as absent. All field access is defensive; never raises.
+    """
+    if not isinstance(book, dict):
+        return ""
+
+    subtitle = (book.get("subtitle") or "").strip()
+    if subtitle:
+        return subtitle
+
+    series_name = (book.get("seriesName") or "").strip()
+    if not series_name:
+        return ""
+
+    title = (book.get("title") or "").strip()
+
+    # Coerce series index defensively
+    raw_index = book.get("seriesIndex")
+    index_str = None
+    if raw_index is not None:
+        try:
+            if isinstance(raw_index, float):
+                if raw_index.is_integer():
+                    index_str = str(int(raw_index))
+                else:
+                    index_str = str(raw_index)
+            elif isinstance(raw_index, int):
+                index_str = str(raw_index)
+            else:
+                # str or other: try to parse as float then drop .0
+                parsed = float(str(raw_index).strip())
+                if parsed.is_integer():
+                    index_str = str(int(parsed))
+                else:
+                    index_str = str(parsed)
+        except (ValueError, TypeError):
+            index_str = None
+
+    if index_str:
+        if series_name.lower() == title.lower():
+            return f"Book {index_str}"
+        return f"{series_name} #{index_str}"
+
+    return series_name
+
+
 def get_searchable_audiobooks(search_term):
     """Get audiobook results from all configured audio providers."""
     adapters = {}
@@ -2417,6 +2486,12 @@ def get_suggestion_audiobooks():
 
         title = (item.title or item.display_name or bridge_key).strip()
         author = (item.authors or "").strip()
+        cover_url = _browser_cover_url(
+            item.cover_url,
+            audio_source=audio_source,
+            audio_source_id=source_id,
+            abs_id=bridge_key,
+        )
         records.append(
             {
                 "bridge_key": bridge_key,
@@ -2425,7 +2500,7 @@ def get_suggestion_audiobooks():
                 "audio_title": title,
                 "audio_author": author,
                 "audio_duration": item.duration,
-                "audio_cover_url": item.cover_url or "",
+                "audio_cover_url": cover_url,
                 "audio_path": item.path or "",
                 "audio_provider_book_id": str(item.provider_book_id or source_id),
                 "audio_provider_file_id": str(item.provider_file_id or ""),
@@ -2434,7 +2509,7 @@ def get_suggestion_audiobooks():
                 "title": title,
                 "authors": author,
                 "duration": item.duration,
-                "cover_url": item.cover_url or "",
+                "cover_url": cover_url,
             }
         )
 
@@ -2494,7 +2569,7 @@ def get_searchable_ebooks(search_term):
                         results.append(EbookResult(
                             name=fname,
                             title=b.get('title'),
-                            subtitle=b.get('subtitle'),
+                            subtitle=_ebook_edition_label(b),
                             authors=b.get('authors'),
                             booklore_id=b.get('id'),
                             path=b.get('filePath') or b.get('filepath') or b.get('path'),
@@ -2533,6 +2608,7 @@ def get_searchable_ebooks(search_term):
                     path=b.get('filePath') or b.get('filepath') or b.get('path'),
                     source='BookOrbit',
                     source_id=b.get('id'),
+                    subtitle=_ebook_edition_label(b),
                 ))
         except Exception as e:
             logger.warning(f"⚠️ BookOrbit search failed: {e}")
@@ -2582,7 +2658,8 @@ def get_searchable_ebooks(search_term):
                                     title=ab.get('title'),
                                     authors=ab.get('author'),
                                     source='ABS',
-                                    source_id=ab.get('id')
+                                    source_id=ab.get('id'),
+                                    subtitle=_ebook_edition_label(ab)
                                 ))
                                 found_filenames.add(fname.lower())
                                 if ab.get('title'):
@@ -2962,12 +3039,7 @@ def _create_or_update_audio_only_mapping(
     clients = uc()
     default_cover = None
     if audio_source == "ABS":
-        abs_client = getattr(clients, "abs_client", None)
-        if abs_client is not None and getattr(abs_client, "is_configured", lambda: False)():
-            default_cover = (
-                f"{abs_client.base_url}/api/items/{audio_source_id}/cover"
-                f"?token={abs_client.token}"
-            )
+        default_cover = f"/api/cover-proxy/{audio_source_id}"
     elif audio_source == "BookLore":
         default_cover = f"/api/booklore/audiobook-cover/{audio_source_id}"
     else:
@@ -3328,6 +3400,7 @@ def settings():
             'OLLAMA_LIBRARY_MATCH',
             'OLLAMA_EBOOK_TEXT_FALLBACK',
             'DIAGNOSTICS_OPT_IN',
+            'WHISPER_CPP_SEND_ORIGINAL',
         ]
 
         # Current settings in DB
@@ -4094,6 +4167,99 @@ def _dashboard_leader_service(leader_client: str | None) -> str | None:
     return None
 
 
+def _browser_cover_url(
+    raw_cover_url: str | None,
+    audio_source: str | None = None,
+    audio_source_id: str | None = None,
+    abs_id: str | None = None,
+) -> str:
+    """Convert any cover URL into a safe, same-origin BookBridge URL.
+
+    This is the single choke point that keeps source hostnames and API tokens
+    out of the browser (issue #353). It also neutralizes legacy
+    ``audio_cover_url`` values already saved in the database, so no migration
+    is needed.
+
+    Priority:
+    1. If ``raw_cover_url`` is a non-empty same-origin relative path (starts
+       with a single ``/`` but not ``//`` or ``/\\``), return it unchanged.
+       Backslashes are rejected because browsers normalize them to forward
+       slashes when resolving URLs, so ``/\\evil.example`` would resolve as a
+       protocol-relative cross-origin URL.
+    2. Otherwise derive a same-origin proxy route from the source:
+       - BookLore with ``audio_source_id`` -> ``/api/booklore/audiobook-cover/<id>``
+       - BookOrbit with ``audio_source_id`` -> ``/api/bookorbit/audiobook-cover/<id>``
+       - ABS or unset source with ``abs_id`` (preferred) or ``audio_source_id`` ->
+         ``/api/cover-proxy/<id>`` (only for non-library audio sources)
+    3. If nothing can be derived, return an empty string.
+
+    An ebook-only mapping has no Audiobookshelf item, so its synthetic
+    ``ebook-<hash>`` key must not be turned into a cover-proxy URL that can only
+    404. Legacy rows whose ``audio_source`` is unset but whose id is a real ABS
+    item are still served, so the test is on the id, not the source.
+    """
+    raw = (raw_cover_url or "").strip()
+    if raw.startswith("/") and not raw.startswith("//") and not raw.startswith("/\\"):
+        return raw
+
+    source = (audio_source or "").strip()
+    src_id = (audio_source_id or "").strip()
+    aid = (abs_id or "").strip()
+
+    if source == "BookLore" and src_id:
+        return f"/api/booklore/audiobook-cover/{src_id}"
+    if source == "BookOrbit" and src_id:
+        return f"/api/bookorbit/audiobook-cover/{src_id}"
+    if source not in _LIBRARY_AUDIO_SOURCES:
+        proxy_id = aid or src_id
+        if proxy_id and not _is_synthetic_bridge_key(proxy_id):
+            return f"/api/cover-proxy/{proxy_id}"
+    return ""
+
+
+def _is_synthetic_bridge_key(candidate: str) -> bool:
+    """True when an id is a bridge-minted key rather than an ABS item id.
+
+    Ebook-only mappings use ``ebook-<kosync_doc_id[:16]>`` (and ``ebook:<key>``
+    in the match queue); library audiobooks use ``booklore:``/``bookorbit:``.
+    None of these can be fetched from Audiobookshelf.
+    """
+    key = (candidate or "").strip().lower()
+    if key.startswith(("ebook-", "ebook:")):
+        return True
+    return any(key.startswith(f"{prefix}:") for prefix in _AUDIO_BRIDGE_PREFIXES)
+
+
+def _sanitize_cover_urls(entries: list) -> list:
+    """Return copies of suggestion/queue dicts with browser-safe cover URLs.
+
+    Suggestion and match-queue entries can be restored from a scan cache
+    persisted by an older build, so they may still carry tokenized source URLs
+    (issue #353). The originals are left untouched because they are shared with
+    the session state and the on-disk cache.
+    """
+    sanitized = []
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            sanitized.append(entry)
+            continue
+        keys = [key for key in ("audio_cover_url", "cover_url") if key in entry]
+        if not keys:
+            sanitized.append(entry)
+            continue
+        safe_cover = _browser_cover_url(
+            entry.get("audio_cover_url") or entry.get("cover_url"),
+            audio_source=entry.get("audio_source"),
+            audio_source_id=entry.get("audio_source_id"),
+            abs_id=entry.get("bridge_key") or entry.get("abs_id"),
+        )
+        copied = dict(entry)
+        for key in keys:
+            copied[key] = safe_cover
+        sanitized.append(copied)
+    return sanitized
+
+
 def _build_dashboard_mapping(
     book,
     states_by_book,
@@ -4313,14 +4479,15 @@ def _build_dashboard_mapping(
     mapping["series_name"] = getattr(book, "series_name", None) or None
     mapping["series_sequence"] = getattr(book, "series_sequence", None)
 
-    if mapping.get("audio_cover_url"):
-        mapping["cover_url"] = mapping["audio_cover_url"]
-    elif mapping.get("audio_source") == "BookLore" and mapping.get("audio_source_id"):
-        mapping["cover_url"] = f"/api/booklore/audiobook-cover/{mapping['audio_source_id']}"
-    elif mapping.get("audio_source") == "BookOrbit" and mapping.get("audio_source_id"):
-        mapping["cover_url"] = f"/api/bookorbit/audiobook-cover/{mapping['audio_source_id']}"
-    elif book.abs_id and mapping.get("audio_source") not in _LIBRARY_AUDIO_SOURCES:
-        mapping["cover_url"] = f"{manager.abs_client.base_url}/api/items/{book.abs_id}/cover?token={manager.abs_client.token}"
+    safe_cover = _browser_cover_url(
+        mapping.get("audio_cover_url"),
+        audio_source=mapping.get("audio_source"),
+        audio_source_id=mapping.get("audio_source_id"),
+        abs_id=book.abs_id,
+    )
+    if safe_cover:
+        mapping["cover_url"] = safe_cover
+    mapping["audio_cover_url"] = safe_cover
 
     reading_stats = reading_stats_by_book.get(book.abs_id)
     if reading_stats:
@@ -5386,7 +5553,7 @@ def match():
             audio_source="ABS",
             audio_source_id=abs_id,
             audio_title=abs_title,
-            audio_cover_url=f"{clients.abs_client.base_url}/api/items/{abs_id}/cover?token={clients.abs_client.token}",
+            audio_cover_url=f"/api/cover-proxy/{abs_id}",
             audio_duration=manager.get_duration(selected_ab),
             audio_provider_book_id=abs_id,
             ebook_filename=ebook_filename,
@@ -6226,10 +6393,7 @@ def _queue_item_from_match_form(clients) -> "dict | None":
         )
         if audio_duration is None and selected_ab:
             audio_duration = manager.get_duration(selected_ab)
-        audio_cover_url = audio_cover_url or (
-            f"{clients.abs_client.base_url}/api/items/{audio_source_id}/cover"
-            f"?token={clients.abs_client.token}"
-        )
+        audio_cover_url = audio_cover_url or f"/api/cover-proxy/{audio_source_id}"
     elif audio_source in _LIBRARY_AUDIO_SOURCES and audio_source_id:
         bridge_key = _build_bridge_key(audio_source, audio_source_id)
         audio_title = audio_title or (
@@ -6250,6 +6414,13 @@ def _queue_item_from_match_form(clients) -> "dict | None":
 
     if not bridge_key or not (ebook_filename or storyteller_uuid or audio_only):
         return None
+    # A submitted form field can still carry a legacy absolute cover URL.
+    safe_cover_url = _browser_cover_url(
+        audio_cover_url,
+        audio_source=audio_source,
+        audio_source_id=audio_source_id,
+        abs_id=bridge_key if audio_source else None,
+    ) or None
     return {
         'bridge_key': bridge_key,
         'abs_id': bridge_key,
@@ -6259,8 +6430,8 @@ def _queue_item_from_match_form(clients) -> "dict | None":
         'abs_title': audio_title,
         'audio_duration': audio_duration,
         'duration': audio_duration,
-        'audio_cover_url': audio_cover_url,
-        'cover_url': audio_cover_url,
+        'audio_cover_url': safe_cover_url,
+        'cover_url': safe_cover_url,
         'audio_provider_book_id': audio_provider_book_id,
         'audio_provider_file_id': audio_provider_file_id,
         'ebook_filename': ebook_filename,
@@ -6648,6 +6819,42 @@ def _save_persisted_suggestions_cache(payload):
                 pass
 
 
+def _rehydrate_suggestions_state_from_cache(suggestions_state: dict) -> dict:
+    """Rehydrate in-memory suggestions state from the persisted per-user cache.
+
+    If the state already has scan results (non-empty scan_cache_by_abs), the
+    in-memory state wins and the cache is not applied. Otherwise, loads the
+    persisted cache and populates the state with its contents, including
+    rebuilding scan_results sorted by top match score descending.
+    """
+    if not suggestions_state:
+        return suggestions_state
+
+    if suggestions_state.get('scan_cache_by_abs'):
+        return suggestions_state
+
+    persisted = _load_persisted_suggestions_cache()
+    cache_by_abs = persisted.get('scan_cache_by_abs', {}) or {}
+    if not cache_by_abs:
+        return suggestions_state
+
+    suggestions_state['scan_cache_by_abs'] = cache_by_abs
+    suggestions_state['scan_cache_no_match_abs_ids'] = persisted.get('scan_cache_no_match_abs_ids', []) or []
+    suggestions_state['scan_last_stats'] = persisted.get('scan_last_stats', {}) or {}
+    suggestions_state['scan_has_run'] = True
+    suggestions_state['updated_at'] = time.time()
+
+    suggestions_list = list(cache_by_abs.values())
+    suggestions_list.sort(
+        key=lambda s: (s.get('matches', [{}])[0].get('score', 0) if s.get('matches') else 0),
+        reverse=True,
+    )
+    suggestions_state['scan_results'] = suggestions_list
+
+    logger.info(f"♻️ Restored {len(suggestions_list)} cached suggestion(s) from the persisted scan cache")
+    return suggestions_state
+
+
 def _match_queue_file_path():
     return DATA_DIR / MATCH_QUEUE_FILE_NAME
 
@@ -7019,11 +7226,37 @@ def suggestions_page():
 
         elif action == 'add_many_to_queue':
             keys = request.form.getlist('bridge_keys')
+            suggestions_state = _rehydrate_suggestions_state_from_cache(suggestions_state)
             cache_by_abs = suggestions_state.get('scan_cache_by_abs', {}) or {}
+
+            requested = len(keys)
+            added = 0
+            skipped_missing = 0
+            skipped_no_item = 0
+            already_queued = 0
+
             for key in keys:
-                item = _queue_item_from_suggestion(cache_by_abs.get(key))
-                if item:
-                    _match_queue_add(item)
+                suggestion = cache_by_abs.get(key)
+                if not suggestion:
+                    skipped_missing += 1
+                    continue
+                item = _queue_item_from_suggestion(suggestion)
+                if not item:
+                    skipped_no_item += 1
+                    continue
+                if _match_queue_add(item):
+                    added += 1
+                else:
+                    already_queued += 1
+
+            if requested > 0 and added == 0 and skipped_missing == requested:
+                logger.warning(
+                    f"⚠️ add_many_to_queue: {requested} key(s) requested but scan cache had no entry for any of them"
+                )
+            else:
+                logger.info(
+                    f"✅ add_many_to_queue: requested={requested} added={added} skipped_missing={skipped_missing} skipped_no_item={skipped_no_item} already_queued={already_queued}"
+                )
             return _match_queue_response()
 
         elif action == 'forge_and_match_queue':
@@ -7075,6 +7308,9 @@ def suggestions_page():
                     SUGGESTIONS_SCAN_JOBS.pop(job_id, None)
             else:
                 scan_in_progress = True
+
+    if not scan_in_progress:
+        suggestions_state = _rehydrate_suggestions_state_from_cache(suggestions_state)
 
     ignored_source_ids = _get_ignored_suggestion_source_ids()
     scan_results = suggestions_state.get('scan_results', [])
@@ -7200,8 +7436,8 @@ def suggestions_page():
 
     return render_template(
         'suggestions.html',
-        suggestions=scan_results,
-        queue=_load_match_queue(),
+        suggestions=_sanitize_cover_urls(scan_results),
+        queue=_sanitize_cover_urls(_load_match_queue()),
         scan_has_run=bool(suggestions_state.get('scan_has_run', False)),
         scan_in_progress=scan_in_progress,
         scan_error=scan_error,
@@ -9163,8 +9399,12 @@ def proxy_cover(abs_id):
     if not _user_may_modify_book(user, abs_id):
         return _forbidden_book_response(json_response=True)
     try:
-        token = container.abs_client().token
-        base_url = container.abs_client().base_url
+        abs_client = uc().abs_client
+        if not abs_client or not abs_client.is_configured():
+            # No per-user ABS credentials: serve from the admin/global library.
+            abs_client = container.abs_client()
+        token = abs_client.token
+        base_url = abs_client.base_url
         if not token or not base_url:
             return "ABS not configured", 500
 
@@ -9467,6 +9707,9 @@ def _run_test_connection(service: str, payload: dict):
             _normalize_test_url(data.get('OLLAMA_URL')),
             _coerce_test_str(data.get('OLLAMA_EMBED_MODEL')),
             _coerce_test_str(data.get('OLLAMA_CHAT_MODEL')),
+        ),
+        'whispercpp': lambda data: _test_whispercpp(
+            _normalize_test_url(data.get('WHISPER_CPP_URL')),
         ),
     }
     tester = testers.get(service)
@@ -9951,6 +10194,21 @@ def _test_openai_compatible(provider: str, base_url: str, api_key: str, embed_mo
         "ok": True,
         "message": f"Connected. {embed_model} embeddings ready, {chat_model} judge ready",
     }
+
+
+def _test_whispercpp(url: str) -> dict:
+    """Test whisper.cpp / OpenAI-compatible transcription server reachability."""
+    if not url:
+        return {"ok": False, "message": "Missing Whisper.cpp server URL"}
+
+    try:
+        resp = requests.get(url, timeout=5)
+    except requests.exceptions.RequestException as e:
+        return {"ok": False, "message": _test_conn_error(e)}
+
+    # The transcription endpoint typically only accepts POST, so any HTTP
+    # response (including 404/405 on GET) proves the server is reachable.
+    return {"ok": True, "message": f"Server reachable at {url} (HTTP {resp.status_code})"}
 
 
 def _test_ollama(enabled: bool, url: str, embed_model: str, chat_model: str) -> dict:

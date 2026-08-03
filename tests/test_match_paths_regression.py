@@ -1023,6 +1023,236 @@ class TestMatchPathsRegression(unittest.TestCase):
         self.assertEqual(exact_item["ebook_source_path"], "/books/x/exact.epub")
         self.assertEqual(exact_item["storyteller_uuid"], "")
 
+    def test_suggestions_add_many_to_queue_uses_persisted_cache_after_restart(self):
+        # #351 regression: bulk add must rehydrate from the persisted per-user cache
+        # when the in-memory SUGGESTIONS_STATE_STORE is empty (container restart,
+        # stale open tab). The handler sets a stale state_id in the session that
+        # has no entry in the store, then posts action=add_many_to_queue.
+        with self.client.session_transaction() as session_data:
+            session_data["suggestions_state_id"] = "state-stale-restart"
+
+        # Seed ONLY the persisted cache (global scope) with two 100-score suggestions.
+        # The in-memory store remains empty, simulating a process restart.
+        cache_payload = {
+            "scan_cache_by_abs": {
+                "ab-1": {
+                    "bridge_key": "ab-1",
+                    "abs_id": "ab-1",
+                    "audio_source": "ABS",
+                    "audio_source_id": "ab-1",
+                    "audio_title": "Cached Exact One",
+                    "audio_duration": 3600,
+                    "audio_cover_url": "",
+                    "matches": [{
+                        "ebook_filename": "cached_exact_one.epub",
+                        "display_name": "Cached Exact One",
+                        "source": "Grimmory",
+                        "source_id": "g-10",
+                        "source_path": "/books/cached_exact_one.epub",
+                        "score": 100.0,
+                        "match_reason": "same_folder",
+                    }],
+                },
+                "ab-2": {
+                    "bridge_key": "ab-2",
+                    "abs_id": "ab-2",
+                    "audio_source": "ABS",
+                    "audio_source_id": "ab-2",
+                    "audio_title": "Cached Exact Two",
+                    "audio_duration": 5400,
+                    "audio_cover_url": "",
+                    "matches": [{
+                        "ebook_filename": "cached_exact_two.epub",
+                        "display_name": "Cached Exact Two",
+                        "source": "Grimmory",
+                        "source_id": "g-11",
+                        "source_path": "/books/cached_exact_two.epub",
+                        "score": 100.0,
+                        "match_reason": "same_folder",
+                    }],
+                },
+            },
+            "scan_cache_no_match_abs_ids": [],
+            "scan_last_stats": {},
+            "updated_at": time.time(),
+        }
+        web_server._save_persisted_suggestions_cache(cache_payload)
+
+        response = self.client.post(
+            "/suggestions",
+            data={"action": "add_many_to_queue", "bridge_keys": ["ab-1", "ab-2"]},
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        self.assertEqual(response.status_code, 200)
+
+        queue = web_server._load_match_queue()
+        self.assertEqual({item["bridge_key"] for item in queue}, {"ab-1", "ab-2"})
+        item1 = next(i for i in queue if i["bridge_key"] == "ab-1")
+        self.assertEqual(item1["ebook_filename"], "cached_exact_one.epub")
+        self.assertEqual(item1["ebook_source"], "Grimmory")
+        self.assertEqual(item1["ebook_source_path"], "/books/cached_exact_one.epub")
+        item2 = next(i for i in queue if i["bridge_key"] == "ab-2")
+        self.assertEqual(item2["ebook_filename"], "cached_exact_two.epub")
+        self.assertEqual(item2["ebook_source"], "Grimmory")
+        self.assertEqual(item2["ebook_source_path"], "/books/cached_exact_two.epub")
+
+    def test_suggestions_add_many_to_queue_prefers_live_state_over_persisted_cache(self):
+        # #351 fix: rehydrate must never clobber a fresh in-memory scan. Seed both
+        # an in-memory state and a persisted cache for the same bridge key with
+        # DIFFERENT ebook matches; the live state should win.
+        with self.client.session_transaction() as session_data:
+            session_data["suggestions_state_id"] = "state-live-wins"
+
+        # In-memory state has ab-1 pointing at ebook A.
+        with web_server.SUGGESTIONS_STATE_LOCK:
+            web_server.SUGGESTIONS_STATE_STORE["state-live-wins"] = {
+                "scan_results": [],
+                "scan_cache_by_abs": {
+                    "ab-1": {
+                        "bridge_key": "ab-1",
+                        "abs_id": "ab-1",
+                        "audio_source": "ABS",
+                        "audio_source_id": "ab-1",
+                        "audio_title": "Live Scan Audio",
+                        "audio_duration": 3600,
+                        "audio_cover_url": "",
+                        "matches": [{
+                            "ebook_filename": "live_ebook.epub",
+                            "display_name": "Live Ebook",
+                            "source": "Grimmory",
+                            "source_id": "g-live",
+                            "source_path": "/books/live_ebook.epub",
+                            "score": 95.0,
+                            "match_reason": "fuzzy",
+                        }],
+                    },
+                },
+                "scan_cache_no_match_abs_ids": [],
+                "scan_last_stats": {},
+                "scan_has_run": True,
+                "updated_at": time.time(),
+            }
+
+        # Persisted cache has ab-1 pointing at a DIFFERENT ebook B.
+        cache_payload = {
+            "scan_cache_by_abs": {
+                "ab-1": {
+                    "bridge_key": "ab-1",
+                    "abs_id": "ab-1",
+                    "audio_source": "ABS",
+                    "audio_source_id": "ab-1",
+                    "audio_title": "Cached Audio",
+                    "audio_duration": 3600,
+                    "audio_cover_url": "",
+                    "matches": [{
+                        "ebook_filename": "cached_ebook.epub",
+                        "display_name": "Cached Ebook",
+                        "source": "Grimmory",
+                        "source_id": "g-cached",
+                        "source_path": "/books/cached_ebook.epub",
+                        "score": 100.0,
+                        "match_reason": "same_folder",
+                    }],
+                },
+            },
+            "scan_cache_no_match_abs_ids": [],
+            "scan_last_stats": {},
+            "updated_at": time.time(),
+        }
+        web_server._save_persisted_suggestions_cache(cache_payload)
+
+        response = self.client.post(
+            "/suggestions",
+            data={"action": "add_many_to_queue", "bridge_keys": ["ab-1"]},
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        self.assertEqual(response.status_code, 200)
+
+        queue = web_server._load_match_queue()
+        self.assertEqual(len(queue), 1)
+        self.assertEqual(queue[0]["bridge_key"], "ab-1")
+        # The queued item must carry the LIVE (in-memory) ebook, not the cached one.
+        self.assertEqual(queue[0]["ebook_filename"], "live_ebook.epub")
+        self.assertEqual(queue[0]["ebook_source"], "Grimmory")
+        self.assertEqual(queue[0]["ebook_source_path"], "/books/live_ebook.epub")
+
+    def test_suggestions_get_rehydrates_scan_results_from_persisted_cache(self):
+        # #351 fix: a GET to /suggestions after restart must render the cached
+        # suggestions instead of the "No scan results yet" empty state.
+        # Seed only the persisted cache, leave the store empty, and do NOT set a
+        # state_id in the session (a fresh tab after restart gets a new state_id
+        # with an empty default state, which rehydrate will populate).
+        cache_payload = {
+            "scan_cache_by_abs": {
+                "ab-restored": {
+                    "bridge_key": "ab-restored",
+                    "abs_id": "ab-restored",
+                    "audio_source": "ABS",
+                    "audio_source_id": "ab-restored",
+                    "audio_title": "Restored After Restart",
+                    "audio_duration": 7200,
+                    "audio_cover_url": "/covers/ab-restored.jpg",
+                    "matches": [{
+                        "ebook_filename": "restored.epub",
+                        "display_name": "Restored Ebook",
+                        "source": "Grimmory",
+                        "source_id": "g-restored",
+                        "source_path": "/books/restored.epub",
+                        "score": 99.0,
+                        "match_reason": "same_folder",
+                    }],
+                },
+            },
+            "scan_cache_no_match_abs_ids": [],
+            "scan_last_stats": {"scanned_new": 1, "reused_cached": 0},
+            "updated_at": time.time(),
+        }
+        web_server._save_persisted_suggestions_cache(cache_payload)
+
+        # GET /suggestions with no prior state_id in session
+        response = self.client.get("/suggestions")
+        self.assertEqual(response.status_code, 200)
+
+        html = response.get_data(as_text=True)
+        # The audio title from the cached suggestion should appear in the rendered cards
+        self.assertIn("Restored After Restart", html)
+        # The bridge key should appear as data-abs-id on the card
+        self.assertIn('data-abs-id="ab-restored"', html)
+        # The empty-state copy must be absent
+        self.assertNotIn("No scan results yet", html)
+        self.assertNotIn("No suggestions found", html)
+
+    def test_suggestions_bulk_add_warns_when_scan_cache_is_empty(self):
+        # #351 diagnosability: when BOTH the in-memory store AND the persisted
+        # cache are empty, the bulk add must log a WARNING (not silently return
+        # 200 with an empty queue). This catches misconfigurations and stale tabs.
+        with self.client.session_transaction() as session_data:
+            session_data["suggestions_state_id"] = "state-empty-both"
+
+        # Ensure no persisted cache exists (setUp already clears DATA_DIR, but be explicit)
+        global_cache = web_server._suggestions_cache_file_path()
+        if global_cache.exists():
+            global_cache.unlink()
+
+        with self.assertLogs("src.web_server", level="WARNING") as cm:
+            response = self.client.post(
+                "/suggestions",
+                data={"action": "add_many_to_queue", "bridge_keys": ["ab-missing"]},
+                headers={"X-Requested-With": "XMLHttpRequest"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        # Queue must remain empty
+        queue = web_server._load_match_queue()
+        self.assertEqual(queue, [])
+
+        # A WARNING must be logged mentioning the missing cache entry
+        warning_msgs = [rec.getMessage() for rec in cm.records if rec.levelno >= 30]
+        self.assertTrue(
+            any("scan cache had no entry for any of them" in msg for msg in warning_msgs),
+            f"Expected warning about missing cache entries, got: {warning_msgs}",
+        )
+
     @patch("src.web_server.get_kosync_id_for_ebook", return_value="hash-sugg-forge-1")
     def test_suggestions_forge_and_match_queue(self, _mock_kosync):
         # The Suggestions page can run the same forge/match-all path as Add Book, so the

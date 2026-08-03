@@ -518,6 +518,30 @@ class ReportsDashboardTestCase(unittest.TestCase):
         self.assertIn('href="/findings/1"', html)
         self.assertIn('href="/findings/2"', html)
 
+    def test_comment_only_report_renders_escaped_recent_logs(self):
+        self.receiver.add("GET", "/api/v1/submissions/631", {
+            "id": 631,
+            "submitted_at": "2026-08-01T19:06:33Z",
+            "app_version": "7.3.2",
+            "user_message": "BookBridge can't download ABS audio files to transcript",
+            "response_md": None,
+            "linked_findings": [],
+            "recent_logs": [
+                "2026-08-01 INFO src.sync_manager: Preparing ABS audio",
+                "2026-08-01 INFO src.api.api_clients: <script>private</script>",
+            ],
+        })
+
+        response = self.client.get("/feedback/631")
+        html = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Recent logs", html)
+        self.assertIn("2 scrubbed log lines", html)
+        self.assertIn("Preparing ABS audio", html)
+        self.assertIn("&lt;script&gt;private&lt;/script&gt;", html)
+        self.assertNotIn("<script>private</script>", html)
+
     def test_feedback_index_only_lists_written_messages(self):
         self.receiver.add("GET", "/api/v1/submissions", {
             "submissions": [

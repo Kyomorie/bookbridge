@@ -595,6 +595,17 @@
                 {% endif %}
             </section>
 
+            {% if submission.recent_logs %}
+            <section class="panel">
+                <h2>Recent logs</h2>
+                <p class="muted small">Scrubbed INFO-and-higher lines captured automatically when the user sent this report.</p>
+                <details>
+                    <summary>{{ submission.recent_logs|length }} scrubbed log line{% if submission.recent_logs|length != 1 %}s{% endif %}</summary>
+                    <pre>{{ submission.recent_logs|join('\n') }}</pre>
+                </details>
+            </section>
+            {% endif %}
+
             {% if submission.message %}
             <section class="panel">
                 <h2>{% if submission.response_md %}Update response{% else %}Respond to user{% endif %}</h2>

@@ -202,6 +202,16 @@
         line-height: 1.3;
     }
 
+    /* Edition label on an audiobook card. .book-card has no padding of its own
+       (unlike .resource-card), so the label must match .book-title's inset. */
+    .book-card .resource-subtitle {
+        padding: 0 12px 12px;
+    }
+
+    .book-card .book-title:has(+ .resource-subtitle) {
+        padding-bottom: 4px;
+    }
+
     /* Resource Grid (square cards for Storyteller + Ebook) */
     .selection-grid-scroll {
         max-height: clamp(220px, 30vh, 360px);
@@ -983,6 +993,10 @@
                             {% set ab_src = 'Grimmory' if ab.source == 'BookLore' else ab.source %}
                             <span class="source-badge {{ ab_src.lower().replace(' ', '') }}">{{ ab_src }}</span>
                         </div>
+                        {% set edition_label = ab.subtitle or ab.series_label %}
+                        {% if edition_label %}
+                        <div class="resource-subtitle" title="{{ edition_label }}">{{ edition_label }}</div>
+                        {% endif %}
                     </div>
                     {% endfor %}
                 </div>

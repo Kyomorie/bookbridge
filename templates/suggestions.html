@@ -172,6 +172,7 @@
             <div class="bulk-actions" id="bulkActions">
                 <button type="button" class="btn btn-small btn-success" id="addAllExactBtn" onclick="addAllExact()">➕ Add all exact (<span id="exactCount">0</span>)</button>
                 <button type="button" class="btn btn-small btn-muted" id="addSelectedBtn" onclick="addSelectedSuggestions()" disabled>➕ Add selected (<span id="selectedCount">0</span>)</button>
+                <div id="bulkFeedback" class="submit-feedback block" aria-live="polite"></div>
             </div>
             {% endif %}
             <div class="left-wrap">
@@ -898,6 +899,11 @@
 
     async function addManyToQueue(keys) {
         if (!keys.length) return;
+        const bulkFeedback = document.getElementById('bulkFeedback');
+        if (bulkFeedback) {
+            bulkFeedback.classList.remove('show');
+            bulkFeedback.textContent = '';
+        }
         const formData = new FormData();
         formData.append('action', 'add_many_to_queue');
         keys.forEach((key) => formData.append('bridge_keys', key));
@@ -912,11 +918,36 @@
             const queueList = document.getElementById('queueList');
             if (queueList) queueList.innerHTML = html;
             renderQueueCount();
-            keys.forEach((key) => {
-                markSuggestionQueued(key);
-                const cb = document.querySelector(`.suggestion-check[data-abs-id="${CSS.escape(key)}"]`);
-                if (cb) cb.checked = false;
+
+            const queuedKeys = new Set();
+            document.querySelectorAll('#queueList .queue-item').forEach((item) => {
+                const key = item.dataset.bridgeKey;
+                if (key) queuedKeys.add(key);
             });
+
+            let landed = 0;
+            keys.forEach((key) => {
+                if (queuedKeys.has(key)) {
+                    markSuggestionQueued(key);
+                    const cb = document.querySelector(`.suggestion-check[data-abs-id="${CSS.escape(key)}"]`);
+                    if (cb) cb.checked = false;
+                    landed++;
+                }
+            });
+
+            if (bulkFeedback) {
+                if (landed === keys.length) {
+                    bulkFeedback.classList.remove('show');
+                    bulkFeedback.textContent = '';
+                } else if (landed > 0) {
+                    bulkFeedback.classList.add('show');
+                    bulkFeedback.textContent = `Added ${landed} of ${keys.length}. ${keys.length - landed} could not be queued — re-run Scan Library.`;
+                } else {
+                    bulkFeedback.classList.add('show');
+                    bulkFeedback.textContent = 'Scan results are no longer available on the server. Click Scan Library again.';
+                }
+            }
+
             updateBulkCounts();
         } catch (err) {
             console.error('Bulk queue add failed; reloading to resync.', err);

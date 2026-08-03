@@ -1403,6 +1403,10 @@ class CleanFlaskIntegrationTest(unittest.TestCase):
             abs_id='ebook-template-1',
             abs_title='book-file',
             ebook_filename='book-file.epub',
+            # An extracted local cover, so the card renders a real <img> to
+            # carry the lazy-loading attributes asserted below. Without one an
+            # ebook-only mapping has no cover to show (it has no ABS item).
+            kosync_doc_id='ebooktemplate1cover',
             sync_mode='ebook_only',
             status='active'
         )
@@ -1706,6 +1710,122 @@ class CleanFlaskIntegrationTest(unittest.TestCase):
         self.assertIn(
             'const display_name = element.dataset.displayName || filename;', html
         )
+
+    def test_add_book_cards_disambiguate_same_titled_series_books(self):
+        """Three same-titled 'Warlock' books rendered as indistinguishable cards.
+
+        BookOrbit holds three books all titled exactly "Warlock" (subtitles
+        "Book 1/2/3"), and ABS holds the matching audiobooks — one of which is
+        also a bare "Warlock" whose only disambiguator is its subtitle. Both
+        picker columns must surface an edition label.
+        """
+        import re
+        import src.web_server as ws
+        from src.services.audio_source_adapters import AudioResult
+
+        ebooks = [
+            ws.EbookResult(
+                name="Warlock_ Book 1 - Daniel Kensington.epub",
+                title="Warlock",
+                subtitle="Book 1",
+                authors="Daniel Kensington",
+                source="BookOrbit",
+                source_id=2641,
+            ),
+            ws.EbookResult(
+                name="Warlock 2_ Warlock - Daniel Kensington.epub",
+                title="Warlock",
+                subtitle="Book 2",
+                authors="Daniel Kensington",
+                source="BookOrbit",
+                source_id=2005,
+            ),
+            ws.EbookResult(
+                name="Warlock 3 - Daniel Kensington.epub",
+                title="Warlock",
+                subtitle="Book 3",
+                authors="Daniel Kensington",
+                source="BookOrbit",
+                source_id=2639,
+            ),
+        ]
+        # Verbatim shape of the live ABS series: books two and three carry the
+        # number in the title, book one does not and relies on its subtitle.
+        audiobooks = [
+            AudioResult(
+                source="ABS",
+                source_id="7f951bd0-1b4f-4fd0-a7c4-e0a7ab6536ce",
+                title="Warlock",
+                subtitle="Warlock, Book 1",
+                series_label="Warlock #1",
+                authors="Daniel Kensington",
+                display_name="Warlock",
+            ),
+            AudioResult(
+                source="ABS",
+                source_id="c4a761e9-a0d3-45da-ab25-32e49a8a29f4",
+                title="Warlock, Book Two",
+                subtitle="",
+                series_label="Warlock #2",
+                authors="Daniel Kensington",
+                display_name="Warlock, Book Two",
+            ),
+            AudioResult(
+                source="ABS",
+                source_id="5686c668-e8c8-4846-bac3-4bab69cd7a02",
+                title="Warlock: Book Three",
+                subtitle="",
+                series_label="Warlock #3",
+                authors="Daniel Kensington",
+                display_name="Warlock: Book Three",
+            ),
+        ]
+
+        with patch.object(ws, '_search_audiobooks_with_fallback', return_value=audiobooks), \
+             patch.object(ws, '_search_ebooks_with_fallback', return_value=ebooks), \
+             patch.object(
+                 ws,
+                 '_promote_authoritative_ebook_matches',
+                 side_effect=lambda _audio, candidates: candidates,
+             ):
+            response = self.client.get('/add-book?search=warlock')
+
+        html = response.get_data(as_text=True)
+        squashed = " ".join(html.split())
+        self.assertEqual(response.status_code, 200)
+
+        # Ebook column: three distinct labels, not three bare "Warlock" cards.
+        for expected in (
+            "Warlock: Book 1 - Daniel Kensington",
+            "Warlock: Book 2 - Daniel Kensington",
+            "Warlock: Book 3 - Daniel Kensington",
+        ):
+            self.assertIn(f'data-display-name="{expected}"', html)
+
+        # Audiobook column: subtitle when present, series label otherwise.
+        self.assertIn('class="resource-subtitle"', squashed)
+        for label in ("Warlock, Book 1", "Warlock #2", "Warlock #3"):
+            self.assertIn(
+                f'<div class="resource-subtitle" title="{label}">{label}</div>',
+                squashed,
+            )
+
+        # The audiobook card (.book-card) has no padding of its own, unlike the
+        # centered-flex .resource-card the class was borrowed from, so the label
+        # needs its own inset to line up with the title above it.
+        self.assertIn('.book-card .resource-subtitle {', html)
+        self.assertIn('padding: 0 12px 12px;', html)
+
+        # Display-only guarantee: the label never folds into the stored title.
+        self.assertIn('data-audio-title="Warlock"', html)
+        stored_titles = re.findall(r'data-audio-title="([^"]*)"', html)
+        self.assertEqual(
+            [t for t in stored_titles if t],
+            ["Warlock", "Warlock, Book Two", "Warlock: Book Three"],
+        )
+        for stored in stored_titles:
+            self.assertNotIn("#", stored)
+            self.assertNotEqual(stored, "Warlock: Warlock, Book 1")
 
     def test_suggestions_template_has_submit_feedback_hooks(self):
         html = self._read_template_source('suggestions.html')

@@ -10,6 +10,7 @@ import json
 import tempfile
 import time
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -92,6 +93,28 @@ class TestDatabaseServiceIntegration(unittest.TestCase):
         rows2 = self.db_service.get_user_kosync_progress_for_book("kup-book", u2.id)
         self.assertEqual([float(r.percentage) for r in rows1], [0.95])
         self.assertEqual([float(r.percentage) for r in rows2], [0.20])
+
+    def test_ensure_linked_kosync_document_is_atomic(self):
+        """Concurrent manifest builders must create one shared hash row."""
+        self.db_service.save_book(
+            self.Book(abs_id="manifest-book", abs_title="Manifest", status="active")
+        )
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            changed = list(executor.map(
+                lambda _: self.db_service.ensure_linked_kosync_document(
+                    "manifest-hash", "manifest-book",
+                ),
+                range(8),
+            ))
+
+        self.assertEqual(changed.count(True), 1)
+        rows = [
+            doc for doc in self.db_service.get_all_kosync_documents()
+            if doc.document_hash == "manifest-hash"
+        ]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].linked_abs_id, "manifest-book")
 
     def test_create_book(self):
         """Test creating a book record."""

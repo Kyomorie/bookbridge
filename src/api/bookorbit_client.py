@@ -43,6 +43,7 @@ _TOKEN_MAX_AGE = 840
 _LOGIN_RETRY_COOLDOWN = 60
 _EBOOK_FORMATS = {"epub", "kepub", "pdf", "cbz", "cbr", "cb7", "mobi", "azw3", "azw", "fb2"}
 _AUDIO_FORMATS = {"m4b", "mp3", "m4a", "opus", "ogg", "flac", "aax", "aac"}
+_MAX_FILENAME_QUERIES = 6
 
 
 class BookOrbitClient:
@@ -344,7 +345,9 @@ class BookOrbitClient:
         return self._refresh_book_cache()
 
     def _enrich_ebook(self, book_id, light: dict) -> Optional[dict]:
-        """Resolve an ebook's primary filename (via cached detail) for candidate use."""
+        """Resolve an ebook's primary filename (via cached detail) for candidate use.
+        Returns dict with keys: id, title, authors, fileName, subtitle, seriesName, seriesIndex.
+        """
         detail = self.get_book_detail(book_id)
         if not detail:
             return None
@@ -352,11 +355,17 @@ class BookOrbitClient:
         filename = (pf or {}).get("filename")
         if not filename:
             return None
+        subtitle = (detail.get("subtitle") or "").strip()
+        series_name = ((light or {}).get("seriesName") or detail.get("seriesName") or "").strip()
+        series_index = detail.get("seriesIndex")
         return {
             "id": book_id,
             "title": (light or {}).get("title") or detail.get("title") or "",
             "authors": (light or {}).get("authors") or self._format_authors(detail.get("authors")),
             "fileName": filename,
+            "subtitle": subtitle,
+            "seriesName": series_name,
+            "seriesIndex": series_index,
         }
 
     # BookOrbit's GET /books/search rejects limit > 20 with HTTP 400.
@@ -394,6 +403,7 @@ class BookOrbitClient:
 
         Mirrors BookloreClient.search_books: query BookOrbit's metadata search,
         keep ebook-format hits, and enrich just those few with their filename.
+        Returns dicts with keys: id, title, authors, fileName, subtitle, seriesName, seriesIndex.
         """
         out = []
         for hit in self._search_raw(search_term, limit):
@@ -401,7 +411,7 @@ class BookOrbitClient:
                 continue
             enriched = self._enrich_ebook(
                 hit.get("id"),
-                {"title": hit.get("title"), "authors": self._format_authors(hit.get("authors"))},
+                {"title": hit.get("title"), "authors": self._format_authors(hit.get("authors")), "seriesName": hit.get("seriesName")},
             )
             if enriched:
                 out.append(enriched)
@@ -415,6 +425,8 @@ class BookOrbitClient:
         per-book detail. An empty query lists every cached audiobook WITHOUT
         detail enrichment (a detail call per book would hit the request
         throttle on a large library — mirrors get_all_ebooks).
+        Returns dicts with keys: id, title, authors, duration_seconds, num_files,
+        total_size_bytes, subtitle, seriesName, seriesIndex.
         """
         safe_term = str(search_term or "").strip()
         if not safe_term:
@@ -433,6 +445,11 @@ class BookOrbitClient:
             if hit.get("id") is None:
                 continue
             info = self.get_audiobook_info(hit["id"]) or {}
+            # Fetch subtitle/series from book detail (cached per book id)
+            detail = self.get_book_detail(hit["id"]) or {}
+            subtitle = (detail.get("subtitle") or "").strip()
+            series_name = (hit.get("seriesName") or detail.get("seriesName") or "").strip()
+            series_index = detail.get("seriesIndex")
             tracks = info.get("tracks") or []
             total_size = 0
             for t in tracks:
@@ -447,6 +464,9 @@ class BookOrbitClient:
                 "duration_seconds": info.get("duration_seconds"),
                 "num_files": len(tracks),
                 "total_size_bytes": total_size,
+                "subtitle": subtitle,
+                "seriesName": series_name,
+                "seriesIndex": series_index,
             })
         return out
 
@@ -544,6 +564,16 @@ class BookOrbitClient:
         Search hits omit filenames, so we run the metadata search (GET
         /books/search?q=) on the filename stem and confirm against each
         candidate's detail files. Resolved filenames are indexed for O(1) repeats.
+
+        Query variants tried (in order, deduplicated, capped at _MAX_FILENAME_QUERIES):
+        - the raw stem
+        - the portion before the first " - " (often the title)
+        - stem with leading volume/series prefix AND trailing year both stripped
+        - the portion before the first " - " of the above
+        - stem with leading volume/series prefix stripped
+        - the portion before the first " - " of the above
+        - stem with trailing parenthesised year stripped
+        - the portion before the first " - " of the above
         """
         if not ebook_filename:
             return None
@@ -559,12 +589,48 @@ class BookOrbitClient:
         stem = Path(ebook_filename).stem
         target_stem_norm = self._normalize_string(stem)
         seen_ids = set()
+
+        def _add_query(qs: list[str], q: str) -> None:
+            q = q.strip()
+            if q and q not in qs:
+                qs.append(q)
+
+        def _strip_leading_series(s: str) -> str:
+            # Strip leading digits + separator (. - _ or whitespace) at the very start
+            return re.sub(r"^\d+[\.\-_]\s*", "", s)
+
+        def _strip_trailing_year(s: str) -> str:
+            # Strip trailing (1900)-(2099) at the end
+            return re.sub(r"\s*\((19|20)\d{2}\)\s*$", "", s)
+
+        queries: list[str] = []
+        _add_query(queries, stem)
+        if " - " in stem:
+            _add_query(queries, stem.split(" - ", 1)[0].strip())
+
+        # Derived variants: for each base form, emit the base then its " - " prefix
+        stem_no_both = _strip_trailing_year(_strip_leading_series(stem))
+        _add_query(queries, stem_no_both)
+        if " - " in stem_no_both:
+            _add_query(queries, stem_no_both.split(" - ", 1)[0].strip())
+
+        stem_no_series = _strip_leading_series(stem)
+        _add_query(queries, stem_no_series)
+        if " - " in stem_no_series:
+            _add_query(queries, stem_no_series.split(" - ", 1)[0].strip())
+
+        stem_no_year = _strip_trailing_year(stem)
+        _add_query(queries, stem_no_year)
+        if " - " in stem_no_year:
+            _add_query(queries, stem_no_year.split(" - ", 1)[0].strip())
+
+        # Cap total queries
+        queries = queries[:_MAX_FILENAME_QUERIES]
+
         # BookOrbit search matches on metadata (title), so a "Title - Author.epub"
         # stem often returns nothing. Try the full stem, then the portion before
-        # the first " - " (usually the title), confirming by the real filename.
-        queries = [stem]
-        if " - " in stem:
-            queries.append(stem.split(" - ", 1)[0].strip())
+        # the first " - " (usually the title), plus the derived variants above,
+        # confirming by the real filename.
         for q in queries:
             for hit in self._search_raw(q, limit=20):
                 if not isinstance(hit, dict) or hit.get("id") in seen_ids:

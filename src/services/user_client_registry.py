@@ -136,7 +136,7 @@ class UserClientRegistry:
         storygraph_client = StorygraphClient(credentials=creds)
 
         # Per-user library service for ebook acquisition/search (uses this
-        # user's abs/cwa/booklore clients). Requires an epub cache dir.
+        # user's abs/cwa/booklore/bookorbit clients). Requires an epub cache dir.
         library_service = None
         if self.epub_cache_dir is not None:
             library_service = LibraryService(
@@ -145,6 +145,7 @@ class UserClientRegistry:
                 cwa_client=cwa_client,
                 abs_client=abs_client,
                 epub_cache_dir=self.epub_cache_dir,
+                bookorbit_client=bookorbit_client,
             )
 
         sync_clients = {

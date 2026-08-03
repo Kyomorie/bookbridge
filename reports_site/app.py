@@ -212,6 +212,12 @@ def _prepare_submission(raw: dict[str, Any]) -> dict[str, Any]:
     submission["submitted_at"] = submission.get("submitted_at") or submission.get("received_at") or ""
     submission["response_md"] = str(submission.get("response_md") or "")
     submission["awaiting_response"] = bool(submission["message"] and not submission["response_md"].strip())
+    recent_logs = submission.get("recent_logs")
+    submission["recent_logs"] = (
+        [line for line in recent_logs if isinstance(line, str)]
+        if isinstance(recent_logs, list)
+        else []
+    )
     linked = submission.get("linked_findings", submission.get("findings")) or []
     submission["findings"] = [
         _prepare_finding(item) if isinstance(item, dict) else item

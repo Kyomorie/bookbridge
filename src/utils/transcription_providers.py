@@ -207,7 +207,18 @@ class DeepgramProvider(TranscriptionProvider):
         return segments_out
 
 class WhisperCppServerProvider(TranscriptionProvider):
-    """Transcription via whisper.cpp HTTP server (ggml-org)."""
+    """Transcription via an OpenAI-compatible HTTP server.
+
+    Works with whisper.cpp's whisper-server, speaches, and parakeet ASR
+    servers exposing POST <url> with multipart file upload and
+    response_format=verbose_json (segments with start/end timestamps).
+
+    When WHISPER_CPP_SEND_ORIGINAL is true, supports_raw_audio=True tells the
+    transcription pipeline to skip the local WAV-conversion and chunk-splitting
+    steps: original audio files (mp3/m4b) are uploaded as-is and the server does
+    its own decoding and long-audio chunking (e.g. parakeet's -long-audio mode).
+    Only enable this for servers that accept non-WAV input and long files.
+    """
 
     def __init__(self):
         url = os.environ.get("WHISPER_CPP_URL", "").strip()
@@ -217,27 +228,113 @@ class WhisperCppServerProvider(TranscriptionProvider):
             )
         self.server_url = url
         self.model = os.environ.get("WHISPER_MODEL", "small")
+        self.timeout = int(os.environ.get("WHISPER_CPP_TIMEOUT", "600"))
+        self.send_original = os.environ.get(
+            "WHISPER_CPP_SEND_ORIGINAL", "false"
+        ).strip().lower() in ("1", "true", "yes", "on")
+        self.supports_raw_audio = self.send_original
+        self.chunk_minutes = int(os.environ.get("WHISPER_CPP_CHUNK_MINUTES", "0"))
 
     def get_name(self) -> str:
         return f"Whisper.cpp (server) - {self.model}"
 
-    def transcribe(self, audio_path: Path, progress_callback=None) -> list[dict]:
+    def transcribe(self, audio_source, progress_callback=None) -> list[dict]:
         import requests
 
-        logger.info(f"🌐 Transcribing with {self.get_name()}: {audio_path.name}")
+        source_str = str(audio_source)
+        label = source_str.split("/")[-1].split("?")[0] or "audio"
+        logger.info(f"🌐 Transcribing with {self.get_name()}: {label}")
 
-        with open(audio_path, "rb") as f:
-            files = {
-                "file": (audio_path.name, f, "audio/wav")
-            }
-            data = {"model": self.model, "response_format": "verbose_json"}
+        if source_str.startswith(("http://", "https://")):
+            # Raw mode with a stream URL: buffer the source to a temp file so the
+            # multipart upload has a real file with a known size.
+            import tempfile
 
-            response = requests.post(
-                self.server_url,
-                files=files,
-                data=data,
-                timeout=600
-            )
+            suffix = Path(label).suffix or ".mp3"
+            tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+            tmp_path = Path(tmp.name)
+            try:
+                with requests.get(source_str, stream=True, timeout=300) as r:
+                    r.raise_for_status()
+                    for chunk in r.iter_content(chunk_size=1 << 20):
+                        tmp.write(chunk)
+                tmp.close()
+                return self._upload(tmp_path, label)
+            finally:
+                tmp.close()
+                tmp_path.unlink(missing_ok=True)
+
+        return self._upload(Path(source_str), label)
+
+    def _upload(self, path: Path, filename: str) -> list[dict]:
+        import mimetypes
+
+        if self.chunk_minutes > 0 and path.suffix.lower() == ".wav":
+            segments_out = self._transcribe_wav_chunked(path)
+        else:
+            content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            with open(path, "rb") as f:
+                segments_out = self._post(f, filename, content_type)
+
+        logger.info(f"✅ whisper.cpp transcription complete: {len(segments_out)} segments")
+        return segments_out
+
+    def _transcribe_wav_chunked(self, path: Path) -> list[dict]:
+        """Split a WAV into chunk_minutes-sized sub-uploads and offset timestamps.
+
+        For servers that return a single merged segment per request (e.g. the
+        achetronic/parakeet ASR server), timestamp resolution equals the upload
+        length. Slicing the WAV into small requests restores enough granularity
+        for alignment while keeping each server-side encoder pass small.
+        """
+        import io
+        import wave
+
+        segments_out = []
+        with wave.open(str(path), "rb") as wf:
+            rate = wf.getframerate()
+            width = wf.getsampwidth()
+            channels = wf.getnchannels()
+            frames_per_chunk = rate * 60 * self.chunk_minutes
+
+            idx = 0
+            while True:
+                frames = wf.readframes(frames_per_chunk)
+                if not frames:
+                    break
+                offset = (idx * frames_per_chunk) / rate
+
+                buf = io.BytesIO()
+                with wave.open(buf, "wb") as out:
+                    out.setnchannels(channels)
+                    out.setsampwidth(width)
+                    out.setframerate(rate)
+                    out.writeframes(frames)
+                buf.seek(0)
+
+                chunk_segs = self._post(buf, f"{path.stem}_c{idx:04d}.wav", "audio/wav")
+                for seg in chunk_segs:
+                    seg["start"] += offset
+                    seg["end"] += offset
+                segments_out.extend(chunk_segs)
+                idx += 1
+
+        return segments_out
+
+    def _post(self, fileobj, filename: str, content_type: str) -> list[dict]:
+        import requests
+
+        files = {
+            "file": (filename, fileobj, content_type)
+        }
+        data = {"model": self.model, "response_format": "verbose_json"}
+
+        response = requests.post(
+            self.server_url,
+            files=files,
+            data=data,
+            timeout=self.timeout
+        )
 
         if not response.ok:
             # Surface the server's error body — whisper.cpp / llama-swap explains
@@ -262,7 +359,13 @@ class WhisperCppServerProvider(TranscriptionProvider):
                 "text": seg["text"].strip()
             })
 
-        logger.info(f"✅ whisper.cpp transcription complete: {len(segments_out)} segments")
+        if not segments_out and result.get("text"):
+            logger.warning(
+                "⚠️ Server returned plain text without timestamped segments — "
+                "alignment will be degraded. Ensure the server supports verbose_json."
+            )
+            segments_out.append({"start": 0.0, "end": 0.0, "text": str(result["text"]).strip()})
+
         return segments_out
 
 
@@ -283,4 +386,6 @@ def get_transcription_provider() -> TranscriptionProvider:
             return LocalWhisperProvider()
         return WhisperCppServerProvider()
     else:
+        if provider_name not in ("local", ""):
+            logger.warning(f"⚠️ Unknown transcription provider '{provider_name}', falling back to local")
         return LocalWhisperProvider()

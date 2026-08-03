@@ -28,6 +28,8 @@ _COMMENT_BODY_CAP = 2000
 _USER_MESSAGE_CAP = 2000
 _FINDING_RESPONSE_CAP = 10000
 _MANUAL_REPORTS_PER_DAY = 5
+_RECENT_LOGS_CAP = 200
+_RECENT_LOG_LINE_CAP = 400
 
 
 def _sanitize_text(value: Any, max_len: int) -> str:
@@ -85,6 +87,7 @@ CREATE TABLE IF NOT EXISTS batches (
     dropped       INTEGER NOT NULL DEFAULT 0,
     is_manual     INTEGER NOT NULL DEFAULT 0,
     user_message  TEXT,
+    recent_logs_json TEXT,
     response_md   TEXT,
     response_at   TEXT
 );
@@ -180,6 +183,7 @@ def _ensure_columns(db_path: str) -> None:
         "batches": {
             "is_manual": "INTEGER NOT NULL DEFAULT 0",
             "user_message": "TEXT",
+            "recent_logs_json": "TEXT",
             "response_md": "TEXT",
             "response_at": "TEXT",
         },
@@ -356,6 +360,8 @@ def _linked_findings(
 def _admin_submission(
     db: sqlite3.Connection,
     row: sqlite3.Row,
+    *,
+    include_recent_logs: bool = False,
 ) -> dict[str, Any]:
     """Serialize a manual submission for the maintainer API."""
     result = {
@@ -368,6 +374,16 @@ def _admin_submission(
         "response_at": row["response_at"],
         "status": "replied" if (row["response_md"] or "").strip() else "received",
     }
+    if include_recent_logs:
+        try:
+            recent_logs = json.loads(row["recent_logs_json"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            recent_logs = []
+        result["recent_logs"] = (
+            [line for line in recent_logs if isinstance(line, str)]
+            if isinstance(recent_logs, list)
+            else []
+        )
     result["linked_findings"] = _linked_findings(db, row["id"])
     return result
 
@@ -692,6 +708,11 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
             warnings_raw = []
         if not isinstance(warnings_raw, list):
             return jsonify({"ok": False, "error": "warnings must be a list"}), 400
+        if any(not isinstance(warning, dict) for warning in warnings_raw):
+            return jsonify({
+                "ok": False,
+                "error": "warnings entries must be objects",
+            }), 400
 
         manual = payload.get("manual", False)
         if not isinstance(manual, bool):
@@ -705,6 +726,26 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
             sanitized_message = _sanitize_text(raw_user_message, _USER_MESSAGE_CAP).strip()
             if sanitized_message:
                 user_message = sanitized_message
+
+        recent_logs_raw = payload.get("recent_logs", [])
+        if recent_logs_raw is None:
+            recent_logs_raw = []
+        if not isinstance(recent_logs_raw, list) or any(
+            not isinstance(line, str) for line in recent_logs_raw
+        ):
+            return jsonify({
+                "ok": False,
+                "error": "recent_logs must be a list of strings",
+            }), 400
+        recent_logs = [
+            _sanitize_text(line, _RECENT_LOG_LINE_CAP)
+            for line in recent_logs_raw[:_RECENT_LOGS_CAP]
+        ] if manual else []
+        recent_logs_json = (
+            json.dumps(recent_logs, separators=(",", ":"))
+            if recent_logs
+            else None
+        )
 
         now_iso = datetime.now(timezone.utc).isoformat()
         now_dt = datetime.now(timezone.utc)
@@ -868,8 +909,8 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
                 INSERT INTO batches
                     (instance_id, received_at, sent_at, app_version, services_json,
                      total_books, window_start, window_end, dropped, is_manual,
-                     user_message)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     user_message, recent_logs_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     instance_id,
@@ -883,6 +924,7 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
                     payload.get("dropped", 0),
                     1 if manual else 0,
                     user_message,
+                    recent_logs_json,
                 ),
             )
             batch_id = cur.lastrowid
@@ -988,6 +1030,7 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
         batches: List[Dict[str, Any]] = []
         for row in rows:
             b = dict(row)
+            b.pop("recent_logs_json", None)
             w_rows = db.execute(
                 "SELECT * FROM warnings WHERE batch_id = ?", (row["id"],)
             ).fetchall()
@@ -1363,7 +1406,7 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
         row = db.execute(
             """\
             SELECT id, instance_id, received_at, app_version, user_message,
-                   response_md, response_at
+                   recent_logs_json, response_md, response_at
             FROM batches
             WHERE id = ? AND is_manual = 1
             """,
@@ -1373,7 +1416,7 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
             return jsonify({"ok": False, "error": "not found"}), 404
 
         if request.method == "GET":
-            return jsonify(_admin_submission(db, row))
+            return jsonify(_admin_submission(db, row, include_recent_logs=True))
 
         if not (row["user_message"] or "").strip():
             return jsonify({
@@ -1411,12 +1454,12 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
         updated = db.execute(
             """\
             SELECT id, instance_id, received_at, app_version, user_message,
-                   response_md, response_at
+                   recent_logs_json, response_md, response_at
             FROM batches WHERE id = ?
             """,
             (submission_id,),
         ).fetchone()
-        return jsonify(_admin_submission(db, updated))
+        return jsonify(_admin_submission(db, updated, include_recent_logs=True))
 
     # -- instance submission history ----------------------------------------
     @app.route("/api/v1/my/submissions")
