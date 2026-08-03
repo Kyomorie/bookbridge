@@ -41,6 +41,14 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Ebooks in an Audiobookshelf library are no longer offered as audiobooks to match.**
+  If your Audiobookshelf holds ebooks alongside audiobooks, every one of those ebooks
+  was being treated as an audiobook by the Suggestions scan, so it appeared as its own
+  100% match against its own file. On a large ebook collection that buried the real
+  audiobook suggestions under thousands of bogus ones. BookBridge asked
+  Audiobookshelf for audiobooks only, but Audiobookshelf has no such filter and
+  returned everything; the results are now checked for actual audio before use. (#351)
+
 - **Books matched from a library BookBridge reaches only over the network now
   actually download.** If your ebooks live in BookOrbit or Grimmory and you have
   not mounted that library's folder into BookBridge, matching a book could still
