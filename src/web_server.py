@@ -4192,6 +4192,11 @@ def _browser_cover_url(
        - ABS or unset source with ``abs_id`` (preferred) or ``audio_source_id`` ->
          ``/api/cover-proxy/<id>`` (only for non-library audio sources)
     3. If nothing can be derived, return an empty string.
+
+    An ebook-only mapping has no Audiobookshelf item, so its synthetic
+    ``ebook-<hash>`` key must not be turned into a cover-proxy URL that can only
+    404. Legacy rows whose ``audio_source`` is unset but whose id is a real ABS
+    item are still served, so the test is on the id, not the source.
     """
     raw = (raw_cover_url or "").strip()
     if raw.startswith("/") and not raw.startswith("//") and not raw.startswith("/\\"):
@@ -4207,9 +4212,22 @@ def _browser_cover_url(
         return f"/api/bookorbit/audiobook-cover/{src_id}"
     if source not in _LIBRARY_AUDIO_SOURCES:
         proxy_id = aid or src_id
-        if proxy_id:
+        if proxy_id and not _is_synthetic_bridge_key(proxy_id):
             return f"/api/cover-proxy/{proxy_id}"
     return ""
+
+
+def _is_synthetic_bridge_key(candidate: str) -> bool:
+    """True when an id is a bridge-minted key rather than an ABS item id.
+
+    Ebook-only mappings use ``ebook-<kosync_doc_id[:16]>`` (and ``ebook:<key>``
+    in the match queue); library audiobooks use ``booklore:``/``bookorbit:``.
+    None of these can be fetched from Audiobookshelf.
+    """
+    key = (candidate or "").strip().lower()
+    if key.startswith(("ebook-", "ebook:")):
+        return True
+    return any(key.startswith(f"{prefix}:") for prefix in _AUDIO_BRIDGE_PREFIXES)
 
 
 def _sanitize_cover_urls(entries: list) -> list:

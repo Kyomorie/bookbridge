@@ -123,6 +123,29 @@ class TestBrowserCoverUrl(unittest.TestCase):
         self.assertEqual(self.sanitize("https://audiobookshelf/x.jpg"), "")
         self.assertEqual(self.sanitize(None), "")
 
+    def test_ebook_only_key_is_not_turned_into_a_cover_proxy_url(self):
+        """Found live: ebook-only mappings have no ABS item, so a proxy URL
+        built from their synthetic key can only 404."""
+        for synthetic in ("ebook-4f3197844ab1b248", "ebook:matter.epub"):
+            with self.subTest(synthetic=synthetic):
+                self.assertEqual(
+                    self.sanitize(None, audio_source=None, abs_id=synthetic), ""
+                )
+
+    def test_library_bridge_key_is_not_turned_into_a_cover_proxy_url(self):
+        """A booklore:/bookorbit: key is not an ABS item id either."""
+        for synthetic in ("booklore:42", "bookorbit:99"):
+            with self.subTest(synthetic=synthetic):
+                self.assertEqual(
+                    self.sanitize(None, audio_source=None, abs_id=synthetic), ""
+                )
+
+    def test_legacy_row_without_audio_source_still_gets_the_abs_proxy(self):
+        """Some older rows have a real ABS id but no audio_source recorded;
+        the synthetic-key test must not strip their covers."""
+        result = self.sanitize(None, audio_source=None, abs_id="abs-matter")
+        self.assertEqual(result, "/api/cover-proxy/abs-matter")
+
 
 class TestDashboardMappingCoverUrl(unittest.TestCase):
     """The real dashboard mapping builder, with the reporter's ABS config."""

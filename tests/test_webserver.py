@@ -1403,6 +1403,10 @@ class CleanFlaskIntegrationTest(unittest.TestCase):
             abs_id='ebook-template-1',
             abs_title='book-file',
             ebook_filename='book-file.epub',
+            # An extracted local cover, so the card renders a real <img> to
+            # carry the lazy-loading attributes asserted below. Without one an
+            # ebook-only mapping has no cover to show (it has no ABS item).
+            kosync_doc_id='ebooktemplate1cover',
             sync_mode='ebook_only',
             status='active'
         )
