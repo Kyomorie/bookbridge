@@ -2486,6 +2486,12 @@ def get_suggestion_audiobooks():
 
         title = (item.title or item.display_name or bridge_key).strip()
         author = (item.authors or "").strip()
+        cover_url = _browser_cover_url(
+            item.cover_url,
+            audio_source=audio_source,
+            audio_source_id=source_id,
+            abs_id=bridge_key,
+        )
         records.append(
             {
                 "bridge_key": bridge_key,
@@ -2494,7 +2500,7 @@ def get_suggestion_audiobooks():
                 "audio_title": title,
                 "audio_author": author,
                 "audio_duration": item.duration,
-                "audio_cover_url": item.cover_url or "",
+                "audio_cover_url": cover_url,
                 "audio_path": item.path or "",
                 "audio_provider_book_id": str(item.provider_book_id or source_id),
                 "audio_provider_file_id": str(item.provider_file_id or ""),
@@ -2503,7 +2509,7 @@ def get_suggestion_audiobooks():
                 "title": title,
                 "authors": author,
                 "duration": item.duration,
-                "cover_url": item.cover_url or "",
+                "cover_url": cover_url,
             }
         )
 
@@ -3033,12 +3039,7 @@ def _create_or_update_audio_only_mapping(
     clients = uc()
     default_cover = None
     if audio_source == "ABS":
-        abs_client = getattr(clients, "abs_client", None)
-        if abs_client is not None and getattr(abs_client, "is_configured", lambda: False)():
-            default_cover = (
-                f"{abs_client.base_url}/api/items/{audio_source_id}/cover"
-                f"?token={abs_client.token}"
-            )
+        default_cover = f"/api/cover-proxy/{audio_source_id}"
     elif audio_source == "BookLore":
         default_cover = f"/api/booklore/audiobook-cover/{audio_source_id}"
     else:
@@ -4166,6 +4167,81 @@ def _dashboard_leader_service(leader_client: str | None) -> str | None:
     return None
 
 
+def _browser_cover_url(
+    raw_cover_url: str | None,
+    audio_source: str | None = None,
+    audio_source_id: str | None = None,
+    abs_id: str | None = None,
+) -> str:
+    """Convert any cover URL into a safe, same-origin BookBridge URL.
+
+    This is the single choke point that keeps source hostnames and API tokens
+    out of the browser (issue #353). It also neutralizes legacy
+    ``audio_cover_url`` values already saved in the database, so no migration
+    is needed.
+
+    Priority:
+    1. If ``raw_cover_url`` is a non-empty same-origin relative path (starts
+       with a single ``/`` but not ``//`` or ``/\\``), return it unchanged.
+       Backslashes are rejected because browsers normalize them to forward
+       slashes when resolving URLs, so ``/\\evil.example`` would resolve as a
+       protocol-relative cross-origin URL.
+    2. Otherwise derive a same-origin proxy route from the source:
+       - BookLore with ``audio_source_id`` -> ``/api/booklore/audiobook-cover/<id>``
+       - BookOrbit with ``audio_source_id`` -> ``/api/bookorbit/audiobook-cover/<id>``
+       - ABS or unset source with ``abs_id`` (preferred) or ``audio_source_id`` ->
+         ``/api/cover-proxy/<id>`` (only for non-library audio sources)
+    3. If nothing can be derived, return an empty string.
+    """
+    raw = (raw_cover_url or "").strip()
+    if raw.startswith("/") and not raw.startswith("//") and not raw.startswith("/\\"):
+        return raw
+
+    source = (audio_source or "").strip()
+    src_id = (audio_source_id or "").strip()
+    aid = (abs_id or "").strip()
+
+    if source == "BookLore" and src_id:
+        return f"/api/booklore/audiobook-cover/{src_id}"
+    if source == "BookOrbit" and src_id:
+        return f"/api/bookorbit/audiobook-cover/{src_id}"
+    if source not in _LIBRARY_AUDIO_SOURCES:
+        proxy_id = aid or src_id
+        if proxy_id:
+            return f"/api/cover-proxy/{proxy_id}"
+    return ""
+
+
+def _sanitize_cover_urls(entries: list) -> list:
+    """Return copies of suggestion/queue dicts with browser-safe cover URLs.
+
+    Suggestion and match-queue entries can be restored from a scan cache
+    persisted by an older build, so they may still carry tokenized source URLs
+    (issue #353). The originals are left untouched because they are shared with
+    the session state and the on-disk cache.
+    """
+    sanitized = []
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            sanitized.append(entry)
+            continue
+        keys = [key for key in ("audio_cover_url", "cover_url") if key in entry]
+        if not keys:
+            sanitized.append(entry)
+            continue
+        safe_cover = _browser_cover_url(
+            entry.get("audio_cover_url") or entry.get("cover_url"),
+            audio_source=entry.get("audio_source"),
+            audio_source_id=entry.get("audio_source_id"),
+            abs_id=entry.get("bridge_key") or entry.get("abs_id"),
+        )
+        copied = dict(entry)
+        for key in keys:
+            copied[key] = safe_cover
+        sanitized.append(copied)
+    return sanitized
+
+
 def _build_dashboard_mapping(
     book,
     states_by_book,
@@ -4385,14 +4461,15 @@ def _build_dashboard_mapping(
     mapping["series_name"] = getattr(book, "series_name", None) or None
     mapping["series_sequence"] = getattr(book, "series_sequence", None)
 
-    if mapping.get("audio_cover_url"):
-        mapping["cover_url"] = mapping["audio_cover_url"]
-    elif mapping.get("audio_source") == "BookLore" and mapping.get("audio_source_id"):
-        mapping["cover_url"] = f"/api/booklore/audiobook-cover/{mapping['audio_source_id']}"
-    elif mapping.get("audio_source") == "BookOrbit" and mapping.get("audio_source_id"):
-        mapping["cover_url"] = f"/api/bookorbit/audiobook-cover/{mapping['audio_source_id']}"
-    elif book.abs_id and mapping.get("audio_source") not in _LIBRARY_AUDIO_SOURCES:
-        mapping["cover_url"] = f"{manager.abs_client.base_url}/api/items/{book.abs_id}/cover?token={manager.abs_client.token}"
+    safe_cover = _browser_cover_url(
+        mapping.get("audio_cover_url"),
+        audio_source=mapping.get("audio_source"),
+        audio_source_id=mapping.get("audio_source_id"),
+        abs_id=book.abs_id,
+    )
+    if safe_cover:
+        mapping["cover_url"] = safe_cover
+    mapping["audio_cover_url"] = safe_cover
 
     reading_stats = reading_stats_by_book.get(book.abs_id)
     if reading_stats:
@@ -5458,7 +5535,7 @@ def match():
             audio_source="ABS",
             audio_source_id=abs_id,
             audio_title=abs_title,
-            audio_cover_url=f"{clients.abs_client.base_url}/api/items/{abs_id}/cover?token={clients.abs_client.token}",
+            audio_cover_url=f"/api/cover-proxy/{abs_id}",
             audio_duration=manager.get_duration(selected_ab),
             audio_provider_book_id=abs_id,
             ebook_filename=ebook_filename,
@@ -6298,10 +6375,7 @@ def _queue_item_from_match_form(clients) -> "dict | None":
         )
         if audio_duration is None and selected_ab:
             audio_duration = manager.get_duration(selected_ab)
-        audio_cover_url = audio_cover_url or (
-            f"{clients.abs_client.base_url}/api/items/{audio_source_id}/cover"
-            f"?token={clients.abs_client.token}"
-        )
+        audio_cover_url = audio_cover_url or f"/api/cover-proxy/{audio_source_id}"
     elif audio_source in _LIBRARY_AUDIO_SOURCES and audio_source_id:
         bridge_key = _build_bridge_key(audio_source, audio_source_id)
         audio_title = audio_title or (
@@ -6322,6 +6396,13 @@ def _queue_item_from_match_form(clients) -> "dict | None":
 
     if not bridge_key or not (ebook_filename or storyteller_uuid or audio_only):
         return None
+    # A submitted form field can still carry a legacy absolute cover URL.
+    safe_cover_url = _browser_cover_url(
+        audio_cover_url,
+        audio_source=audio_source,
+        audio_source_id=audio_source_id,
+        abs_id=bridge_key if audio_source else None,
+    ) or None
     return {
         'bridge_key': bridge_key,
         'abs_id': bridge_key,
@@ -6331,8 +6412,8 @@ def _queue_item_from_match_form(clients) -> "dict | None":
         'abs_title': audio_title,
         'audio_duration': audio_duration,
         'duration': audio_duration,
-        'audio_cover_url': audio_cover_url,
-        'cover_url': audio_cover_url,
+        'audio_cover_url': safe_cover_url,
+        'cover_url': safe_cover_url,
         'audio_provider_book_id': audio_provider_book_id,
         'audio_provider_file_id': audio_provider_file_id,
         'ebook_filename': ebook_filename,
@@ -7337,8 +7418,8 @@ def suggestions_page():
 
     return render_template(
         'suggestions.html',
-        suggestions=scan_results,
-        queue=_load_match_queue(),
+        suggestions=_sanitize_cover_urls(scan_results),
+        queue=_sanitize_cover_urls(_load_match_queue()),
         scan_has_run=bool(suggestions_state.get('scan_has_run', False)),
         scan_in_progress=scan_in_progress,
         scan_error=scan_error,
@@ -9300,8 +9381,12 @@ def proxy_cover(abs_id):
     if not _user_may_modify_book(user, abs_id):
         return _forbidden_book_response(json_response=True)
     try:
-        token = container.abs_client().token
-        base_url = container.abs_client().base_url
+        abs_client = uc().abs_client
+        if not abs_client or not abs_client.is_configured():
+            # No per-user ABS credentials: serve from the admin/global library.
+            abs_client = container.abs_client()
+        token = abs_client.token
+        base_url = abs_client.base_url
         if not token or not base_url:
             return "ABS not configured", 500
 

@@ -181,12 +181,17 @@ class SuggestionsService:
         return str(raw_path).strip()
 
     def _audio_cover_url(self, ab: dict, audio_source: str, audio_source_id: str) -> str:
+        """Cover URL for a suggestion, always same-origin.
+
+        A source hostname or API token must never reach the browser (issue
+        #353), so a saved absolute URL is discarded in favour of the bridge's
+        own proxy route.
+        """
         cover_url = (ab.get("audio_cover_url") or ab.get("cover_url") or "").strip()
-        if cover_url:
+        if cover_url.startswith("/") and not cover_url.startswith(("//", "/\\")):
             return cover_url
         if audio_source == "ABS" and audio_source_id:
-            abs_client = self.container.abs_client()
-            return f"{abs_client.base_url}/api/items/{audio_source_id}/cover?token={abs_client.token}"
+            return f"/api/cover-proxy/{audio_source_id}"
         return ""
 
     def _audiobook_matches_candidate(

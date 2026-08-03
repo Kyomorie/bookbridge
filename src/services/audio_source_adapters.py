@@ -234,7 +234,7 @@ class ABSAudioSourceAdapter(AudioSourceAdapter):
     def get_cover_url(self, source_id: str) -> Optional[str]:
         if not self.abs_client.is_configured():
             return None
-        return f"{self.abs_client.base_url}/api/items/{source_id}/cover?token={self.abs_client.token}"
+        return f"/api/cover-proxy/{source_id}"
 
     def get_audio_files(self, source_id: str, bridge_key: str | None = None) -> list[dict]:
         return self.abs_client.get_audio_files(source_id)

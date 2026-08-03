@@ -41,6 +41,23 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Audiobook covers now load when Audiobookshelf is only reachable from the server,
+  and your Audiobookshelf API token is no longer sent to the browser.** If
+  Audiobookshelf runs as a Docker service alongside BookBridge, its address is an
+  internal name like `https://audiobookshelf` that your browser cannot reach — yet
+  that is exactly the address the dashboard put in each cover image, together with
+  your Audiobookshelf API token. Every audiobook cover came up blank, and anyone who
+  viewed the page received the token. Books with a local ebook cover hid the problem,
+  because BookBridge shows that first and only falls back to the Audiobookshelf
+  address when it is missing. BookBridge already had its own cover routes for
+  Audiobookshelf, Grimmory and BookOrbit; covers now always go through them, so the
+  browser only ever talks to BookBridge and no library address or token leaves the
+  server. This applies everywhere covers appear — the dashboard, series stacks,
+  Suggestions and the match queue — and covers already saved the old way are corrected
+  as the page is drawn, so your existing books fix themselves on the next load with
+  nothing for you to do. Reported by
+  [@mahood73](https://github.com/mahood73). (#353)
+
 - **Manual bug reports now include the recent logs needed to investigate them.**
   A written report could previously arrive with no technical evidence whenever no
   warning was buffered at that moment. Manual reports now attach up to 200 recent,
