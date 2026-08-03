@@ -4,6 +4,28 @@ For the full history of changes, please refer to the **[GitHub Releases](https:/
 
 ---
 
+## [7.3.3]
+
+The headline is **audiobook covers load again, and your Audiobookshelf token stays on the server**: if Audiobookshelf is only reachable from the server, every cover came up blank and the address and token went to the browser with it. This release also adds external GPU transcription against any OpenAI-compatible server, stops an Audiobookshelf ebook library from burying real audiobook suggestions, and repairs matching for libraries BookBridge reaches only over the network.
+
+### What's New
+
+- **Transcription can run on a GPU elsewhere on your network — and not only whisper.cpp.** The Whisper.cpp provider now works against any OpenAI-compatible transcription endpoint, such as speaches, NVIDIA parakeet, or a proxy like llama-swap, with a 🔗 **Test** button to confirm the server before you save. **Split Uploads** restores sync accuracy on servers that return one merged segment per request, and **Send Original Audio** hands the original mp3/m4b straight to servers that chunk it themselves, saving minutes of conversion per book. Contributed by [@chelming](https://github.com/chelming). (#330)
+- **Audio Split Length is adjustable from Settings**, so a smaller GPU can get through long books without running out of memory. Contributed by [@chelming](https://github.com/chelming).
+- **Books that share a title are easier to tell apart when you add them.** Both sides of the Add / Update Book picker now show a small edition line — the subtitle your library has, or the series position ("Warlock #2") — so three identical cards are no longer guesswork.
+
+### Fixed
+
+- **Audiobook covers load when Audiobookshelf is only reachable from the server, and your API token is no longer sent to the browser.** Covers now always go through BookBridge's own cover routes, so no library address or token leaves the server, and existing books fix themselves on the next page load. (#353)
+- **Ebooks in an Audiobookshelf library are no longer offered as audiobooks to match**, which had buried real suggestions under thousands of bogus 100% self-matches. (#351)
+- **Books matched from a library BookBridge reaches only over the network now actually download.** The exact book you picked is fetched by id instead of being searched for again by filename, and affected books retry on their own. (#352)
+- **"Add all exact" on the Suggestions page no longer silently does nothing** after a restart or on a long-open tab; scan results are restored from the on-disk cache, and a suggestion that genuinely can't be queued now says so.
+- **Manual bug reports include the recent logs needed to investigate them**, even when no warning was buffered at that moment.
+- **Raising the log level actually produces the extra detail**, and a failed transcription against an external server now reports the server's own error. Contributed by [@chelming](https://github.com/chelming).
+- **Two KOReader devices building a manifest for the same ebook at once no longer collide**, and diagnostics no longer exhaust their warning-template limit on short book IDs, filenames, or XPath fragments.
+
+---
+
 ## [7.3.2]
 
 The headline is **BookBridge leaves your disks alone when nothing is happening**: a background task was re-reading every book in your library once a minute, forever, which kept drives from ever spinning down. This release also makes shelving and book matching reliable across users, restores Grimmory shelf creation, reconnects instant sync behind HTTPS reverse proxies, and adds a dashboard indicator showing which app last moved each book.

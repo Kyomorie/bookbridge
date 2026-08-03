@@ -1,17 +1,18 @@
-# Release Notes - 7.3.2
+# Release Notes - 7.3.3
 
-The headline change is that **BookBridge leaves your disks alone when nothing is
-happening**. A background task that prepared the list for the optional KOReader
-managed-folder sync was re-reading — hashing — every book in your library once a
-minute, forever. It did this on installs that had never enabled that feature and on
-days you never opened a book, which meant hard drives could never spin down. That
-list is now built only when a KOReader device actually asks for it, and each book's
-hash is remembered until the file itself changes.
+The headline change is that **audiobook covers load again when Audiobookshelf is only
+reachable from the server — and your Audiobookshelf API token is no longer sent to the
+browser.** If Audiobookshelf runs as a Docker service alongside BookBridge, its address
+is an internal name like `https://audiobookshelf` that your browser cannot reach, yet
+that was exactly the address the dashboard put in each cover image, together with your
+API token. Every audiobook cover came up blank, and anyone who viewed the page received
+the token. Covers now always go through BookBridge's own cover routes, so the browser
+only ever talks to BookBridge and no library address or credential leaves the server.
 
-This release also makes shelving and book matching reliable and private per reader,
-restores Grimmory shelf creation, reconnects Audiobookshelf instant sync behind
-HTTPS reverse proxies, and adds a dashboard indicator showing which app last moved
-each book.
+This release also adds **external GPU transcription against any OpenAI-compatible
+server**, stops an Audiobookshelf ebook library from burying real audiobook
+suggestions, and repairs book matching for libraries BookBridge reaches only over the
+network.
 
 This release does **not** change the BridgeSync KOReader plugin (still 0.5.4), so no
 plugin re-download is required. Highlight and note sync continues to require the
@@ -20,95 +21,122 @@ works without it.
 
 ## What's New
 
-- **See at a glance which app last moved a book's position.** On the dashboard's In
-  Progress cards, a small green dot marks the service that most recently updated
-  where you are — Audiobookshelf if you last listened in the ABS app, KoSync if you
-  last read on your e-reader. It stays out of the way while making it obvious which
-  side drove the latest progress on books you're reading and listening to across
-  services. (#333)
+- **Transcription can now run on an external GPU server, including ones that are not
+  whisper.cpp.** The Whisper.cpp provider works against any OpenAI-compatible
+  transcription endpoint — speaches, NVIDIA parakeet, or a proxy such as llama-swap —
+  so a spare GPU elsewhere on your network can do the work without giving the
+  BookBridge container a GPU of its own. A 🔗 **Test** button next to the server URL
+  confirms the endpoint is reachable before you save.
+
+  Two new options cover servers that behave differently from whisper.cpp. **Split
+  Uploads** breaks each upload into short sub-requests and re-times the results, which
+  restores sync accuracy on servers that return one merged segment per request — set it
+  to 2 or 3 minutes on those, and leave it off for servers that already return
+  fine-grained segments. **Send Original Audio** hands the original mp3/m4b straight to
+  servers that decode and chunk it themselves, skipping minutes of local conversion per
+  book; leave it off for whisper.cpp, which requires 16kHz WAV input. Contributed by
+  [@chelming](https://github.com/chelming). (#330)
+
+- **Audio Split Length is now adjustable from Settings.** The size of the chunks audio
+  is cut into before transcription was previously fixed at 45 minutes; lowering it helps
+  a smaller GPU get through long books without running out of memory. Contributed by
+  [@chelming](https://github.com/chelming).
+
+- **Books that share a title are no longer impossible to tell apart when you add them.**
+  Picking the right book out of a series used to be guesswork: three separate books all
+  called "Warlock" showed up as three identical cards, with nothing to say which was
+  book one, two, or three. Both sides of the Add / Update Book picker now show a small
+  edition line under each result — the book's subtitle when your library has one
+  ("Book 2"), and otherwise its series position ("Warlock #2"). This surfaces detail
+  BookBridge was already fetching and quietly discarding, so libraries that track
+  subtitles or series see the difference immediately, and standalone books look exactly
+  as they did before. The label only helps you choose; the title BookBridge stores and
+  shows on your dashboard is unchanged.
 
 ## Fixed
 
-- **Your book files are no longer read constantly when nothing is happening.** The
-  KOReader managed-folder sync manifest was rebuilt on a fixed one-minute schedule,
-  hashing every book in the library each time regardless of whether any device ever
-  requested it. BookBridge now builds that list on demand and caches each book's
-  hash until the underlying file changes, so unchanged files are never re-read and
-  idle installs let drives spin down. (#342)
+- **Audiobook covers load when Audiobookshelf is only reachable from the server, and
+  your Audiobookshelf API token is no longer sent to the browser.** Books with a local
+  ebook cover hid the problem, because BookBridge shows that first and only falls back
+  to the Audiobookshelf address when it is missing. BookBridge already had its own cover
+  routes for Audiobookshelf, Grimmory and BookOrbit; covers now always go through them.
+  This applies everywhere covers appear — the dashboard, series stacks, Suggestions and
+  the match queue — and covers already saved the old way are corrected as the page is
+  drawn, so your existing books fix themselves on the next load with nothing for you to
+  do. Reported by [@mahood73](https://github.com/mahood73). (#353)
 
-- **Shelving and matching queues are consistent and private per reader.** Add Book
-  and Suggestions now share one atomic background processor covering BookOrbit
-  hashes, ownership claims, suggestion dismissal, and shelf-watch completion for
-  direct, Forge & Match, Forge only, audio-only, and ebook-only approvals. Queue
-  items are stamped to the reader who created them, so another user can no longer
-  view, remove, clear, or process them; pre-upgrade unowned items remain available
-  to the primary admin only, deleting a user removes their queued work, and
-  malformed queue owners are discarded on the next rewrite. **A Grimmory shelf move
-  can no longer lose a book** — the old shelf used to be cleared first, so a failed
-  write to the new shelf left the book on neither. BookOrbit now recognizes a
-  configured shelf name regardless of capitalization in every shelving path, so a
-  book can't be added to and then removed from the same collection.
+- **Ebooks in an Audiobookshelf library are no longer offered as audiobooks to match.**
+  If your Audiobookshelf holds ebooks alongside audiobooks, every one of those ebooks was
+  treated as an audiobook by the Suggestions scan, so it appeared as its own 100% match
+  against its own file. On a large ebook collection that buried the real audiobook
+  suggestions under thousands of bogus ones. BookBridge asked Audiobookshelf for
+  audiobooks only, but Audiobookshelf has no such filter and returned everything; the
+  results are now checked for actual audio before use. (#351)
 
-- **BookBridge can create Grimmory shelves again.** Shelving a book to a shelf that
-  didn't exist yet silently did nothing: the create request carried icon fields that
-  newer Grimmory builds reject outright, so the shelf was never created and the book
-  was never filed. BookBridge now retries without those fields, and your configured
-  Kobo and Up Next shelves are created on first use as intended. Installs whose
-  shelves already existed were unaffected.
+- **Books matched from a library BookBridge reaches only over the network now actually
+  download.** If your ebooks live in BookOrbit or Grimmory and you have not mounted that
+  library's folder into BookBridge, matching a book could still end in `EPUB not found
+  in BookOrbit` and a job stuck on "failed, retry later" — even though the match had
+  recorded exactly which book you picked. BookBridge was throwing that away and
+  searching the library again by filename, which only worked when the filename happened
+  to read like the book's title; anything with a series number or a year in it
+  (`07. Agent in Place (2018).epub`) failed. It now fetches the exact book you matched,
+  by id. Three further improvements come with it: a book you match is downloaded once
+  and kept instead of being fetched again later; the filename search still used for
+  older matches now copes with series numbers and years; and an explicitly matched book
+  is never quietly swapped for a different edition found by searching. Affected books
+  recover on their own — they are retried automatically. (#352)
 
-- **Audiobookshelf instant sync now connects through HTTPS reverse proxies.** Secure
-  Audiobookshelf URLs are handed to the WebSocket transport as `wss://` rather than
-  `https://`, which the socket client had been rejecting. Affected installs kept
-  working on scheduled polling; instant sync resumes automatically once you restart
-  on this version.
+- **"Add all exact" on the Suggestions page no longer silently does nothing.** After a
+  long library scan, the results were held only in memory — so if BookBridge restarted,
+  or you came back to a tab that had been sitting open, clicking **Add all exact** or
+  **Add selected** queued nothing at all. The counter still dropped to zero and every
+  card still greyed out, so it looked like it had worked, and the only way to get a book
+  onto the dashboard was to add it by hand from Add Book. Scan results are now restored
+  from the cache BookBridge already writes to disk, so a restart no longer throws away a
+  scan that took minutes to run. If a suggestion genuinely can't be queued, the page now
+  says so instead of quietly pretending otherwise, and the affected cards stay
+  selectable. (#351)
 
-- **Two devices opening the same new book at once no longer fails.** KoSync document
-  progress is written with an atomic conflict-safe upsert, so both devices update
-  one shared row instead of racing into a database error.
+- **Manual bug reports now include the recent logs needed to investigate them.** A
+  written report could previously arrive with no technical evidence whenever no warning
+  was buffered at that moment. Manual reports now attach up to 200 recent, scrubbed
+  INFO-and-higher log lines even when their warning list is empty. Those lines are shown
+  only on the private report detail page and do not create anomaly findings.
 
-- **KOReader managed-folder sync can recover Audiobookshelf ebooks with ordinary
-  filenames**, instead of requiring the legacy `{item_id}_abs.epub` naming
-  convention, and identifiers belonging to other ebook providers are no longer sent
-  to Audiobookshelf during that fallback.
+- **Raising the log level now actually produces the extra detail.** Choosing DEBUG in
+  Settings updated the logger but left the existing log handler at its previous level,
+  so the messages were generated and then discarded before reaching the log. Contributed
+  by [@chelming](https://github.com/chelming).
 
-- **Positions in ebooks containing HTML comments now resolve.** Files produced by
-  conversion tools often carry HTML comments; when a CFI-based position landed on
-  one, resolution failed and that book was skipped for the cycle. Comment and
-  processing-instruction nodes are now skipped, as the EPUB CFI specification
-  requires. (#341)
+- **A failed transcription against an external server now reports the server's error.**
+  With Send Original Audio enabled, the failure path crashed while composing its own
+  error message and buried the real cause from the transcription server. Contributed by
+  [@chelming](https://github.com/chelming).
 
-- **An expired StoryGraph login is reported once, clearly.** An expired session
-  cookie still looked configured, so every write attempt was redirected to the
-  sign-in page and logged as a failure — for every book, on every cycle. BookBridge
-  now logs one actionable warning and stops writing until the credentials change or
-  a write succeeds, so saving a fresh cookie resumes syncing on its own.
+- **Concurrent KOReader manifest builds no longer collide while linking the same ebook
+  hash.** Manifest hash linking now uses the same conflict-safe SQLite upsert strategy
+  as KoSync progress writes, preserving existing progress and metadata while ensuring
+  concurrent builders produce one shared document row.
 
-- **Book editions with apostrophes can be selected from multi-result matching
-  searches.** The Add / Update Book picker reads each edition's card metadata rather
-  than embedding the filename and title in inline JavaScript. (#339)
-
-- **A round of log-noise fixes.** Cleaning up a book whose Audiobookshelf collection
-  no longer exists, and looking for a transcript on a book that has never been
-  transcribed, are both normal outcomes and no longer surface as warnings or errors.
-  When BookOrbit does refuse to create a collection, the log now reports the status
-  and response instead of a bare failure line.
-
-## Maintenance
-
-The standalone match, batch match, and forge screens had been fully superseded by the
-current Add / Update Book flow but were still shipping in the image. They have been
-removed and those entry points now redirect to Add / Update Book, so the only visible
-difference is which page you land on. The Shelfmark link now opens the configured
-tool directly rather than embedding it in a BookBridge page. A batch of unused Python
-code and four unused dependencies were dropped as well. No feature was lost.
+- **Diagnostics no longer exhaust their warning-template limit on short book IDs,
+  filenames, or XPath fragments.** Short values inside quotes now share a stable
+  diagnostic template while the original scrubbed warning remains available for
+  troubleshooting. The scrubber also no longer mistakes the closing quote of one short
+  value for the opening quote of another.
 
 ## Operational Notes
 
-No database migration is required for this release, and the BridgeSync KOReader
-plugin is unchanged (0.5.4), so no plugin re-download is needed. Pull the new image
-and restart BookBridge; the Audiobookshelf instant-sync and idle-hashing fixes take
-effect on that restart.
+No database migration is required for this release, the BridgeSync KOReader plugin is
+unchanged (0.5.4) so no plugin re-download is needed, and `requirements.txt` and the
+Dockerfile are untouched. Pull the new image and restart BookBridge.
 
-If you build from source rather than pulling the published image, `requirements.txt`
-now lists four fewer packages. Nothing needs to be installed — a plain restart is
-enough — and a rebuild simply produces a slightly smaller image.
+The cover fix needs nothing from you: existing dashboard entries are rewritten to the
+proxied routes as each page is drawn. If your Audiobookshelf API token was previously
+being served to browsers on your network and that concerns you, this is a good moment to
+rotate it in Audiobookshelf and re-enter it in BookBridge Settings.
+
+The new external-transcription options are off by default, so nothing changes for
+installs using local Whisper or a plain whisper.cpp server. See
+[Configuration](docs/configuration.md#transcription-settings) for the full option list, including
+when to use Split Uploads and Send Original Audio.
