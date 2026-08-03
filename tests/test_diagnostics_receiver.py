@@ -264,6 +264,17 @@ class TestPostDiagnostics(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(data["warnings_stored"], 0)
 
+    def test_rejects_non_object_warning_entries(self) -> None:
+        payload = _valid_payload(warnings=[None])
+
+        resp = self._client.post("/api/v1/diagnostics", json=payload)
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.get_json(), {
+            "ok": False,
+            "error": "warnings entries must be objects",
+        })
+
 
 class TestExport(unittest.TestCase):
     def setUp(self) -> None:

@@ -708,6 +708,11 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
             warnings_raw = []
         if not isinstance(warnings_raw, list):
             return jsonify({"ok": False, "error": "warnings must be a list"}), 400
+        if any(not isinstance(warning, dict) for warning in warnings_raw):
+            return jsonify({
+                "ok": False,
+                "error": "warnings entries must be objects",
+            }), 400
 
         manual = payload.get("manual", False)
         if not isinstance(manual, bool):
