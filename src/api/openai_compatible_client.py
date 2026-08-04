@@ -101,7 +101,7 @@ class OpenAICompatibleClient:
                 return []
             return [m.get("id", "") for m in models if isinstance(m, dict) and m.get("id")]
         except Exception as e:
-            logger.warning(f"OpenAI-compatible list_models failed: {e}")
+            logger.warning(f"OpenAI-compatible list_models failed: {e}", exc_info=True)
             return []
 
     def embed(self, texts: List[str]) -> Optional[List[List[float]]]:
@@ -130,7 +130,7 @@ class OpenAICompatibleClient:
             logger.warning("OpenAI-compatible /embeddings returned missing embeddings")
             return None
         except Exception as e:
-            logger.warning(f"OpenAI-compatible /embeddings failed: {e}")
+            logger.warning(f"OpenAI-compatible /embeddings failed: {e}", exc_info=True)
             return None
 
     def embed_one(self, text: str) -> Optional[List[float]]:
@@ -197,5 +197,5 @@ class OpenAICompatibleClient:
             logger.warning("OpenAI-compatible judge returned non-object JSON")
             return None
         except Exception as e:
-            logger.warning(f"OpenAI-compatible judge failed: {e}")
+            logger.warning(f"OpenAI-compatible judge failed: {e}", exc_info=True)
             return None

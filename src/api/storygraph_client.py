@@ -280,7 +280,7 @@ class StorygraphClient:
                 allow_redirects=allow_redirects,
             )
         except Exception as exc:
-            logger.warning("StoryGraph request failed for %s: %s", url, exc)
+            logger.warning("StoryGraph request failed for %s: %s", url, exc, exc_info=True)
             return None
 
     def check_connection(self) -> bool:

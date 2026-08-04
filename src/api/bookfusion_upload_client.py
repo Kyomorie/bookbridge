@@ -200,7 +200,7 @@ class BookFusionUploadClient:
         try:
             resp = self.session.post(url, data=data, auth=(api_key, ""), timeout=_INIT_TIMEOUT)
         except Exception as exc:
-            logger.error("BookFusion upload init failed: %s", exc)
+            logger.error("BookFusion upload init failed: %s", exc, exc_info=True)
             return None
 
         result: dict = {"status_code": resp.status_code, "body": resp.text}
@@ -236,7 +236,7 @@ class BookFusionUploadClient:
                 files = {"file": (os.path.basename(epub_path), f, "application/epub+zip")}
                 resp = self.session.post(s3_url, data=params, files=files, timeout=timeout)
         except Exception as exc:
-            logger.error("BookFusion S3 upload failed: %s", exc)
+            logger.error("BookFusion S3 upload failed: %s", exc, exc_info=True)
             return False, str(exc)
 
         if resp.status_code == 204:
@@ -308,7 +308,7 @@ class BookFusionUploadClient:
                 timeout=_FINALIZE_TIMEOUT,
             )
         except Exception as exc:
-            logger.error("BookFusion upload finalize failed: %s", exc)
+            logger.error("BookFusion upload finalize failed: %s", exc, exc_info=True)
             return None
 
         result: dict = {"status_code": resp.status_code, "body": resp.text}
@@ -419,13 +419,13 @@ def extract_epub_metadata(epub_path: str) -> dict:
             try:
                 container_xml = zf.read("META-INF/container.xml")
             except KeyError:
-                logger.warning("No META-INF/container.xml in EPUB: %s", epub_path)
+                logger.warning("No META-INF/container.xml in EPUB: %s", epub_path, exc_info=True)
                 return result
 
             try:
                 container_tree = ElementTree.fromstring(container_xml)
             except ElementTree.ParseError as exc:
-                logger.warning("Failed to parse container.xml in %s: %s", epub_path, exc)
+                logger.warning("Failed to parse container.xml in %s: %s", epub_path, exc, exc_info=True)
                 return result
 
             # Find the first rootfile element
@@ -443,13 +443,13 @@ def extract_epub_metadata(epub_path: str) -> dict:
             try:
                 opf_content = zf.read(opf_path)
             except KeyError:
-                logger.warning("OPF file not found in EPUB: %s/%s", epub_path, opf_path)
+                logger.warning("OPF file not found in EPUB: %s/%s", epub_path, opf_path, exc_info=True)
                 return result
 
             try:
                 opf_tree = ElementTree.fromstring(opf_content)
             except ElementTree.ParseError as exc:
-                logger.warning("Failed to parse OPF in %s: %s", epub_path, exc)
+                logger.warning("Failed to parse OPF in %s: %s", epub_path, exc, exc_info=True)
                 return result
 
             # --- Extract Dublin Core metadata ---
@@ -513,8 +513,8 @@ def extract_epub_metadata(epub_path: str) -> dict:
                 result["series"] = [series_meta]
 
     except zipfile.BadZipFile as exc:
-        logger.warning("Bad ZIP (not an EPUB?) %s: %s", epub_path, exc)
+        logger.warning("Bad ZIP (not an EPUB?) %s: %s", epub_path, exc, exc_info=True)
     except Exception as exc:
-        logger.warning("Unexpected error extracting EPUB metadata from %s: %s", epub_path, exc)
+        logger.warning("Unexpected error extracting EPUB metadata from %s: %s", epub_path, exc, exc_info=True)
 
     return result

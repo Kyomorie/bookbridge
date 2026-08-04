@@ -21,6 +21,18 @@ All notable changes to BookBridge will be documented in this file.
   temporary files left behind by an interrupted send are cleaned up
   automatically.
 
+- **Error logs now carry full tracebacks.** Every error logged from a failure
+  path includes the stack trace on both the console and in log files, so
+  troubleshooting no longer starts with a bare one-line message; warnings stay
+  one-line, with their stack detail flowing only into the opt-in diagnostics
+  reports. Repeating warnings for a persistent condition — a service that stays
+  unreachable, for example — now log once, then quietly count repeats with a
+  checkpoint every 50th occurrence and a "recovered" note when the condition
+  clears, so logs stay readable during long outages instead of filling up with
+  the same line. Sync leader decisions now say why a leader was chosen and when
+  a safety guard blocked one, making sync behavior easier to follow from the
+  logs alone.
+
 ## [7.3.4] - 2026-08-04
 
 ### Fixed

@@ -198,6 +198,7 @@ class KOReaderDeviceSyncService:
                 "KOReader device-sync could not compute content hash for '%s': %s",
                 sanitize_log_data(source_path.name),
                 e,
+                exc_info=True,
             )
             return None
 
@@ -352,6 +353,7 @@ class KOReaderDeviceSyncService:
                 "KOReader device-sync BookOrbit download failed for '%s': %s",
                 sanitize_log_data(source_filename),
                 exc,
+                exc_info=True,
             )
             return False
 
@@ -377,6 +379,7 @@ class KOReaderDeviceSyncService:
                 "KOReader device-sync Grimmory download failed for '%s': %s",
                 sanitize_log_data(source_filename),
                 e,
+                exc_info=True,
             )
             return False
 
@@ -409,6 +412,7 @@ class KOReaderDeviceSyncService:
                 "KOReader device-sync ABS download failed for '%s': %s",
                 sanitize_log_data(source_filename),
                 e,
+                exc_info=True,
             )
             return False
 
@@ -435,6 +439,7 @@ class KOReaderDeviceSyncService:
                 "KOReader device-sync CWA download failed for '%s': %s",
                 sanitize_log_data(source_filename),
                 e,
+                exc_info=True,
             )
             return False
 
@@ -463,6 +468,7 @@ class KOReaderDeviceSyncService:
                 "KOReader device-sync Kavita download failed for '%s': %s",
                 sanitize_log_data(source_filename),
                 e,
+                exc_info=True,
             )
             return False
 

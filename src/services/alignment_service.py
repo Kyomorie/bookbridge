@@ -194,7 +194,7 @@ class AlignmentService:
                             seg_start = ts
                             seg_text_words = []
                 except Exception as e:
-                    logger.warning(f"Error reading Storyteller chapter {chapter_index}: {e}")
+                    logger.warning(f"Error reading Storyteller chapter {chapter_index}: {e}", exc_info=True)
                     
             if segments:
                 rebuilt_segments = self.polisher.rebuild_fragmented_sentences(segments, ebook_text)
@@ -1240,6 +1240,7 @@ def ingest_storyteller_transcripts(
                         stale_file,
                         abs_id,
                         delete_err,
+                        exc_info=True,
                     )
         copied_count = 0
         for source_name, target_name in zip(source_files, expected_files):

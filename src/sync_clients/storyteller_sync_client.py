@@ -138,7 +138,7 @@ class StorytellerSyncClient(SyncClient):
                 else:
                     raise ValueError("Storyteller position response is not a tuple")
         except Exception as e:
-            logger.warning(f"'{title_snip}' Storyteller UUID fetch failed for '{uuid}': {e}")
+            logger.warning(f"'{title_snip}' Storyteller UUID fetch failed for '{uuid}': {e}", exc_info=True)
             return None
 
         # Calculate delta

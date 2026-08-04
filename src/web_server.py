@@ -39,6 +39,7 @@ from src.utils.config_loader import ConfigLoader, env_truthy
 from src.utils.cache_paths import safe_cache_path
 from src.utils.logging_utils import memory_log_handler, LOG_PATH
 from src.utils.logging_utils import sanitize_log_data
+from src.utils.logging_utils import get_persistent_condition_logger
 from src.services.diagnostics import setup_diagnostics_logging
 from src.api.api_clients import ABS_DISABLED_SENTINEL, is_abs_disabled_value
 from src.api.kosync_server import kosync_sync_bp, kosync_admin_bp, init_kosync_server, signal_manifest_rebuild
@@ -65,7 +66,7 @@ def _reconfigure_logging():
 
         logger.info(f"📝 Logging level updated to {new_level_str}")
     except Exception as e:
-        logger.warning(f"⚠️ Failed to reconfigure logging: {e}")
+        logger.warning(f"⚠️ Failed to reconfigure logging: {e}", exc_info=True)
 
 # ---------------- APP SETUP ----------------
 container = None
@@ -270,7 +271,7 @@ def setup_dependencies(app, test_container=None):
         try:
             database_service.encrypt_plaintext_secrets()
         except Exception as e:
-            logger.error(f"❌ Could not encrypt stored credentials: {e}")
+            logger.error(f"❌ Could not encrypt stored credentials: {e}", exc_info=True)
         ConfigLoader.load_settings(database_service)
         logger.info("✅ Settings loaded into environment variables")
 
@@ -302,7 +303,7 @@ def setup_dependencies(app, test_container=None):
         try:
             return float(os.environ.get(key, str(default)))
         except (ValueError, TypeError):
-            logger.warning(f"⚠️ Invalid '{key}' value, defaulting to {default}")
+            logger.warning(f"⚠️ Invalid '{key}' value, defaulting to {default}", exc_info=True)
             return float(default)
 
     SYNC_PERIOD_MINS = _get_float_env("SYNC_PERIOD_MINS", 5)
@@ -342,7 +343,7 @@ def setup_dependencies(app, test_container=None):
         for _sw in container.shelf_watch_services():
             _sw.set_suggestions_service_factory(_get_suggestions_service)
     except Exception as e:
-        logger.warning(f"Could not wire shelf_watch_service suggestions factory: {e}")
+        logger.warning(f"Could not wire shelf_watch_service suggestions factory: {e}", exc_info=True)
 
     # Get data directories (now using updated env vars)
     DATA_DIR = container.data_dir()
@@ -594,15 +595,15 @@ def _tracker_automatch_worker():
                 try:
                     hardcover._automatch_hardcover(book)
                 except Exception as e:
-                    logger.warning("Deferred Hardcover automatch failed for '%s': %s", abs_id, e)
+                    logger.warning("Deferred Hardcover automatch failed for '%s': %s", abs_id, e, exc_info=True)
             storygraph = sync_clients.get("StoryGraph")
             if storygraph and storygraph.is_configured():
                 try:
                     storygraph._automatch_storygraph(book)
                 except Exception as e:
-                    logger.warning("Deferred StoryGraph automatch failed for '%s': %s", abs_id, e)
+                    logger.warning("Deferred StoryGraph automatch failed for '%s': %s", abs_id, e, exc_info=True)
         except Exception as e:
-            logger.error("Deferred tracker automatch worker error: %s", e)
+            logger.error("Deferred tracker automatch worker error: %s", e, exc_info=True)
         finally:
             _TRACKER_AUTOMATCH_QUEUE.task_done()
 
@@ -648,7 +649,7 @@ def _spawn_user_background(fn, *args, label="background"):
         try:
             fn(*args)
         except Exception as e:
-            logger.error("%s failed: %s", label, e)
+            logger.error("%s failed: %s", label, e, exc_info=True)
         return
 
     bundle = uc()
@@ -666,7 +667,7 @@ def _spawn_user_background(fn, *args, label="background"):
         try:
             fn(*args)
         except Exception as e:
-            logger.error("%s failed: %s", label, e)
+            logger.error("%s failed: %s", label, e, exc_info=True)
         finally:
             reset_current_user_credentials(tok_creds)
             reset_current_user_id(tok_uid)
@@ -957,7 +958,7 @@ def setup():
         if database_service.count_users() != 0:
             return redirect(url_for('login'))
     except Exception as e:
-        logger.error("Could not inspect users for setup: %s", e)
+        logger.error("Could not inspect users for setup: %s", e, exc_info=True)
         return ("Database unavailable", 500)
 
     error = None
@@ -981,7 +982,7 @@ def setup():
             except ValueError:
                 return redirect(url_for('login'))
             except Exception as e:
-                logger.error("Initial admin setup failed: %s", e)
+                logger.error("Initial admin setup failed: %s", e, exc_info=True)
                 error = "Could not create admin account"
 
     return render_template('setup.html', error=error), (400 if error else 200)
@@ -1265,7 +1266,7 @@ def admin_user_abs_libraries(user_id):
     try:
         return jsonify(client.get_libraries() or [])
     except Exception as e:
-        logger.warning("Per-user ABS library lookup failed for user %s: %s", user_id, e)
+        logger.warning("Per-user ABS library lookup failed for user %s: %s", user_id, e, exc_info=True)
         return jsonify({"error": str(e)}), 502
 
 
@@ -1282,7 +1283,7 @@ def account_abs_libraries():
     try:
         return jsonify(client.get_libraries() or [])
     except Exception as e:
-        logger.warning("Self-service ABS library lookup failed for user %s: %s", user.id, e)
+        logger.warning("Self-service ABS library lookup failed for user %s: %s", user.id, e, exc_info=True)
         return jsonify({"error": str(e)}), 502
 
 
@@ -1301,7 +1302,7 @@ def admin_user_booklore_libraries(user_id):
     try:
         return jsonify(client.get_libraries() or [])
     except Exception as e:
-        logger.warning("Per-user Grimmory library lookup failed for user %s: %s", user_id, e)
+        logger.warning("Per-user Grimmory library lookup failed for user %s: %s", user_id, e, exc_info=True)
         return jsonify({"error": str(e)}), 502
 
 
@@ -1318,7 +1319,7 @@ def account_booklore_libraries():
     try:
         return jsonify(client.get_libraries() or [])
     except Exception as e:
-        logger.warning("Self-service Grimmory library lookup failed for user %s: %s", user.id, e)
+        logger.warning("Self-service Grimmory library lookup failed for user %s: %s", user.id, e, exc_info=True)
         return jsonify({"error": str(e)}), 502
 
 
@@ -1556,7 +1557,7 @@ def sync_daemon():
         try:
             manager.run_sync_for_all_users()
         except Exception as e:
-            logger.error(f"❌ Initial sync cycle failed: {e}")
+            logger.error(f"❌ Initial sync cycle failed: {e}", exc_info=True)
 
         # Catch-up diagnostics send on startup (24h guard inside is a no-op when not due)
         try:
@@ -1571,11 +1572,11 @@ def sync_daemon():
                 schedule.run_pending()
                 time.sleep(30)  # Check every 30 seconds
             except Exception as e:
-                logger.error(f"❌ Sync daemon error: {e}")
+                logger.error(f"❌ Sync daemon error: {e}", exc_info=True)
                 time.sleep(60)  # Wait longer on error
 
     except Exception as e:
-        logger.error(f"❌ Sync daemon crashed: {e}")
+        logger.error(f"❌ Sync daemon crashed: {e}", exc_info=True)
 
 
 # ---------------- ORIGINAL ABS-KOSYNC HELPERS ----------------
@@ -1605,7 +1606,7 @@ def get_kosync_id_for_ebook(ebook_filename, booklore_id=None, original_filename=
                     logger.debug(f"🔍 Computed KOSync ID from Grimmory download: '{kosync_id}'")
                     return kosync_id
         except Exception as e:
-            logger.warning(f"⚠️ Failed to get KOSync ID from Grimmory, falling back to filesystem: {e}")
+            logger.warning(f"⚠️ Failed to get KOSync ID from Grimmory, falling back to filesystem: {e}", exc_info=True)
 
     # Fall back to filesystem. When a queue item carries the selected local source path,
     # prefer it over filename-only globbing so duplicate basenames do not hash the wrong book.
@@ -1661,10 +1662,10 @@ def get_kosync_id_for_ebook(ebook_filename, booklore_id=None, original_filename=
                                 cached_path.write_bytes(content)
                                 logger.info(f"   ✅ Cached BookOrbit download to '{cached_path}'")
                             except Exception as cache_err:
-                                logger.warning(f"⚠️ Failed to cache BookOrbit download: {cache_err}")
+                                logger.warning(f"⚠️ Failed to cache BookOrbit download: {cache_err}", exc_info=True)
                         return kosync_id
         except Exception as e:
-            logger.warning(f"⚠️ Failed to get KOSync ID from BookOrbit: {e}")
+            logger.warning(f"⚠️ Failed to get KOSync ID from BookOrbit: {e}", exc_info=True)
 
     # 1. ABS On-Demand
     if "_abs." in ebook_filename:
@@ -1685,7 +1686,7 @@ def get_kosync_id_for_ebook(ebook_filename, booklore_id=None, original_filename=
                  else:
                      logger.warning(f"   ⚠️ No ebook files found in ABS for item '{abs_id}'")
         except Exception as e:
-            logger.error(f"   ❌ Failed ABS on-demand download: {e}")
+            logger.error(f"   ❌ Failed ABS on-demand download: {e}", exc_info=True)
 
     # 2. CWA On-Demand
     if "_cwa." in ebook_filename or ebook_filename.startswith("cwa_"):
@@ -1742,7 +1743,7 @@ def get_kosync_id_for_ebook(ebook_filename, booklore_id=None, original_filename=
                      else:
                          logger.warning(f"   ⚠️ Could not find CWA book for ID '{cwa_id}'")
         except Exception as e:
-            logger.error(f"   ❌ Failed CWA on-demand download: {e}")
+            logger.error(f"   ❌ Failed CWA on-demand download: {e}", exc_info=True)
 
     # Neither source available - log helpful warning
     if (not clients.booklore_client.is_configured()
@@ -1836,7 +1837,8 @@ def _shelve_matched_ebook(shelf_filename, ebook_source=None, ebook_source_id=Non
             added = client.add_to_shelf(shelf_filename, kobo_shelf)
     except Exception as e:
         logger.warning(
-            f"⚠️ Failed to add '{sanitize_log_data(shelf_filename)}' to '{kobo_shelf}': {e}"
+            f"⚠️ Failed to add '{sanitize_log_data(shelf_filename)}' to '{kobo_shelf}': {e}",
+            exc_info=True
         )
         return
     if not added:
@@ -1857,7 +1859,8 @@ def _shelve_matched_ebook(shelf_filename, ebook_source=None, ebook_source_id=Non
                 client.remove_from_shelf(shelf_filename, watch_shelf)
         except Exception as e:
             logger.warning(
-                f"⚠️ Failed to remove '{sanitize_log_data(shelf_filename)}' from watch shelf '{watch_shelf}': {e}"
+                f"⚠️ Failed to remove '{sanitize_log_data(shelf_filename)}' from watch shelf '{watch_shelf}': {e}",
+                exc_info=True
             )
 
 
@@ -1929,7 +1932,7 @@ def _download_storyteller_artifact(storyteller_uuid, abs_title=None, *, original
     try:
         downloaded = uc().storyteller_client.download_book(storyteller_uuid, target_path)
     except Exception as dl_err:
-        logger.warning(f"Storyteller API download failed for '{storyteller_uuid}': {dl_err}")
+        logger.warning(f"Storyteller API download failed for '{storyteller_uuid}': {dl_err}", exc_info=True)
 
     if downloaded:
         return artifact_filename, target_path
@@ -1954,7 +1957,7 @@ def _resolve_abs_chapters_for_storyteller_ingest(book):
     try:
         item_details = uc().abs_client.get_item_details(book.abs_id)
     except Exception as abs_err:
-        logger.warning(f"Failed ABS chapter lookup for storyteller ingest '{book.abs_id}': {abs_err}")
+        logger.warning(f"Failed ABS chapter lookup for storyteller ingest '{book.abs_id}': {abs_err}", exc_info=True)
         return []
     if not item_details:
         return []
@@ -2206,13 +2209,14 @@ def _upsert_storyteller_mapping(
                 sanitize_log_data(migration_source_id),
                 sanitize_log_data(saved_book.abs_id),
                 merge_err,
+                exc_info=True,
             )
 
     if selected_storyteller_uuid and uc().storyteller_client.is_configured():
         try:
             uc().storyteller_client.add_to_collection_by_uuid(selected_storyteller_uuid)
         except Exception as st_err:
-            logger.warning(f"Failed to add Storyteller UUID to collection: {st_err}")
+            logger.warning(f"Failed to add Storyteller UUID to collection: {st_err}", exc_info=True)
 
     if getattr(saved_book, "sync_mode", "audiobook") == "ebook_only":
         logger.info("Skipping ABS collection side effects for ebook-only mapping '%s'", saved_book.abs_id)
@@ -2352,7 +2356,7 @@ def get_searchable_audiobooks(search_term):
         try:
             provider_results = adapter.search(search_term)
         except Exception as e:
-            logger.warning(f"⚠️ Audiobook search failed for {source_name}: {e}")
+            logger.warning(f"⚠️ Audiobook search failed for {source_name}: {e}", exc_info=True)
             per_adapter_counts[source_name] = f"error:{type(e).__name__}"
             continue
         per_adapter_counts[source_name] = len(provider_results) if provider_results else 0
@@ -2538,7 +2542,7 @@ def _build_local_ebook_title_index():
                     if key:
                         index.setdefault(key, eb.name)
     except Exception as e:
-        logger.warning(f"⚠️ Failed to build local ebook title index: {e}")
+        logger.warning(f"⚠️ Failed to build local ebook title index: {e}", exc_info=True)
     return index
 
 
@@ -2576,7 +2580,7 @@ def get_searchable_ebooks(search_term):
                             source='Grimmory'
                         ))
         except Exception as e:
-            logger.warning(f"⚠️ Grimmory search failed: {e}")
+            logger.warning(f"⚠️ Grimmory search failed: {e}", exc_info=True)
 
     # 1b. BookOrbit
     if clients.bookorbit_client.is_configured():
@@ -2611,7 +2615,7 @@ def get_searchable_ebooks(search_term):
                     subtitle=_ebook_edition_label(b),
                 ))
         except Exception as e:
-            logger.warning(f"⚠️ BookOrbit search failed: {e}")
+            logger.warning(f"⚠️ BookOrbit search failed: {e}", exc_info=True)
 
     # 1c. BookFusion existing user library links. Search-only because BookFusion
     # does not provide a bridge-side EPUB download in Phase 1/3.
@@ -2638,7 +2642,7 @@ def get_searchable_ebooks(search_term):
                     source_id=bf_id,
                 ))
         except Exception as e:
-            logger.warning(f"⚠️ BookFusion search failed: {e}")
+            logger.warning(f"⚠️ BookFusion search failed: {e}", exc_info=True)
 
     # 2. ABS ebook libraries
     if search_term:
@@ -2665,7 +2669,7 @@ def get_searchable_ebooks(search_term):
                                 if ab.get('title'):
                                     found_stems.add(ab['title'].lower().strip())
         except Exception as e:
-            logger.warning(f"⚠️ ABS ebook search failed: {e}")
+            logger.warning(f"⚠️ ABS ebook search failed: {e}", exc_info=True)
 
     # 3. CWA (Calibre-Web Automated)
     if search_term:
@@ -2703,7 +2707,7 @@ def get_searchable_ebooks(search_term):
                             if cr.get('title'):
                                 found_stems.add(cr['title'].lower().strip())
         except Exception as e:
-            logger.warning(f"⚠️ CWA search failed: {e}")
+            logger.warning(f"⚠️ CWA search failed: {e}", exc_info=True)
 
     # 4. Search filesystem (Local) - LOW PRIORITY
     if EBOOK_DIR.exists():
@@ -2723,14 +2727,16 @@ def get_searchable_ebooks(search_term):
                     found_stems.add(stem_lower)
 
         except Exception as e:
-            logger.warning(f"⚠️ Filesystem search failed: {e}")
+            logger.warning(f"⚠️ Filesystem search failed: {e}", exc_info=True)
 
     # Check if we have no sources at all
     if (not results and not EBOOK_DIR.exists()
             and not clients.booklore_client.is_configured()
             and not clients.bookorbit_client.is_configured()
             and not clients.bookfusion_client.is_configured()):
-        logger.warning(
+        get_persistent_condition_logger().warn(
+            logger,
+            "no_ebook_source_configured",
             "⚠️ No ebooks available: No ebook source configured. "
             "Enable Grimmory (BOOKLORE_SERVER, BOOKLORE_USER, BOOKLORE_PASSWORD), "
             "enable BookOrbit (BOOKORBIT_SERVER, BOOKORBIT_USER, BOOKORBIT_PASSWORD), "
@@ -2983,7 +2989,7 @@ def _create_or_update_library_audio_mapping(
         try:
             uc().storyteller_client.add_to_collection_by_uuid(saved_book.storyteller_uuid)
         except Exception as st_err:
-            logger.warning(f"Failed to add Storyteller UUID to collection: {st_err}")
+            logger.warning(f"Failed to add Storyteller UUID to collection: {st_err}", exc_info=True)
 
     shelf_filename = saved_book.original_ebook_filename or saved_book.ebook_filename
     if shelf_filename and not _is_storyteller_artifact_filename(shelf_filename):
@@ -2994,7 +3000,7 @@ def _create_or_update_library_audio_mapping(
                 ebook_source_id=saved_book.ebook_source_id,
             )
         except Exception as shelf_err:
-            logger.warning(f"Failed to shelve matched ebook '{shelf_filename}': {shelf_err}")
+            logger.warning(f"Failed to shelve matched ebook '{shelf_filename}': {shelf_err}", exc_info=True)
 
     database_service.dismiss_suggestion(saved_book.abs_id)
     if isinstance(saved_book.kosync_doc_id, str) and saved_book.kosync_doc_id.strip():
@@ -3090,7 +3096,7 @@ def _create_or_update_audio_only_mapping(
                 user_setting("ABS_COLLECTION_NAME", "Synced with KOReader"),
             )
         except Exception as exc:
-            logger.warning("Failed to add audio-only ABS mapping to collection: %s", exc)
+            logger.warning("Failed to add audio-only ABS mapping to collection: %s", exc, exc_info=True)
 
     try:
         database_service.dismiss_suggestion(saved_book.abs_id)
@@ -3127,7 +3133,7 @@ def _ensure_bookfusion_ebook_cached(bookfusion_id) -> "str | None":
     try:
         content = client.download_book(bf_id)
     except Exception as e:
-        logger.warning("⚠️ BookFusion download failed for '%s': %s", bf_id, e)
+        logger.warning("⚠️ BookFusion download failed for '%s': %s", bf_id, e, exc_info=True)
         return None
     if not content:
         logger.warning("⚠️ BookFusion download returned no content for '%s'", bf_id)
@@ -3135,7 +3141,7 @@ def _ensure_bookfusion_ebook_cached(bookfusion_id) -> "str | None":
     try:
         cached_path.write_bytes(content)
     except Exception as e:
-        logger.error("❌ Could not cache BookFusion EPUB for '%s': %s", bf_id, e)
+        logger.error("❌ Could not cache BookFusion EPUB for '%s': %s", bf_id, e, exc_info=True)
         return None
     logger.info("📥 Cached BookFusion EPUB '%s' (%d bytes)", filename, len(content))
     return filename
@@ -3165,7 +3171,7 @@ def _link_bookfusion_ebook_source(target_book, bookfusion_id) -> None:
         cached_path = container.epub_cache_dir() / ebook_filename
         kosync_id = container.ebook_parser().get_kosync_id(cached_path)
     except Exception as e:
-        logger.warning("⚠️ Could not compute KOSync hash for BookFusion '%s': %s", bookfusion_id, e)
+        logger.warning("⚠️ Could not compute KOSync hash for BookFusion '%s': %s", bookfusion_id, e, exc_info=True)
         kosync_id = None
     if kosync_id:
         target_book.kosync_doc_id = kosync_id
@@ -3279,7 +3285,7 @@ def _create_or_update_bookfusion_progress_mapping(
             database_service.ensure_linked_kosync_document(saved_book.kosync_doc_id, saved_book.abs_id)
         except Exception as e:
             logger.warning(
-                "⚠️ Could not link BookFusion KOSync document for '%s': %s", saved_book.abs_id, e
+                "⚠️ Could not link BookFusion KOSync document for '%s': %s", saved_book.abs_id, e, exc_info=True
             )
 
     _persist_bookfusion_link_for_current_user(
@@ -3294,7 +3300,7 @@ def _create_or_update_bookfusion_progress_mapping(
     except Exception as e:
         logger.warning(
             "⚠️ Could not enqueue tracker automatch for BookFusion book '%s': %s",
-            saved_book.abs_id, e,
+            saved_book.abs_id, e, exc_info=True,
         )
     database_service.dismiss_suggestion(saved_book.abs_id)
     return saved_book, None, None
@@ -3485,7 +3491,7 @@ def settings():
         except Exception as e:
             session['message'] = f"Error saving settings: {e}"
             session['is_error'] = True
-            logger.error(f"❌ Error saving settings: {e}")
+            logger.error(f"❌ Error saving settings: {e}", exc_info=True)
 
         return redirect(url_for('settings'))
 
@@ -4053,7 +4059,7 @@ def _queue_item_shelf_watch_metadata(item: dict) -> "dict | None":
         try:
             pending = database_service.get_pending_suggestion(key)
         except Exception as exc:
-            logger.warning("Shelf-watch approval lookup failed for '%s': %s", key, exc)
+            logger.warning("Shelf-watch approval lookup failed for '%s': %s", key, exc, exc_info=True)
             continue
         if pending and getattr(pending, 'origin', None) == 'shelf_watch':
             metadata = pending.origin_metadata or {}
@@ -4093,6 +4099,7 @@ def _complete_shelf_watch_approval(meta: dict, *, remove_only: bool = False) -> 
             "Shelf-watch approval failed for '%s': %s",
             sanitize_log_data(filename),
             exc,
+            exc_info=True,
         )
         return False
 
@@ -4630,6 +4637,7 @@ def _persist_bookfusion_link_for_user_id(
             user_id,
             sanitize_log_data(abs_id),
             exc,
+            exc_info=True,
         )
 
 
@@ -4793,7 +4801,7 @@ def forge_search_audio():
                         "cover_url": f"/api/booklore/audiobook-cover/{book_id}",
                     })
             except Exception as e:
-                logger.warning(f"⚠️ Forge audio Grimmory search failed: {e}")
+                logger.warning(f"⚠️ Forge audio Grimmory search failed: {e}", exc_info=True)
 
         _bo_client = getattr(clients, "bookorbit_client", None)
         if _bo_client and _bo_client.is_configured():
@@ -4817,7 +4825,7 @@ def forge_search_audio():
                         "cover_url": f"/api/bookorbit/audiobook-cover/{book_id}",
                     })
             except Exception as e:
-                logger.warning(f"⚠️ Forge audio BookOrbit search failed: {e}")
+                logger.warning(f"⚠️ Forge audio BookOrbit search failed: {e}", exc_info=True)
 
         all_audiobooks = get_audiobooks_conditionally()
 
@@ -4894,7 +4902,7 @@ def forge_search_text():
                                 "booklore_id": b.get('id'),
                             })
         except Exception as e:
-            logger.warning(f"⚠️ Forge: Grimmory search failed: {e}")
+            logger.warning(f"⚠️ Forge: Grimmory search failed: {e}", exc_info=True)
 
     # 2. BookOrbit
     try:
@@ -4920,7 +4928,7 @@ def forge_search_text():
                             "source_id": b.get('id'),
                         })
     except Exception as e:
-        logger.warning(f"⚠️ Forge: BookOrbit search failed: {e}")
+        logger.warning(f"⚠️ Forge: BookOrbit search failed: {e}", exc_info=True)
 
     # 2b. BookFusion
     try:
@@ -4948,7 +4956,7 @@ def forge_search_text():
                         "source_id": bf_id,
                     })
     except Exception as e:
-        logger.warning(f"⚠️ Forge: BookFusion search failed: {e}")
+        logger.warning(f"⚠️ Forge: BookFusion search failed: {e}", exc_info=True)
 
     # 3. ABS Ebooks
     try:
@@ -4972,7 +4980,7 @@ def forge_search_text():
                                 "ext": ef.get('ext', 'epub'),
                             })
     except Exception as e:
-        logger.warning(f"⚠️ Forge: ABS ebook search failed: {e}")
+        logger.warning(f"⚠️ Forge: ABS ebook search failed: {e}", exc_info=True)
 
     # 4. CWA
     try:
@@ -4994,7 +5002,7 @@ def forge_search_text():
                             "download_url": cr.get('download_url', ''),
                         })
     except Exception as e:
-        logger.warning(f"⚠️ Forge: CWA search failed: {e}")
+        logger.warning(f"⚠️ Forge: CWA search failed: {e}", exc_info=True)
 
     # 5. Local files from BOOKS_DIR
     try:
@@ -5016,7 +5024,7 @@ def forge_search_text():
                             "file_size_mb": round(epub.stat().st_size / (1024 * 1024), 2),
                         })
     except Exception as e:
-        logger.warning(f"⚠️ Forge: Local file search failed: {e}")
+        logger.warning(f"⚠️ Forge: Local file search failed: {e}", exc_info=True)
 
     return jsonify(results)
 
@@ -5084,7 +5092,7 @@ def forge_process():
                 title = metadata.get('title', 'Unknown')
                 author = metadata.get('authorName', '') or get_abs_author(item_details) or 'Unknown'
     except Exception as e:
-        logger.warning(f"⚠️ Forge: Could not get audio metadata for '{abs_id}': {e}")
+        logger.warning(f"⚠️ Forge: Could not get audio metadata for '{abs_id}': {e}", exc_info=True)
 
     # Start manual forge in service
     try:
@@ -5114,7 +5122,7 @@ def forge_process():
             else f"Forge started for '{title}'. Processing is running in background and staged sources will be kept."
         )
     except Exception as e:
-        logger.error(f"❌ Failed to start forge: {e}")
+        logger.error(f"❌ Failed to start forge: {e}", exc_info=True)
         return jsonify({"error": f"Failed to start forge: {e}"}), 500
 
     return jsonify({
@@ -5132,7 +5140,7 @@ def alignments_llm_status():
         database_service.backfill_alignment_methods()
         return jsonify(database_service.get_alignment_provenance())
     except Exception as e:
-        logger.error(f"❌ Failed to read alignment provenance: {e}")
+        logger.error(f"❌ Failed to read alignment provenance: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 
@@ -5162,7 +5170,7 @@ def alignments_realign():
         logger.info(f"🔁 Re-align queued {queued} book(s) (scope='{scope or 'single'}')")
         return jsonify({"queued": queued})
     except Exception as e:
-        logger.error(f"❌ Failed to queue re-align: {e}")
+        logger.error(f"❌ Failed to queue re-align: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 
@@ -5303,6 +5311,7 @@ def match():
                         "Match: failed ABS ebook metadata lookup for '%s': %s",
                         sanitize_log_data(ebook_source_id),
                         e,
+                        exc_info=True,
                     )
                     item_details = None
                 metadata = (item_details or {}).get('media', {}).get('metadata', {})
@@ -5465,7 +5474,7 @@ def match():
                 )
                     
             except Exception as e:
-                logger.error(f"❌ Storyteller Link failed: {e}")
+                logger.error(f"❌ Storyteller Link failed: {e}", exc_info=True)
                 return f"Storyteller Link failed: {e}", 500
         else:
             # Fallback to Standard Logic
@@ -5581,7 +5590,7 @@ def match():
                 database_service.delete_book(migration_source_id)
                 logger.info(f"✅ Successfully merged {migration_source_id} into {abs_id}")
             except Exception as e:
-                logger.error(f"❌ Failed to merge book data: {e}")
+                logger.error(f"❌ Failed to merge book data: {e}", exc_info=True)
 
         # Trigger Hardcover/StoryGraph automatch in the background (redirect now).
         _enqueue_tracker_automatch(clients.sync_clients, book)
@@ -5616,7 +5625,7 @@ def match():
                 logger.info(f"🔄 Dismissing additional suggestion/hash for '{ebook_filename}': '{device_doc.document_hash}'")
                 database_service.dismiss_suggestion(device_doc.document_hash)
         except Exception as e:
-            logger.warning(f"⚠️ Failed to check/dismiss device hash: {e}")
+            logger.warning(f"⚠️ Failed to check/dismiss device hash: {e}", exc_info=True)
 
         return redirect(url_for('index'))
 
@@ -5703,7 +5712,7 @@ def _record_forge_match_job(abs_id: str, progress: float = 0.0, last_error: str 
             )
         )
     except Exception as exc:
-        logger.warning("Forge & Match: failed to record job state for '%s': %s", sanitize_log_data(abs_id), exc)
+        logger.warning("Forge & Match: failed to record job state for '%s': %s", sanitize_log_data(abs_id), exc, exc_info=True)
         return None
 
 
@@ -5800,7 +5809,7 @@ def _process_forge_only_queue(queue_items, forge_stage_mode=None):
                     title = metadata.get('title') or title
                     author = metadata.get('authorName', '') or get_abs_author(item_details) or author
         except Exception as e:
-            logger.warning("Forge only: metadata lookup failed for '%s': %s", sanitize_log_data(abs_id), e)
+            logger.warning("Forge only: metadata lookup failed for '%s': %s", sanitize_log_data(abs_id), e, exc_info=True)
 
         forge_kwargs = {}
         if audio_source in _LIBRARY_AUDIO_SOURCES:
@@ -5813,7 +5822,7 @@ def _process_forge_only_queue(queue_items, forge_stage_mode=None):
                 abs_id, text_item, title, author, **forge_kwargs, **_client_bundle_kwargs(clients)
             )
         except Exception as e:
-            logger.error("❌ Forge only failed for '%s': %s", sanitize_log_data(title), e)
+            logger.error("❌ Forge only failed for '%s': %s", sanitize_log_data(title), e, exc_info=True)
 
 
 def _process_batch_queue(queue_items):
@@ -5918,7 +5927,7 @@ def _process_batch_queue(queue_items):
                     logger.warning(f"⚠️ Failed to obtain Storyteller artifact '{storyteller_uuid}' for '{item['abs_title']}', skipping")
                     continue
             except Exception as e:
-                logger.error(f"❌ Storyteller Tri-Link failed for '{item['abs_title']}': {e}")
+                logger.error(f"❌ Storyteller Tri-Link failed for '{item['abs_title']}': {e}", exc_info=True)
                 continue
         else:
             # Standard path: Get booklore_id if available for API-based hash computation
@@ -6119,6 +6128,7 @@ def _process_forge_match_queue(queue_items):
                     "Batch Forge: Storyteller Tri-Link failed for '%s': %s",
                     sanitize_log_data(item.get('abs_title')),
                     e,
+                    exc_info=True,
                 )
                 continue
 
@@ -6496,7 +6506,7 @@ def _add_book_view():
             try:
                 storyteller_books = clients.storyteller_client.search_books(search)
             except Exception as e:
-                logger.warning(f"⚠️ Storyteller search failed in add_book route: {e}")
+                logger.warning(f"⚠️ Storyteller search failed in add_book route: {e}", exc_info=True)
 
     return render_template('add_book.html', audiobooks=audiobooks, ebooks=ebooks,
                            storyteller_books=storyteller_books,
@@ -6778,7 +6788,7 @@ def _load_persisted_suggestions_cache():
         try:
             raw = json.loads(cache_file.read_text(encoding='utf-8'))
         except Exception as e:
-            logger.warning(f"Could not read suggestions cache file '{cache_file}': {e}")
+            logger.warning(f"Could not read suggestions cache file '{cache_file}': {e}", exc_info=True)
             return _empty_suggestions_cache_payload()
 
     payload = _empty_suggestions_cache_payload()
@@ -6811,7 +6821,7 @@ def _save_persisted_suggestions_cache(payload):
             temp_file.write_text(json.dumps(safe_payload, ensure_ascii=False), encoding='utf-8')
             temp_file.replace(cache_file)
         except Exception as e:
-            logger.warning(f"Could not persist suggestions cache file '{cache_file}': {e}")
+            logger.warning(f"Could not persist suggestions cache file '{cache_file}': {e}", exc_info=True)
             try:
                 if temp_file.exists():
                     temp_file.unlink()
@@ -6866,7 +6876,7 @@ def _read_match_queue_unlocked() -> list:
     try:
         raw = json.loads(queue_file.read_text(encoding='utf-8'))
     except Exception as e:
-        logger.warning(f"Could not read match queue file '{queue_file}': {e}")
+        logger.warning(f"Could not read match queue file '{queue_file}': {e}", exc_info=True)
         return []
     items = raw.get('items', []) if isinstance(raw, dict) else raw
     if not isinstance(items, list):
@@ -6892,7 +6902,7 @@ def _write_match_queue_unlocked(items: list) -> None:
         temp_file.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
         temp_file.replace(queue_file)
     except Exception as e:
-        logger.warning(f"Could not persist match queue file '{queue_file}': {e}")
+        logger.warning(f"Could not persist match queue file '{queue_file}': {e}", exc_info=True)
         try:
             if temp_file.exists():
                 temp_file.unlink()
@@ -6931,7 +6941,7 @@ def _match_queue_scope() -> tuple:
     try:
         primary_user_id = database_service._default_user_id()
     except Exception as exc:
-        logger.warning("Could not resolve legacy match-queue owner: %s", exc)
+        logger.warning("Could not resolve legacy match-queue owner: %s", exc, exc_info=True)
         return user_id, False
     normalized_user_id = _normalize_match_queue_user_id(user_id)
     normalized_primary_id = _normalize_match_queue_user_id(primary_user_id)
@@ -7490,7 +7500,7 @@ def cleanup_mapping_resources(book, defer_audio_cache: bool = False):
             shutil.rmtree(audio_cache_dir)
             logger.info(f"🗑️ Deleted audio cache: {audio_cache_dir}")
         except Exception as e:
-            logger.warning(f"⚠️ Failed to delete audio cache: {e}")
+            logger.warning(f"⚠️ Failed to delete audio cache: {e}", exc_info=True)
 
     # Clean up full transcript directory (chapter JSON files + manifest)
     transcript_dir = DATA_DIR / "transcripts" / "storyteller" / book.abs_id
@@ -7499,7 +7509,7 @@ def cleanup_mapping_resources(book, defer_audio_cache: bool = False):
             shutil.rmtree(transcript_dir)
             logger.info(f"🗑️ Deleted transcript directory: {transcript_dir}")
         except Exception as e:
-            logger.warning(f"⚠️ Failed to delete transcript directory: {e}")
+            logger.warning(f"⚠️ Failed to delete transcript directory: {e}", exc_info=True)
 
     if book.ebook_filename:
         cache_dirs = []
@@ -7526,7 +7536,7 @@ def cleanup_mapping_resources(book, defer_audio_cache: bool = False):
                     cached_path.unlink()
                     logger.info(f"🗑️ Deleted cached ebook file: {book.ebook_filename}")
                 except Exception as e:
-                    logger.warning(f"⚠️ Failed to delete cached ebook {book.ebook_filename}: {e}")
+                    logger.warning(f"⚠️ Failed to delete cached ebook {book.ebook_filename}: {e}", exc_info=True)
 
     if getattr(book, 'sync_mode', 'audiobook') == 'ebook_only' and book.kosync_doc_id:
         logger.info(f"🗑️ Deleting KOSync document record for ebook-only mapping: '{book.kosync_doc_id}'")
@@ -7541,7 +7551,7 @@ def cleanup_mapping_resources(book, defer_audio_cache: bool = False):
         try:
             clients.abs_client.remove_from_collection(book.abs_id, collection_name)
         except Exception as e:
-            logger.warning(f"⚠️ Failed to remove from ABS collection: {e}")
+            logger.warning(f"⚠️ Failed to remove from ABS collection: {e}", exc_info=True)
     else:
         logger.info(f"Skipping ABS collection cleanup for non-ABS mapping '{book.abs_id}'")
 
@@ -7563,7 +7573,7 @@ def cleanup_mapping_resources(book, defer_audio_cache: bool = False):
             else:
                 logger.warning("Storyteller client has no remove_from_collection_by_uuid method")
         except Exception as e:
-            logger.warning(f"Failed to remove from Storyteller collection: {e}")
+            logger.warning(f"Failed to remove from Storyteller collection: {e}", exc_info=True)
 
     if book.ebook_filename:
         shelf_filename = book.original_ebook_filename or book.ebook_filename
@@ -7584,7 +7594,7 @@ def cleanup_mapping_resources(book, defer_audio_cache: bool = False):
                     shelf_name = user_setting('BOOKLORE_SHELF_NAME', 'Kobo')
                     client.remove_from_shelf(shelf_filename, shelf_name)
         except Exception as e:
-            logger.warning(f"⚠️ Failed to remove from {'BookOrbit' if is_bookorbit else 'Grimmory'} shelf: {e}")
+            logger.warning(f"⚠️ Failed to remove from {'BookOrbit' if is_bookorbit else 'Grimmory'} shelf: {e}", exc_info=True)
 
 
 def _user_may_modify_book(user, abs_id) -> bool:
@@ -7845,7 +7855,7 @@ def clear_progress(abs_id):
         logger.info(f"✅ Progress cleared successfully for {sanitize_log_data(book.abs_title or abs_id)}")
 
     except Exception as e:
-        logger.error(f"❌ Failed to clear progress for '{abs_id}': {e}")
+        logger.error(f"❌ Failed to clear progress for '{abs_id}': {e}", exc_info=True)
 
     return redirect(url_for('index'))
 
@@ -7918,7 +7928,7 @@ def mark_complete(abs_id):
                         'ts': float(duration) if duration and duration > 0 else 0.0,
                     }
             except Exception as e:
-                logger.error(f"❌ ABS mark_finished failed for '{abs_id}': {e}")
+                logger.error(f"❌ ABS mark_finished failed for '{abs_id}': {e}", exc_info=True)
         else:
             try:
                 result = client.update_progress(book, update_req)
@@ -7926,7 +7936,7 @@ def mark_complete(abs_id):
                 if success:
                     updated_state = getattr(result, 'updated_state', {}) or {}
             except Exception as e:
-                logger.error(f"❌ '{client_name}' mark-complete failed for '{abs_id}': {e}")
+                logger.error(f"❌ '{client_name}' mark-complete failed for '{abs_id}': {e}", exc_info=True)
 
         # Only persist state when the write succeeded.
         if success:
@@ -8020,7 +8030,8 @@ def update_hash(abs_id):
         except Exception as e:
             logger.warning(
                 f"⚠️ Could not register linked KoSync document '{sanitize_log_data(doc_hash)}' "
-                f"for '{sanitize_log_data(book.abs_title)}': {e}"
+                f"for '{sanitize_log_data(book.abs_title)}': {e}",
+                exc_info=True
             )
 
     # Trigger an instant sync cycle so the engine can reconcile progress
@@ -8124,7 +8135,7 @@ def api_storyteller_link(abs_id):
                 else:
                     logger.warning("Storyteller client has no remove_from_collection_by_uuid method")
             except Exception as e:
-                logger.warning(f"Failed to remove Storyteller UUID from collection: {e}")
+                logger.warning(f"Failed to remove Storyteller UUID from collection: {e}", exc_info=True)
         
         # Revert to original filename if it exists
         if book.original_ebook_filename:
@@ -8157,7 +8168,7 @@ def api_storyteller_link(abs_id):
         _shelve_saved_ebook(saved_book)
         return jsonify({"message": "Book linked successfully", "filename": saved_book.ebook_filename}), 200
     except Exception as e:
-        logger.error(f"❌ Error linking Storyteller book for '{abs_id}': {e}")
+        logger.error(f"❌ Error linking Storyteller book for '{abs_id}': {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 
@@ -8166,7 +8177,7 @@ def _get_stats_timezone():
     try:
         return ZoneInfo(tz_name)
     except Exception:
-        logger.warning("Invalid TZ '%s' for stats, falling back to America/New_York", tz_name)
+        logger.warning("Invalid TZ '%s' for stats, falling back to America/New_York", tz_name, exc_info=True)
         return ZoneInfo("America/New_York")
 
 
@@ -8664,13 +8675,13 @@ def api_stats():
     try:
         listening = _build_listening_stats_payload(tz)
     except Exception as e:
-        logger.warning("Stats API: listening stats build failed: %s", e)
+        logger.warning("Stats API: listening stats build failed: %s", e, exc_info=True)
         listening = None
 
     try:
         reading = _build_reading_stats_payload(tz)
     except Exception as e:
-        logger.warning("Stats API: reading stats build failed: %s", e)
+        logger.warning("Stats API: reading stats build failed: %s", e, exc_info=True)
         reading = {
             "available": False,
             "stats": None,
@@ -8736,7 +8747,7 @@ def api_stats_reading_day():
             getattr(tz, "key", str(tz)),
         )
     except Exception as e:
-        logger.warning("Stats API: reading day drilldown failed for %s: %s", date_str, e)
+        logger.warning("Stats API: reading day drilldown failed for %s: %s", date_str, e, exc_info=True)
         return jsonify({"error": "Failed to load reading day details"}), 500
 
     return jsonify(payload)
@@ -8759,7 +8770,7 @@ def api_stats_reading_calendar():
             getattr(tz, "key", str(tz)),
         )
     except Exception as e:
-        logger.warning("Stats API: reading calendar failed for %s: %s", month_str, e)
+        logger.warning("Stats API: reading calendar failed for %s: %s", month_str, e, exc_info=True)
         return jsonify({"error": "Failed to load reading calendar"}), 500
 
     return jsonify(payload)
@@ -8804,7 +8815,7 @@ def api_stats_book_detail():
             "reading": reading, "listening": listening,
         })
     except Exception as e:
-        logger.warning("Stats API: book detail failed for %s: %s", key, e)
+        logger.warning("Stats API: book detail failed for %s: %s", key, e, exc_info=True)
         return jsonify({"error": "Failed to load book detail"}), 500
 
 
@@ -8839,7 +8850,7 @@ def api_stats_yearly_recap():
             return jsonify(listening_recap or _build_listening_yearly_recap({}, year, 0))
         return jsonify(_build_combined_yearly_recap(reading_recap, listening_recap))
     except Exception as e:
-        logger.warning("Stats API: yearly recap failed for %s/%s: %s", scope, year, e)
+        logger.warning("Stats API: yearly recap failed for %s/%s: %s", scope, year, e, exc_info=True)
         return jsonify({"error": "Failed to load yearly recap"}), 500
 
 
@@ -9009,7 +9020,7 @@ def api_logs():
         })
 
     except Exception as e:
-        logger.error(f"❌ Error fetching logs: {e}")
+        logger.error(f"❌ Error fetching logs: {e}", exc_info=True)
         return jsonify({'error': 'Failed to fetch logs', 'logs': [], 'total_lines': 0, 'displayed_lines': 0}), 500
 
 
@@ -9051,7 +9062,7 @@ def api_logs_live():
         })
 
     except Exception as e:
-        logger.error(f"❌ Error fetching live logs: {e}")
+        logger.error(f"❌ Error fetching live logs: {e}", exc_info=True)
         return jsonify({'error': 'Failed to fetch live logs', 'logs': [], 'timestamp': datetime.now().isoformat()}), 500
 
 
@@ -9121,7 +9132,7 @@ def clean_inactive_cache():
                     deleted_audio += 1
                     logger.info(f"Cleaned audio cache: {entry.name}")
                 except Exception as e:
-                    logger.warning(f"Failed to clean audio cache {entry.name}: {e}")
+                    logger.warning(f"Failed to clean audio cache {entry.name}: {e}", exc_info=True)
 
     transcript_root = DATA_DIR / "transcripts" / "storyteller"
     if transcript_root.exists():
@@ -9132,7 +9143,7 @@ def clean_inactive_cache():
                     deleted_transcripts += 1
                     logger.info(f"Cleaned transcript dir: {entry.name}")
                 except Exception as e:
-                    logger.warning(f"Failed to clean transcript dir {entry.name}: {e}")
+                    logger.warning(f"Failed to clean transcript dir {entry.name}: {e}", exc_info=True)
 
     try:
         epub_cache_dir = Path(container.epub_cache_dir())
@@ -9146,7 +9157,7 @@ def clean_inactive_cache():
                     deleted_epubs += 1
                     logger.info(f"Cleaned cached epub: {entry.name}")
                 except Exception as e:
-                    logger.warning(f"Failed to clean cached epub {entry.name}: {e}")
+                    logger.warning(f"Failed to clean cached epub {entry.name}: {e}", exc_info=True)
 
     logger.info(f"Cache cleanup complete: {deleted_audio} audio, {deleted_transcripts} transcript, {deleted_epubs} epub(s) removed")
     return jsonify({"success": True, "deleted_audio": deleted_audio, "deleted_transcripts": deleted_transcripts, "deleted_epubs": deleted_epubs})
@@ -9216,7 +9227,7 @@ def _run_storyteller_backfill():
                         if epub_path and epub_path.exists():
                             book_text, _ = ebook_parser.extract_text_and_map(epub_path)
                     except Exception as e:
-                        logger.warning(f"Could not extract text for storyteller backfill: {e}")
+                        logger.warning(f"Could not extract text for storyteller backfill: {e}", exc_info=True)
                         
                 aligned = alignment_service.align_storyteller_and_store(abs_id, storyteller_transcript, ebook_text=book_text)
                 if aligned:
@@ -9232,7 +9243,7 @@ def _run_storyteller_backfill():
             database_service.save_book(book)
         except Exception as e:
             summary["failed"] += 1
-            logger.warning(f"Storyteller backfill failed for '{abs_id}': {e}")
+            logger.warning(f"Storyteller backfill failed for '{abs_id}': {e}", exc_info=True)
 
     summary["duration_seconds"] = round(time.time() - started_at, 3)
     logger.info(
@@ -9322,7 +9333,7 @@ def api_series_backfill():
                     meta = item_details.get("media", {}).get("metadata", {})
                     sname, sseq = _extract_series_from_abs_metadata(meta)
             except Exception as e:
-                logger.warning(f"Series backfill ABS lookup failed for '{abs_title}': {e}")
+                logger.warning(f"Series backfill ABS lookup failed for '{abs_title}': {e}", exc_info=True)
                 failed += 1
                 continue
 
@@ -9418,7 +9429,7 @@ def proxy_cover(abs_id):
         else:
             return "Cover not found", 404
     except Exception as e:
-        logger.error(f"❌ Error proxying cover for '{abs_id}': {e}")
+        logger.error(f"❌ Error proxying cover for '{abs_id}': {e}", exc_info=True)
         return "Error loading cover", 500
 
 
@@ -9465,7 +9476,7 @@ def get_booklore_shelves():
         return jsonify(result)
         
     except Exception as e:
-        logger.error(f"Error fetching Grimmory shelves: {e}")
+        logger.error(f"Error fetching Grimmory shelves: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 
@@ -9506,7 +9517,7 @@ def proxy_booklore_audiobook_cover(book_id):
 
         return Response(content, content_type=content_type or "image/jpeg")
     except Exception as e:
-        logger.error(f"❌ Error proxying Grimmory audiobook cover for '{book_id}': {e}")
+        logger.error(f"❌ Error proxying Grimmory audiobook cover for '{book_id}': {e}", exc_info=True)
         return "Error loading cover", 500
 
 
@@ -9537,7 +9548,7 @@ def proxy_bookorbit_audiobook_cover(book_id):
 
         return Response(content, content_type=content_type or "image/jpeg")
     except Exception as e:
-        logger.error(f"❌ Error proxying BookOrbit cover for '{book_id}': {e}")
+        logger.error(f"❌ Error proxying BookOrbit cover for '{book_id}': {e}", exc_info=True)
         return "Error loading cover", 500
 
 
@@ -9550,7 +9561,7 @@ def api_booklore_refresh():
     try:
         refreshed = client.clear_and_refresh()
     except Exception as e:
-        logger.error(f"❌ Grimmory cache refresh failed: {e}")
+        logger.error(f"❌ Grimmory cache refresh failed: {e}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
 
     if not refreshed:
@@ -9627,7 +9638,7 @@ def _is_builtin_kosync_test_url(url: str) -> bool:
         try:
             valid_ports.add(int(configured_port))
         except ValueError:
-            logger.warning(f"Invalid KOSYNC_PORT '{configured_port}' while testing KOSync settings")
+            logger.warning(f"Invalid KOSYNC_PORT '{configured_port}' while testing KOSync settings", exc_info=True)
 
     port = parsed.port
     if port is None:
@@ -9862,7 +9873,7 @@ def api_bookfusion_link(abs_id: str) -> object:
     except Exception as exc:
         logger.warning(
             "BookFusion link probe failed for id %s: %s",
-            bookfusion_id, exc,
+            bookfusion_id, exc, exc_info=True,
         )
         probe_url = None
     if not probe_url:
@@ -9935,7 +9946,7 @@ def _readaloud_integrity_error(path: Path) -> str | None:
                     if target not in names:
                         missing.add(target)
     except (OSError, zipfile.BadZipFile, ElementTree.ParseError) as exc:
-        logger.warning("Could not validate Storyteller ReadAloud EPUB %s: %s", path, exc)
+        logger.warning("Could not validate Storyteller ReadAloud EPUB %s: %s", path, exc, exc_info=True)
         return "Storyteller returned an invalid ReadAloud EPUB. Wait for processing to finish and try again."
 
     if not audio_refs:
@@ -9985,7 +9996,7 @@ def api_bookfusion_upload(abs_id: str) -> object:
         try:
             ok = storyteller_client.download_book(book.storyteller_uuid, tmp_path, polling=False)
         except Exception as exc:
-            logger.warning("Storyteller ReadAloud EPUB download failed for %s: %s", abs_id, exc)
+            logger.warning("Storyteller ReadAloud EPUB download failed for %s: %s", abs_id, exc, exc_info=True)
             ok = False
         if not ok:
             _cleanup_temp(tmp_path)
@@ -10018,7 +10029,7 @@ def api_bookfusion_upload(abs_id: str) -> object:
         try:
             epub_path = container.ebook_parser().resolve_book_path(filename)
         except Exception as exc:
-            logger.warning("Could not resolve ebook path for %s: %s", filename, exc)
+            logger.warning("Could not resolve ebook path for %s: %s", filename, exc, exc_info=True)
             return jsonify({"success": False, "error": "Local ebook file not found"}), 400
         if not epub_path or not epub_path.exists():
             return jsonify({"success": False, "error": "Local ebook file not found"}), 400
@@ -10090,7 +10101,7 @@ def _resolve_duplicate_bookfusion_id(upload_client, title: str, author: str = ""
     try:
         results = reader_client.search_books(page=1, per_page=5, q=title) or []
     except Exception as exc:
-        logger.warning("BookFusion duplicate search failed: %s", exc)
+        logger.warning("BookFusion duplicate search failed: %s", exc, exc_info=True)
         return None
     title_lower = title.strip().lower()
     author_lower = author.strip().lower() if author else ""
@@ -11064,7 +11075,7 @@ if __name__ == '__main__':
             name="annotation-sync",
         ).start()
     except Exception as exc:
-        logger.warning("Annotation sync daemon failed to start: %s", exc)
+        logger.warning("Annotation sync daemon failed to start: %s", exc, exc_info=True)
 
     # Re-attach Forge & Match completion watchers orphaned by a restart. The
     # banner/card survive in the DB (status='forging'), but the polling thread
@@ -11075,7 +11086,7 @@ if __name__ == '__main__':
             user_client_registry=container.user_client_registry()
         )
     except Exception as exc:
-        logger.warning("Forge & Match: resume on startup failed: %s", exc)
+        logger.warning("Forge & Match: resume on startup failed: %s", exc, exc_info=True)
 
     # One-time backfill of StoryGraph ratings for already-linked books.
     # Self-limiting: rows with storygraph_rating_updated_at set are skipped on future startups.
@@ -11086,7 +11097,7 @@ if __name__ == '__main__':
             storygraph_client=container.storygraph_client(),
         )
     except Exception as exc:
-        logger.warning("StoryGraph rating backfill thread failed to start: %s", exc)
+        logger.warning("StoryGraph rating backfill thread failed to start: %s", exc, exc_info=True)
 
     # Check ebook source configuration
     booklore_configured = container.booklore_client().is_configured()

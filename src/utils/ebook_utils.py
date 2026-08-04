@@ -280,7 +280,7 @@ class EbookParser:
         try:
             book = epub.read_epub(str(path))
         except Exception as e:
-            logger.warning(f"⚠️ Could not read EPUB metadata for '{filename}': {e}")
+            logger.warning(f"⚠️ Could not read EPUB metadata for '{filename}': {e}", exc_info=True)
             return result
 
         return self._extract_epub_metadata(book)
@@ -303,7 +303,7 @@ class EbookParser:
                 tmp_path = tmp.name
             book = epub.read_epub(tmp_path)
         except Exception as e:
-            logger.warning(f"⚠️ Could not read EPUB metadata from bytes for '{filename}': {e}")
+            logger.warning(f"⚠️ Could not read EPUB metadata from bytes for '{filename}': {e}", exc_info=True)
             return result
         finally:
             if tmp_path:
@@ -334,7 +334,7 @@ class EbookParser:
                     md5.update(chunk)
             return md5.hexdigest()
         except Exception as e:
-            logger.error(f"❌ Error computing hash for {filepath}: {e}")
+            logger.error(f"❌ Error computing hash for {filepath}: {e}", exc_info=True)
             return None
 
     def _compute_koreader_hash_from_bytes(self, content):
@@ -350,7 +350,7 @@ class EbookParser:
                 md5.update(chunk)
             return md5.hexdigest()
         except Exception as e:
-            logger.error(f"❌ Error computing KOReader hash from bytes: {e}")
+            logger.error(f"❌ Error computing KOReader hash from bytes: {e}", exc_info=True)
             return None
 
     def get_kosync_id_from_bytes(self, filename, content):
@@ -400,7 +400,7 @@ class EbookParser:
             return False
 
         except Exception as e:
-            logger.error(f"❌ Error extracting cover from '{filepath}': {e}")
+            logger.error(f"❌ Error extracting cover from '{filepath}': {e}", exc_info=True)
             return False
 
     def _build_href_resolver(self, str_path):
@@ -496,7 +496,7 @@ class EbookParser:
             return combined_text, spine_map
 
         except Exception as e:
-            logger.error(f"❌ Failed to parse EPUB '{filepath}': {e}")
+            logger.error(f"❌ Failed to parse EPUB '{filepath}': {e}", exc_info=True)
             return "", []
 
     def get_text_at_percentage(self, filename, percentage):
@@ -515,7 +515,7 @@ class EbookParser:
 
             return full_text[start:end]
         except Exception as e:
-            logger.error(f"❌ Error getting text at percentage: {e}")
+            logger.error(f"❌ Error getting text at percentage: {e}", exc_info=True)
             return None
 
     def bookfusion_reading_anchor(self, filename, percentage) -> Optional[dict]:
@@ -579,7 +579,7 @@ class EbookParser:
             total_len = len(full_text)
             return abs(int(total_len * percentage_prev) - int(total_len * percentage_new))
         except Exception as e:
-            logger.error(f"❌ Error calculating character delta: {e}")
+            logger.error(f"❌ Error calculating character delta: {e}", exc_info=True)
             return None
 
     # =========================================================================
@@ -644,7 +644,7 @@ class EbookParser:
             return full_text[start:end]
 
         except Exception as e:
-            logger.error(f"❌ Error resolving locator ID '{fragment_id}' in '{filename}': {e}")
+            logger.error(f"❌ Error resolving locator ID '{fragment_id}' in '{filename}': {e}", exc_info=True)
             return None
 
     def _generate_css_selector(self, target_tag):
@@ -947,7 +947,7 @@ class EbookParser:
 
             return None
         except Exception as e:
-            logger.error(f"❌ Error finding text in '{filename}': {e}")
+            logger.error(f"❌ Error finding text in '{filename}': {e}", exc_info=True)
             return None
 
     def get_media_overlay_fragment_ids(self, book_path) -> set:
@@ -1078,7 +1078,7 @@ class EbookParser:
                 chapter_progress=chapter_progress,
             )
         except Exception as e:
-            logger.error(f"❌ Error resolving locator from char offset in '{filename}': {e}")
+            logger.error(f"❌ Error resolving locator from char offset in '{filename}': {e}", exc_info=True)
             return None
 
     def _normalize_with_map(self, text):
@@ -1308,7 +1308,7 @@ class EbookParser:
 
             return xpath
         except Exception as e:
-            logger.error(f"Error generating sentence-level KOReader XPath: {e}")
+            logger.error(f"Error generating sentence-level KOReader XPath: {e}", exc_info=True)
             return None
 
     def get_perfect_ko_xpath(self, filename, position=0) -> Optional[str]:
@@ -1331,7 +1331,7 @@ class EbookParser:
                 book_path=book_path, full_text=full_text, spine_map=spine_map,
             )
         except Exception as e:
-            logger.error(f"❌ Error generating KOReader XPath: {e}")
+            logger.error(f"❌ Error generating KOReader XPath: {e}", exc_info=True)
             return None
 
     def _compute_xpath_at_position(self, filename, position,
@@ -1519,7 +1519,7 @@ class EbookParser:
             return f"/body/DocFragment[{target_item['spine_index']}]/{xpath}/text().0"
 
         except Exception as e:
-            logger.error(f"❌ Error generating KOReader XPath: {e}")
+            logger.error(f"❌ Error generating KOReader XPath: {e}", exc_info=True)
             return None
 
     def _has_text_content(self, element):
@@ -1782,7 +1782,7 @@ class EbookParser:
                 return None
 
         except Exception as e:
-            logger.error(f"❌ Error resolving XPath '{xpath_str}': {e}")
+            logger.error(f"❌ Error resolving XPath '{xpath_str}': {e}", exc_info=True)
             return None
 
     def resolve_xpath_to_index(self, filename, xpath_str) -> Optional[int]:
@@ -1998,7 +1998,7 @@ class EbookParser:
             return None
 
         except Exception as e:
-            logger.error(f"Error resolving XPath->index '{xpath_str}': {e}")
+            logger.error(f"Error resolving XPath->index '{xpath_str}': {e}", exc_info=True)
             return None
 
     def _parse_cfi_components(self, cfi):
@@ -2185,7 +2185,7 @@ class EbookParser:
             return snippet
 
         except Exception as e:
-            logger.error(f"❌ Error using epubcfi library for '{cfi}': {e}")
+            logger.error(f"❌ Error using epubcfi library for '{cfi}': {e}", exc_info=True)
             return None
 
     def resolve_cfi_to_index(self, filename, cfi) -> Optional[int]:
@@ -2268,7 +2268,7 @@ class EbookParser:
             return item['start'] + local_offset
 
         except Exception as e:
-            logger.error(f"Error resolving CFI->index '{cfi}': {e}")
+            logger.error(f"Error resolving CFI->index '{cfi}': {e}", exc_info=True)
             return None
 
 
@@ -2291,7 +2291,7 @@ def resolve_ebook_identifiers(ebook_parser, book, booklore_client=None, bookorbi
         try:
             meta = ebook_parser.get_book_metadata(filename) or meta
         except Exception as exc:
-            logger.warning("Local EPUB metadata read failed for '%s': %s", filename, exc)
+            logger.warning("Local EPUB metadata read failed for '%s': %s", filename, exc, exc_info=True)
 
     # A precise identifier (ISBN/ASIN) from the local read is enough — skip the
     # network round-trip. An author alone is NOT precise: fall through to the
@@ -2318,7 +2318,7 @@ def resolve_ebook_identifiers(ebook_parser, book, booklore_client=None, bookorbi
     try:
         content = client.download_book(source_id)
     except Exception as exc:
-        logger.warning("Library download for ebook metadata failed (%s/%s): %s", source, source_id, exc)
+        logger.warning("Library download for ebook metadata failed (%s/%s): %s", source, source_id, exc, exc_info=True)
         return meta
     if not content:
         return meta
@@ -2326,7 +2326,7 @@ def resolve_ebook_identifiers(ebook_parser, book, booklore_client=None, bookorbi
     try:
         byte_meta = ebook_parser.get_book_metadata_from_bytes(filename or "", content)
     except Exception as exc:
-        logger.warning("EPUB metadata-from-bytes failed for '%s': %s", filename, exc)
+        logger.warning("EPUB metadata-from-bytes failed for '%s': %s", filename, exc, exc_info=True)
         return meta
 
     # Prefer the byte-derived fields, but keep any local title the bytes lacked.

@@ -117,7 +117,7 @@ class ShelfWatchService:
         try:
             return self._user_client_registry.get_clients(user_id)
         except Exception as exc:
-            logger.warning("Shelf-watch: could not build client bundle for user %s: %s", user_id, exc)
+            logger.warning("Shelf-watch: could not build client bundle for user %s: %s", user_id, exc, exc_info=True)
             return None
 
     def _resolve_client_for_user(self, user_id=None, bundle=None):
@@ -237,7 +237,7 @@ class ShelfWatchService:
         try:
             books = active_client.list_books_on_shelf(shelf_name) or []
         except Exception as e:
-            logger.error(f"Shelf-watch: failed to list books on '{shelf_name}': {e}")
+            logger.error(f"Shelf-watch: failed to list books on '{shelf_name}': {e}", exc_info=True)
             stats['errors'] += 1
             return stats
 
@@ -558,5 +558,6 @@ class ShelfWatchService:
         except Exception as e:
             logger.warning(
                 f"Shelf-watch: move_between_shelves raised for '{filename}' "
-                f"({from_shelf} -> {to_shelf}): {e}"
+                f"({from_shelf} -> {to_shelf}): {e}",
+                exc_info=True
             )

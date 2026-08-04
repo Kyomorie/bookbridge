@@ -183,13 +183,13 @@ class ForgeService:
             try:
                 hardcover._automatch_hardcover(book)
             except Exception as e:
-                logger.warning(f"Auto-Forge: Hardcover automatch failed for '{book.abs_id}': {e}")
+                logger.warning(f"Auto-Forge: Hardcover automatch failed for '{book.abs_id}': {e}", exc_info=True)
         storygraph = sync_clients.get('StoryGraph')
         if storygraph and storygraph.is_configured():
             try:
                 storygraph._automatch_storygraph(book)
             except Exception as e:
-                logger.warning(f"Auto-Forge: StoryGraph automatch failed for '{book.abs_id}': {e}")
+                logger.warning(f"Auto-Forge: StoryGraph automatch failed for '{book.abs_id}': {e}", exc_info=True)
 
     def _update_forge_match_job(self, abs_id: str, progress: float = None, last_error: str = None) -> None:
         """Best-effort durable progress marker for Forge & Match waits."""
@@ -256,7 +256,8 @@ class ForgeService:
             except Exception as link_err:
                 logger.warning(
                     f"{context}: Hardlink failed for '{src_path}' -> '{dest_path}' ({link_err}); "
-                    "falling back to copy"
+                    "falling back to copy",
+                    exc_info=True
                 )
 
         shutil.copy2(str(src_path), dest_path)
@@ -1107,7 +1108,7 @@ class ForgeService:
                                     else:
                                         logger.info(f"✅ Forge: Alignment map stored for '{abs_id}'")
                             except Exception as e:
-                                logger.error(f"❌ Forge: Alignment extraction failed: {e}")
+                                logger.error(f"❌ Forge: Alignment extraction failed: {e}", exc_info=True)
                             finally:
                                 try:
                                     completed_epub_path.unlink(missing_ok=True)
@@ -1117,7 +1118,7 @@ class ForgeService:
                             completed = True
                             break
                 except Exception as e:
-                    logger.warning(f"⚠️ Forge: Completion polling error: {e}")
+                    logger.warning(f"⚠️ Forge: Completion polling error: {e}", exc_info=True)
 
             if not completed:
                 logger.warning(f"⚠️ Forge: Processing timed out after {MAX_WAIT}s for '{title}'")
@@ -1287,7 +1288,7 @@ class ForgeService:
                     processing_triggered = True
                     self._update_forge_match_job(abs_id, progress=0.32, last_error="Storyteller processing started")
                 except Exception as trigger_err:
-                    logger.warning(f"Auto-Forge: Failed to trigger processing for {book_uuid}: {trigger_err}")
+                    logger.warning(f"Auto-Forge: Failed to trigger processing for {book_uuid}: {trigger_err}", exc_info=True)
             else:
                 logger.warning(
                     f"Auto-Forge: Storyteller book {book_uuid} never became API-ready (state={ready_state}); "
@@ -1621,7 +1622,7 @@ class ForgeService:
                     else:
                         logger.warning(f"Auto-Forge: Storyteller alignment failed, falling back to SMIL for '{abs_id}'")
                 except Exception as st_err:
-                    logger.warning(f"Auto-Forge: Storyteller alignment error ({st_err}), falling back to SMIL for '{abs_id}'")
+                    logger.warning(f"Auto-Forge: Storyteller alignment error ({st_err}), falling back to SMIL for '{abs_id}'", exc_info=True)
             else:
                 logger.info(f"Auto-Forge: No Storyteller transcript files found for '{abs_id}'")
 
@@ -1717,7 +1718,7 @@ class ForgeService:
                         self.storyteller_client.add_to_collection(target_filename)
 
             except Exception as e:
-                logger.warning(f"⚠️ Auto-Forge: Failed to add to collections/shelves: {e}")
+                logger.warning(f"⚠️ Auto-Forge: Failed to add to collections/shelves: {e}", exc_info=True)
         except Exception as e:
             logger.error(f"❌ Auto-Forge: Pipeline failed: {e}", exc_info=True)
             try:
@@ -1777,7 +1778,7 @@ class ForgeService:
         except Exception as exc:
             logger.warning(
                 "Forge & Match resume: could not load clients for user %s (book %s); using global bundle: %s",
-                user_id, getattr(book, 'abs_id', '?'), exc,
+                user_id, getattr(book, 'abs_id', '?'), exc, exc_info=True,
             )
             return self
         return self._for_client_bundle(bundle)
@@ -1797,7 +1798,7 @@ class ForgeService:
         try:
             forging = self.database_service.get_books_by_status('forging') or []
         except Exception as exc:
-            logger.warning("Forge & Match resume: could not list forging books: %s", exc)
+            logger.warning("Forge & Match resume: could not list forging books: %s", exc, exc_info=True)
             return 0
 
         # Full re-forges each stage a large audio file and TUS-upload it to

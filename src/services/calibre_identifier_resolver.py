@@ -96,7 +96,7 @@ class CalibreIdentifierResolver:
                 return None
         except sqlite3.Error as e:
             if not self._sqlite_warned:
-                logger.warning(f"Calibre metadata.db read failed: {e}")
+                logger.warning(f"Calibre metadata.db read failed: {e}", exc_info=True)
                 self._sqlite_warned = True
             return None
 
@@ -122,7 +122,7 @@ class CalibreIdentifierResolver:
             data = r.json()
         except Exception as e:
             if not self._cwa_warned:
-                logger.warning(f"Calibre identifier CWA fallback failed: {e}")
+                logger.warning(f"Calibre identifier CWA fallback failed: {e}", exc_info=True)
                 self._cwa_warned = True
             return None
 

@@ -98,7 +98,7 @@ class DatabaseService:
                     current_rev = result.scalar()
                     logger.info(f"🔍 Current database revision before migration: '{current_rev}'")
                 except Exception as e:
-                    logger.warning(f"⚠️ Could not read alembic version: {e}")
+                    logger.warning(f"⚠️ Could not read alembic version: {e}", exc_info=True)
             else:
                 table_names = inspector.get_table_names()
                 if 'books' in table_names:
@@ -123,8 +123,8 @@ class DatabaseService:
             command.upgrade(alembic_cfg, "head")
             logger.info("✅ Database migrations completed successfully")
         except Exception as e:
-            logger.error(f"❌ FATAL: Alembic migration failed: {e}")
-            logger.error(f"❌ Migration error details: {traceback.format_exc()}")
+            logger.error(f"❌ FATAL: Alembic migration failed: {e}", exc_info=True)
+            logger.error(f"❌ Migration error details: {traceback.format_exc()}", exc_info=True)
             # Re-raise to prevent startup with invalid schema
             raise
         finally:
@@ -149,7 +149,7 @@ class DatabaseService:
             session.commit()
         except Exception as e:
             session.rollback()
-            logger.error(f"❌ Database error: {e}")
+            logger.error(f"❌ Database error: {e}", exc_info=True)
             raise
         finally:
             session.close()
@@ -215,7 +215,7 @@ class DatabaseService:
         try:
             return json.loads(raw)
         except (TypeError, json.JSONDecodeError):
-            logger.warning("Invalid JSON setting for '%s'", key)
+            logger.warning("Invalid JSON setting for '%s'", key, exc_info=True)
             return default
 
     def set_json_setting(self, key: str, value) -> Setting:
@@ -696,7 +696,7 @@ class DatabaseService:
                 
                 logger.info(f"✅ Migrated data from '{old_abs_id}' to '{new_abs_id}'")
             except Exception as e:
-                logger.error(f"❌ Failed to migrate book data: {e}")
+                logger.error(f"❌ Failed to migrate book data: {e}", exc_info=True)
                 raise
 
     def delete_book(self, abs_id: str) -> bool:
@@ -2011,7 +2011,7 @@ class DatabaseService:
                 session.query(BookloreBook).filter(BookloreBook.filename == filename).delete(synchronize_session=False)
                 return True
         except Exception as e:
-            logger.error(f"❌ Failed to delete Grimmory book '{filename}': {e}")
+            logger.error(f"❌ Failed to delete Grimmory book '{filename}': {e}", exc_info=True)
             return False
 
 
@@ -4105,7 +4105,7 @@ class DatabaseService:
             return True
         except Exception as e:
             session.rollback()
-            logger.error(f"❌ Failed to clear Grimmory cache table: {e}")
+            logger.error(f"❌ Failed to clear Grimmory cache table: {e}", exc_info=True)
             return False
         finally:
             session.close()
@@ -4134,7 +4134,7 @@ class DatabaseMigrator:
                     logger.info(f"✅ Migrated {len(mapping_data['mappings'])} book mappings")
 
             except Exception as e:
-                logger.error(f"❌ Failed to migrate mapping data: {e}")
+                logger.error(f"❌ Failed to migrate mapping data: {e}", exc_info=True)
 
         # Migrate state
         if self.json_state_path.exists():
@@ -4146,7 +4146,7 @@ class DatabaseMigrator:
                 logger.info(f"✅ Migrated state for {len(state_data)} books")
 
             except Exception as e:
-                logger.error(f"❌ Failed to migrate state data: {e}")
+                logger.error(f"❌ Failed to migrate state data: {e}", exc_info=True)
 
         logger.info("✅ Migration completed")
 

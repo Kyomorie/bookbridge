@@ -159,6 +159,7 @@ class HardcoverSyncClient(SyncClient):
                     logger.warning(
                         "⚠️ Hardcover: Rate limited while matching '%s'; skipping automatch for now",
                         sanitize_log_data(meta.get('title')),
+                        exc_info=True,
                     )
                     return
                 if valid_match:
@@ -180,6 +181,7 @@ class HardcoverSyncClient(SyncClient):
                     logger.warning(
                         "⚠️ Hardcover: Rate limited while resolving editions for '%s'; skipping automatch for now",
                         sanitize_log_data(meta.get('title')),
+                        exc_info=True,
                     )
                     return
                 if edition and edition.get('audio_seconds') and edition['audio_seconds'] > 0:
@@ -201,6 +203,7 @@ class HardcoverSyncClient(SyncClient):
                 logger.warning(
                     "⚠️ Hardcover: Rate limited during LLM match for '%s'; skipping for now",
                     sanitize_log_data(meta.get('title')),
+                    exc_info=True,
                 )
                 return
             conf_min = float(os.environ.get('OLLAMA_JUDGE_CONFIDENCE_MIN', 85))
@@ -217,6 +220,7 @@ class HardcoverSyncClient(SyncClient):
                 logger.warning(
                     "⚠️ Hardcover: Rate limited resolving LLM match for '%s'; skipping for now",
                     sanitize_log_data(meta.get('title')),
+                    exc_info=True,
                 )
                 return
             if match:
@@ -320,6 +324,7 @@ class HardcoverSyncClient(SyncClient):
                 "Hardcover: failed to read Grimmory shelves for '%s': %s",
                 sanitize_log_data(getattr(book, "abs_title", None) or getattr(book, "abs_id", None)),
                 e,
+                exc_info=True,
             )
             return 0
 
@@ -344,6 +349,7 @@ class HardcoverSyncClient(SyncClient):
                     sanitize_log_data(getattr(book, "abs_title", None) or getattr(book, "abs_id", None)),
                     sanitize_log_data(list_name),
                     e,
+                    exc_info=True,
                 )
 
         self._grimmory_list_sync_attempted.add(attempt_key)
@@ -483,7 +489,7 @@ class HardcoverSyncClient(SyncClient):
             return SyncResult(actual_pct, True, updated_state)
 
         except Exception as e:
-            logger.error(f"❌ Failed to update Hardcover progress: {e}")
+            logger.error(f"❌ Failed to update Hardcover progress: {e}", exc_info=True)
             return SyncResult(None, False)
 
     def _update_audiobook_progress(self, book, hardcover_details, ub, percentage, audio_seconds):
@@ -515,5 +521,5 @@ class HardcoverSyncClient(SyncClient):
             return SyncResult(percentage, True, updated_state)
 
         except Exception as e:
-            logger.error(f"❌ Failed to update Hardcover audiobook progress: {e}")
+            logger.error(f"❌ Failed to update Hardcover audiobook progress: {e}", exc_info=True)
             return SyncResult(None, False)

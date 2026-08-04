@@ -50,7 +50,7 @@ def _active_user_clients(container):
             return None
         logger.error(
             "Could not build per-user StoryGraph clients for user %s: %s",
-            getattr(user, "id", "?"), exc,
+            getattr(user, "id", "?"), exc, exc_info=True,
         )
         raise
 
@@ -109,7 +109,7 @@ def _get_abs_metadata(abs_id: str, database_service, container):
             _booklore_client(container), _bookorbit_client(container),
         )
     except Exception as exc:
-        logger.warning("Failed to read EPUB metadata for %s: %s", abs_id, exc)
+        logger.warning("Failed to read EPUB metadata for %s: %s", abs_id, exc, exc_info=True)
         ebook_meta = {}
 
     if ebook_meta.get("title") or book.abs_title:
@@ -137,7 +137,7 @@ def _storygraph_rating_fields(storygraph_client, book_id: str) -> dict:
     try:
         rating_info = storygraph_client.get_book_rating(book_id) or {}
     except Exception as exc:
-        logger.warning("Failed to fetch StoryGraph rating for %s: %s", book_id, exc)
+        logger.warning("Failed to fetch StoryGraph rating for %s: %s", book_id, exc, exc_info=True)
         rating_info = {}
     if not isinstance(rating_info, dict):
         rating_info = {}
@@ -213,7 +213,7 @@ def api_storygraph_resolve():
         try:
             database_service.save_storygraph_details(existing_details)
         except Exception as exc:
-            logger.warning("Failed to save StoryGraph rating for %s: %s", abs_id, exc)
+            logger.warning("Failed to save StoryGraph rating for %s: %s", abs_id, exc, exc_info=True)
 
     editions = []
     try:
@@ -221,7 +221,7 @@ def api_storygraph_resolve():
         if isinstance(raw_editions, list):
             editions = raw_editions
     except Exception as exc:
-        logger.warning("Failed to fetch StoryGraph editions for %s: %s", book_id, exc)
+        logger.warning("Failed to fetch StoryGraph editions for %s: %s", book_id, exc, exc_info=True)
 
     return jsonify(
         {
@@ -284,13 +284,13 @@ def link_storygraph(abs_id):
             try:
                 storygraph_client.switch_edition(existing_details.storygraph_edition_id or existing_details.storygraph_book_id, edition_id)
             except Exception as exc:
-                logger.warning("Failed to switch StoryGraph edition: %s", exc)
+                logger.warning("Failed to switch StoryGraph edition: %s", exc, exc_info=True)
         elif not existing_details and edition_id and book_id != edition_id:
              # If new link and edition is different from parent, try to switch
              try:
                 storygraph_client.switch_edition(book_id, edition_id)
              except Exception as exc:
-                logger.warning("Failed to switch StoryGraph edition: %s", exc)
+                logger.warning("Failed to switch StoryGraph edition: %s", exc, exc_info=True)
 
         _, meta = _get_abs_metadata(abs_id, database_service, container)
         details = StorygraphDetails(
@@ -313,10 +313,10 @@ def link_storygraph(abs_id):
                 # Actually, the existing code uses update_status(book_id, 1).
                 storygraph_client.update_status(edition_id or book_id, 1)
             except Exception as exc:
-                logger.warning("Failed to set StoryGraph status: %s", exc)
+                logger.warning("Failed to set StoryGraph status: %s", exc, exc_info=True)
             return jsonify({"success": True, "title": title})
         except Exception as exc:
-            logger.error("Failed to save StoryGraph details: %s", exc)
+            logger.error("Failed to save StoryGraph details: %s", exc, exc_info=True)
             return jsonify({"error": "Database update failed"}), 500
 
     manual_input = request.form.get("storygraph_url", "").strip()
@@ -344,10 +344,10 @@ def link_storygraph(abs_id):
         try:
             storygraph_client.update_status(str(resolved["book_id"]), 1)
         except Exception as exc:
-            logger.warning("Failed to set StoryGraph status: %s", exc)
+            logger.warning("Failed to set StoryGraph status: %s", exc, exc_info=True)
         flash(f"Linked StoryGraph: {resolved.get('title') or resolved['book_id']}", "success")
     except Exception as exc:
-        logger.error("Failed to save StoryGraph details: %s", exc)
+        logger.error("Failed to save StoryGraph details: %s", exc, exc_info=True)
         flash("Database update failed", "error")
 
     return redirect(url_for("index"))

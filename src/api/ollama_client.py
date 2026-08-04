@@ -81,7 +81,7 @@ class OllamaClient:
             try:
                 options["num_ctx"] = int(raw_ctx)
             except ValueError:
-                logger.warning(f"Ignoring non-integer OLLAMA_NUM_CTX: {raw_ctx!r}")
+                logger.warning(f"Ignoring non-integer OLLAMA_NUM_CTX: {raw_ctx!r}", exc_info=True)
         return options
 
     def _with_keep_alive(self, payload: dict) -> dict:
@@ -108,7 +108,7 @@ class OllamaClient:
             data = r.json() or {}
             return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
         except Exception as e:
-            logger.warning(f"Ollama list_models failed: {e}")
+            logger.warning(f"Ollama list_models failed: {e}", exc_info=True)
             return []
 
     # --- embeddings ---
@@ -151,7 +151,7 @@ class OllamaClient:
             logger.warning("Ollama /api/embed returned unexpected payload shape")
             return None
         except Exception as e:
-            logger.warning(f"Ollama /api/embed failed: {e}")
+            logger.warning(f"Ollama /api/embed failed: {e}", exc_info=True)
             return None
 
     def _embed_legacy(self, texts: List[str]) -> Optional[List[List[float]]]:
@@ -173,7 +173,7 @@ class OllamaClient:
                 vectors.append(vec)
             return vectors
         except Exception as e:
-            logger.warning(f"Ollama /api/embeddings failed: {e}")
+            logger.warning(f"Ollama /api/embeddings failed: {e}", exc_info=True)
             return None
 
     # --- chat judge ---
@@ -219,5 +219,5 @@ class OllamaClient:
             logger.warning("Ollama judge returned non-object JSON")
             return None
         except Exception as e:
-            logger.warning(f"Ollama judge failed: {e}")
+            logger.warning(f"Ollama judge failed: {e}", exc_info=True)
             return None

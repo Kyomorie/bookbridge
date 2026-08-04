@@ -54,7 +54,7 @@ def _active_user_clients(container):
             return None
         logger.error(
             "Could not build per-user Hardcover clients for user %s: %s",
-            getattr(user, "id", "?"), exc,
+            getattr(user, "id", "?"), exc, exc_info=True,
         )
         raise
 
@@ -267,11 +267,11 @@ def link_hardcover(abs_id):
                     int(book_id), 1, int(edition_id) if edition_id else None
                 )
             except Exception as e:
-                logger.warning(f"⚠️ Failed to set Hardcover status: {e}")
+                logger.warning(f"⚠️ Failed to set Hardcover status: {e}", exc_info=True)
 
             return jsonify({"success": True, "title": title})
         except Exception as e:
-            logger.error(f"❌ Failed to save hardcover details: {e}")
+            logger.error(f"❌ Failed to save hardcover details: {e}", exc_info=True)
             return jsonify({"error": "Database update failed"}), 500
 
     # Legacy form data flow
@@ -304,11 +304,11 @@ def link_hardcover(abs_id):
                 book_data["book_id"], 1, book_data.get("edition_id")
             )
         except Exception as e:
-            logger.warning(f"⚠️ Failed to set Hardcover status: {e}")
+            logger.warning(f"⚠️ Failed to set Hardcover status: {e}", exc_info=True)
 
         flash(f"Linked Hardcover: {book_data.get('title')}", "success")
     except Exception as e:
-        logger.error(f"❌ Failed to save hardcover details: {e}")
+        logger.error(f"❌ Failed to save hardcover details: {e}", exc_info=True)
         flash("Database update failed", "error")
 
     return redirect(url_for("index"))

@@ -1,10 +1,12 @@
 import logging
+import threading
 import time
 import os
 from datetime import datetime
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from functools import wraps
+from typing import Any, Optional
 import requests
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,64 @@ class MojibakeSafeFormatter(logging.Formatter):
         return repair_mojibake(super().format(record))
 
 
+class ThresholdExceptionFormatter(logging.Formatter):
+    """Formatter that renders exception/traceback text only at or above a level threshold.
+
+    Records below ``threshold`` (default ``logging.ERROR``) that carry
+    ``exc_info``, ``exc_text``, or ``stack_info`` are rendered as a plain
+    message line, without the traceback block a plain :class:`logging.Formatter`
+    would otherwise append. Records at or above ``threshold`` format exactly as
+    :class:`logging.Formatter` does today.
+
+    The record's ``exc_info``/``exc_text``/``stack_info`` attributes are always
+    restored before ``format()`` returns, even when suppressed for this
+    handler's own output -- other handlers processing the same ``LogRecord``
+    afterwards (e.g. the diagnostics collector) must still see the original
+    exception data.
+    """
+
+    def __init__(
+        self,
+        fmt: Optional[str] = None,
+        datefmt: Optional[str] = None,
+        style: str = '%',
+        threshold: int = logging.ERROR,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(fmt=fmt, datefmt=datefmt, style=style, **kwargs)
+        self.threshold = threshold
+
+    def format(self, record: logging.LogRecord) -> str:
+        suppress = record.levelno < self.threshold and bool(
+            record.exc_info or record.exc_text or record.stack_info
+        )
+        if not suppress:
+            return super().format(record)
+
+        exc_info = record.exc_info
+        exc_text = record.exc_text
+        stack_info = record.stack_info
+        record.exc_info = None
+        record.exc_text = None
+        record.stack_info = None
+        try:
+            return super().format(record)
+        finally:
+            record.exc_info = exc_info
+            record.exc_text = exc_text
+            record.stack_info = stack_info
+
+
+class ThresholdMojibakeFormatter(MojibakeSafeFormatter, ThresholdExceptionFormatter):
+    """Formatter combining mojibake repair with threshold-gated exception rendering.
+
+    Used by the console and file handlers so a below-threshold record with
+    ``exc_info`` (e.g. ``logger.warning(..., exc_info=True)``) prints as a
+    single repaired line, while ERROR+ records still render the full
+    traceback exactly as before.
+    """
+
+
 class MemoryLogHandler(logging.Handler):
     """Log handler that keeps logs in memory for real-time streaming."""
 
@@ -105,7 +165,7 @@ def setup_file_logging():
 
     file_handler = RotatingFileHandler(str(LOG_PATH), maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
     file_handler.setLevel(log_level)
-    file_handler.setFormatter(MojibakeSafeFormatter('[%(asctime)s] %(levelname)s - %(name)s: %(message)s'))
+    file_handler.setFormatter(ThresholdMojibakeFormatter('[%(asctime)s] %(levelname)s - %(name)s: %(message)s'))
 
     # Attach to the root logger so all module loggers go to the same file
     root_logger = logging.getLogger()
@@ -120,7 +180,7 @@ def setup_console_logging():
     # Use LOG_LEVEL env variable or fallback to INFO
     log_level = getattr(logging, os.environ.get('LOG_LEVEL', 'INFO').upper(), logging.INFO)
     console_handler.setLevel(log_level)
-    console_handler.setFormatter(MojibakeSafeFormatter('%(asctime)s - %(levelname)s - %(message)s'))
+    console_handler.setFormatter(ThresholdMojibakeFormatter('%(asctime)s - %(levelname)s - %(message)s'))
 
     # Add to root logger
     root_logger = logging.getLogger()
@@ -176,7 +236,7 @@ class TelegramHandler(logging.Handler):
             response.raise_for_status()  # Raise exception for HTTP errors
         except Exception as e:
             # Log telegram handler failures without causing loops
-            logger.error(f"TelegramHandler failed to send message: {str(e)}")  # Never raise from logging
+            logger.error(f"TelegramHandler failed to send message: {str(e)}", exc_info=True)  # Never raise from logging
 
 
 def setup_telegram_logging():
@@ -229,6 +289,138 @@ def time_execution(func):
             pass
         return result
     return wrapper
+
+
+class PersistentConditionLogger:
+    """Suppresses repeat log noise for a condition that stays true across many
+    calls (a dead retry loop, a standing config gap, a hot caller bug).
+
+    Without this, a warning inside a loop that never clears re-logs the exact
+    same line every attempt/cycle, drowning out everything else. With it, the
+    first occurrence of a given ``key`` is logged exactly as it always was
+    (byte-identical, at WARNING — the greppable contract issue reporters rely
+    on is preserved), later occurrences drop to DEBUG, and every ``every``-th
+    occurrence re-surfaces at WARNING so a still-broken condition doesn't go
+    completely silent. Call :meth:`resolve` from the matching success path to
+    announce recovery once and reset the counter.
+
+    Thread-safe via a single lock guarding the counter dict. Counter state is
+    process-lifetime (reset on restart) — it is not persisted, by design.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._counts: dict[str, int] = {}
+
+    def warn(
+        self,
+        logger: logging.Logger,
+        key: str,
+        message: str,
+        *args: Any,
+        every: int = 50,
+        level: int = logging.WARNING,
+        **kwargs: Any,
+    ) -> None:
+        """Log a persistent-condition warning, suppressing repeats for ``key``.
+
+        Count 1 (first occurrence for this ``key``): logs ``message`` via
+        ``logger.log(level, ...)`` completely unchanged — same text, same
+        ``*args``/``**kwargs`` (so ``exc_info=True`` still attaches a
+        traceback).
+
+        Every ``every``-th occurrence thereafter (count % every == 0): logs
+        ``message`` again via ``logger.log(level, ...)``, with
+        ``" (occurrence %d; repeats logged at DEBUG)"`` appended so the
+        condition stays visible without repeating every single time.
+
+        All other occurrences: logs ``message`` via ``logger.debug`` (still
+        reachable for local troubleshooting, but out of the fleet-noisy path)
+        regardless of ``level``.
+
+        Args:
+            logger: The module logger to emit through.
+            key: Identity of the persistent condition (e.g. a host, user id,
+                or a fixed string for a caller-bug site with no natural key).
+            message: The log message. Passed through unchanged on count 1.
+            *args: Positional args forwarded to the underlying logger call
+                (supports both %-style lazy logging args and plain messages).
+            every: Repeat-warning interval. Must be >= 1 (clamped to 1).
+            level: Severity for the first and every-``every``-th loud
+                emissions (default ``logging.WARNING``). Pass
+                ``logging.ERROR`` for sites where the original, pre-helper
+                severity must be preserved (e.g. for a downstream handler
+                threshold like Telegram alerting).
+            **kwargs: Forwarded to the underlying logger call (e.g. exc_info).
+        """
+        if every < 1:
+            every = 1
+
+        with self._lock:
+            count = self._counts.get(key, 0) + 1
+            self._counts[key] = count
+
+        if count == 1:
+            logger.log(level, message, *args, **kwargs)
+        elif count % every == 0:
+            logger.log(
+                level,
+                f"{message} (occurrence {count}; repeats logged at DEBUG)",
+                *args,
+                **kwargs,
+            )
+        else:
+            logger.debug(message, *args, **kwargs)
+
+    def resolve(
+        self,
+        logger: logging.Logger,
+        key: str,
+        message: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        """Announce recovery for ``key`` and reset its counter.
+
+        If ``key`` has a nonzero occurrence count (i.e. :meth:`warn` fired for
+        it at least once since the last resolve/reset), logs ``message`` via
+        ``logger.info`` with ``" (recovered after N occurrences)"`` appended,
+        then resets the counter to 0. If ``key`` has no recorded occurrences,
+        this is a silent no-op — there is nothing to announce recovery from.
+
+        Args:
+            logger: The module logger to emit through.
+            key: Same identity used in the matching :meth:`warn` calls.
+            message: A NEW recovery message (never the original warning text).
+            *args: Forwarded to the underlying ``logger.info`` call.
+            **kwargs: Forwarded to the underlying ``logger.info`` call.
+        """
+        with self._lock:
+            count = self._counts.get(key, 0)
+            if count == 0:
+                return
+            self._counts[key] = 0
+
+        occurrences = "1 occurrence" if count == 1 else f"{count} occurrences"
+        logger.info(f"{message} (recovered after {occurrences})", *args, **kwargs)
+
+    def reset(self) -> None:
+        """Clear all tracked counters. Test-only."""
+        with self._lock:
+            self._counts.clear()
+
+
+_persistent_condition_logger: Optional["PersistentConditionLogger"] = None
+_persistent_condition_logger_lock = threading.Lock()
+
+
+def get_persistent_condition_logger() -> "PersistentConditionLogger":
+    """Return the process-wide :class:`PersistentConditionLogger` singleton."""
+    global _persistent_condition_logger
+    with _persistent_condition_logger_lock:
+        if _persistent_condition_logger is None:
+            _persistent_condition_logger = PersistentConditionLogger()
+        return _persistent_condition_logger
 
 
 # Global instances - initialize when module is imported (BEFORE main.py)

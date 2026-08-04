@@ -108,7 +108,7 @@ def _recent_external_put_ttl_seconds() -> int:
         try:
             return max(0, int(configured))
         except ValueError:
-            logger.warning("Invalid KOSYNC_RECENT_EXTERNAL_PUT_SECONDS=%r; using default", configured)
+            logger.warning("Invalid KOSYNC_RECENT_EXTERNAL_PUT_SECONDS=%r; using default", configured, exc_info=True)
     return 600
 
 
@@ -207,7 +207,7 @@ def _manifest_fallback_allowed(user_id) -> bool:
     try:
         user = _database_service.get_user(user_id) if _database_service else None
     except Exception as e:
-        logger.warning("Manifest fallback-policy lookup failed (user_id=%s): %s", user_id, e)
+        logger.warning("Manifest fallback-policy lookup failed (user_id=%s): %s", user_id, e, exc_info=True)
         return False
     return bool(user and getattr(user, "is_admin", False))
 
@@ -218,7 +218,7 @@ def _booklore_credentials_for_manifest(user_id):
     try:
         credentials = _database_service.get_user_credentials(user_id)
     except Exception as e:
-        logger.warning("Manifest Grimmory shelf credentials lookup failed (user_id=%s): %s", user_id, e)
+        logger.warning("Manifest Grimmory shelf credentials lookup failed (user_id=%s): %s", user_id, e, exc_info=True)
         return {_ALLOW_GLOBAL_FALLBACK_KEY: False}
     credentials[_ALLOW_GLOBAL_FALLBACK_KEY] = _manifest_fallback_allowed(user_id)
     return credentials
@@ -283,7 +283,7 @@ def _build_booklore_shelf_mapping(user_id) -> Optional[dict[str, list[str]]]:
             _booklore_shelf_mapping_cache[cache_key] = {"time": now, "mapping": mapping}
         return mapping
     except Exception as e:
-        logger.warning("Manifest Grimmory shelf mapping failed (user_id=%s): %s", user_id, e)
+        logger.warning("Manifest Grimmory shelf mapping failed (user_id=%s): %s", user_id, e, exc_info=True)
         with _booklore_shelf_mapping_cache_lock:
             cached = _booklore_shelf_mapping_cache.get(cache_key)
         return cached["mapping"] if cached else None
@@ -307,7 +307,7 @@ def _hardcover_credentials_for_manifest(user_id):
     try:
         credentials = _database_service.get_user_credentials(user_id)
     except Exception as e:
-        logger.warning("Manifest Hardcover list credentials lookup failed (user_id=%s): %s", user_id, e)
+        logger.warning("Manifest Hardcover list credentials lookup failed (user_id=%s): %s", user_id, e, exc_info=True)
         return {_ALLOW_GLOBAL_FALLBACK_KEY: False}
     credentials[_ALLOW_GLOBAL_FALLBACK_KEY] = _manifest_fallback_allowed(user_id)
     return credentials
@@ -361,7 +361,7 @@ def _build_hardcover_list_mapping(user_id) -> Optional[dict[str, list[str]]]:
             _hardcover_list_mapping_cache[cache_key] = {"time": now, "mapping": mapping}
         return mapping
     except Exception as e:
-        logger.warning("Manifest Hardcover list mapping failed (user_id=%s): %s", user_id, e)
+        logger.warning("Manifest Hardcover list mapping failed (user_id=%s): %s", user_id, e, exc_info=True)
         with _hardcover_list_mapping_cache_lock:
             cached = _hardcover_list_mapping_cache.get(cache_key)
         return cached["mapping"] if cached else None
@@ -377,7 +377,7 @@ def _apply_hardcover_list_collections(manifest: dict, user_id) -> None:
             for details in _database_service.get_all_hardcover_details()
         }
     except Exception as e:
-        logger.warning("Manifest Hardcover details lookup failed (user_id=%s): %s", user_id, e)
+        logger.warning("Manifest Hardcover details lookup failed (user_id=%s): %s", user_id, e, exc_info=True)
         return
     for item in manifest.get("books") or []:
         abs_id = str(item.get("abs_id") or "")
@@ -398,7 +398,7 @@ def _apply_booklore_shelf_collections(manifest: dict, user_id) -> None:
     try:
         books = _database_service.get_books_by_status("active", user_id=user_id) if user_id else _database_service.get_books_by_status("active")
     except Exception as e:
-        logger.warning("Manifest Grimmory shelf book lookup failed (user_id=%s): %s", user_id, e)
+        logger.warning("Manifest Grimmory shelf book lookup failed (user_id=%s): %s", user_id, e, exc_info=True)
         return
     books_by_abs = {str(book.abs_id): book for book in books}
     for item in manifest.get("books") or []:
@@ -441,7 +441,7 @@ def _scope_manifest_to_user(manifest, user_id):
             for book in _database_service.get_books_by_status("active", user_id=user_id)
         }
     except Exception as e:
-        logger.warning("Manifest user-scoping failed (user_id=%s): %s", user_id, e)
+        logger.warning("Manifest user-scoping failed (user_id=%s): %s", user_id, e, exc_info=True)
         return manifest
     all_books = manifest.get("books") or []
     books = [dict(item) for item in all_books if str(item.get("abs_id")) in owned_ids]
@@ -476,7 +476,7 @@ def _manifest_prebuilder_loop() -> None:
                 manifest.get("revision", ""),
             )
         except Exception as e:
-            logger.error("Manifest prebuilder error: %s", e)
+            logger.error("Manifest prebuilder error: %s", e, exc_info=True)
 
 
 def _start_manifest_prebuilder() -> None:
@@ -504,7 +504,7 @@ def _get_koreader_device_sync_service():
     try:
         return _container.koreader_device_sync_service()
     except Exception as e:
-        logger.warning(f"KOReader device-sync service unavailable: {e}")
+        logger.warning(f"KOReader device-sync service unavailable: {e}", exc_info=True)
         return None
 
 
@@ -673,7 +673,7 @@ def _forward_reading_session_to_bookorbit(
         )
         logger.debug(f"Forwarded session to BookOrbit for '{getattr(book, 'abs_title', '?')}' (id={source_id})")
     except Exception as e:
-        logger.warning(f"Session upload: BookOrbit forwarding failed for '{getattr(book, 'abs_id', '?')}': {e}")
+        logger.warning(f"Session upload: BookOrbit forwarding failed for '{getattr(book, 'abs_id', '?')}': {e}", exc_info=True)
 
 
 def _persist_grouped_kosync_session(session_data: dict) -> None:
@@ -729,7 +729,7 @@ def _persist_grouped_kosync_session(session_data: dict) -> None:
                     book_type=session_data["session_type"],
                 )
         except Exception as e:
-            logger.warning("KOSync session forwarding failed for '%s': %s", session_data["abs_id"], e)
+            logger.warning("KOSync session forwarding failed for '%s': %s", session_data["abs_id"], e, exc_info=True)
 
     try:
         bo_book = _database_service.get_book(session_data["abs_id"])
@@ -742,7 +742,7 @@ def _persist_grouped_kosync_session(session_data: dict) -> None:
             book_type=session_data["session_type"],
         )
     except Exception as e:
-        logger.warning("KOSync BookOrbit session forwarding failed for '%s': %s", session_data["abs_id"], e)
+        logger.warning("KOSync BookOrbit session forwarding failed for '%s': %s", session_data["abs_id"], e, exc_info=True)
 
 
 def _discard_open_kosync_session(document_hash: str | None, device: str | None, device_id: str | None) -> bool:
@@ -1233,7 +1233,7 @@ def _autodiscovery_audiobook_candidates(epub_filename, ebook_meta):
     try:
         audiobooks = abs_client.get_all_audiobooks()
     except Exception as e:
-        logger.warning(f"⚠️ Auto-discovery: error listing audiobooks: {e}")
+        logger.warning(f"⚠️ Auto-discovery: error listing audiobooks: {e}", exc_info=True)
         return candidates
 
     logger.debug(f"Auto-discovery: scoring '{title}' (author='{author}') against {len(audiobooks)} audiobooks")
@@ -1383,7 +1383,7 @@ def _auto_map_ebook_to_audiobook(doc_hash_val, epub_filename, candidate, reason)
     try:
         mapping_service = _container.book_mapping_service()
     except Exception as e:
-        logger.warning(f"Auto-map: book mapping service unavailable: {e}")
+        logger.warning(f"Auto-map: book mapping service unavailable: {e}", exc_info=True)
         return None
 
     ebook_source, ebook_source_id = _resolve_library_ebook_source(epub_filename)
@@ -1450,6 +1450,7 @@ def _record_user_kosync_state(book, percentage, progress, timestamp, user_id):
             getattr(book, "abs_id", None),
             user_id,
             exc,
+            exc_info=True,
         )
 
 
@@ -1628,7 +1629,7 @@ def kosync_put_progress():
                     now_ts,
                 )
             except Exception as e:
-                logger.warning(f"KOSync session grouping failed for '{linked_book.abs_id}': {e}")
+                logger.warning(f"KOSync session grouping failed for '{linked_book.abs_id}': {e}", exc_info=True)
 
         instant_sync_enabled = os.environ.get('INSTANT_SYNC_ENABLED', 'true').lower() != 'false'
         if is_internal:
@@ -1796,11 +1797,11 @@ def koreader_upload_statistics():
                 logger.warning(
                     "KOReader statistics write for device '%s' hit a locked database "
                     "(attempt %d/%d); retrying in %.1fs",
-                    device_key, attempt, max_attempts, backoff,
+                    device_key, attempt, max_attempts, backoff, exc_info=True,
                 )
                 time.sleep(backoff)
                 continue
-            logger.error("KOReader statistics upload failed for device '%s': %s", device_key, e)
+            logger.error("KOReader statistics upload failed for device '%s': %s", device_key, e, exc_info=True)
             return jsonify({"error": "Failed to persist statistics upload"}), 500
 
     return jsonify({
@@ -1857,7 +1858,7 @@ def koreader_merged_statistics():
             _database_service.get_merged_koreader_book_meta(device_key, md5s, user_id=user_id) if md5s else []
         )
     except Exception as e:
-        logger.error("KOReader merged statistics fetch failed for device '%s': %s", device_key, e)
+        logger.error("KOReader merged statistics fetch failed for device '%s': %s", device_key, e, exc_info=True)
         return jsonify({"error": "Failed to fetch merged statistics"}), 500
 
     return jsonify({
@@ -1914,7 +1915,7 @@ def koreader_exchange_annotations():
             books=books,
         )
     except Exception as e:
-        logger.error("KOReader annotation exchange failed for device '%s': %s", device_key, e)
+        logger.error("KOReader annotation exchange failed for device '%s': %s", device_key, e, exc_info=True)
         return jsonify({"error": "Annotation exchange failed"}), 500
 
     result["enabled"] = True
@@ -1952,7 +1953,7 @@ def koreader_exchange_annotations_ack():
             books=books,
         )
     except Exception as e:
-        logger.error("KOReader annotation ack failed for device '%s': %s", device_key, e)
+        logger.error("KOReader annotation ack failed for device '%s': %s", device_key, e, exc_info=True)
         return jsonify({"error": "Annotation ack failed"}), 500
 
     result["enabled"] = True
@@ -2049,6 +2050,7 @@ def kosync_upload_sessions():
                     "Session upload: duplicate check failed for '%s': %s",
                     abs_id,
                     e,
+                    exc_info=True,
                 )
         if already_recorded:
             logger.info("Session upload: accepted duplicate retry for '%s'", abs_id)
@@ -2069,7 +2071,7 @@ def kosync_upload_sessions():
             )
             accepted += 1
         except Exception as e:
-            logger.warning(f"Session upload: failed to record session for '{abs_id}': {e}")
+            logger.warning(f"Session upload: failed to record session for '{abs_id}': {e}", exc_info=True)
             rejected += 1
             record_result(index, session, False, "record_failed")
             continue
@@ -2088,7 +2090,7 @@ def kosync_upload_sessions():
                 if deleted:
                     logger.info("Session upload: replaced overlapping estimated KoSync session for '%s'", abs_id)
             except Exception as e:
-                logger.warning(f"Session upload: failed to dedupe estimated KoSync session for '{abs_id}': {e}")
+                logger.warning(f"Session upload: failed to dedupe estimated KoSync session for '{abs_id}': {e}", exc_info=True)
 
         if kosync_doc and (kosync_doc.device_id or kosync_doc.device):
             seen_time = None
@@ -2121,7 +2123,7 @@ def kosync_upload_sessions():
                         " and dropped open estimated session" if discarded else "",
                     )
                 except Exception as e:
-                    logger.warning(f"Session upload: failed to classify plugin-backed device for '{abs_id}': {e}")
+                    logger.warning(f"Session upload: failed to classify plugin-backed device for '{abs_id}': {e}", exc_info=True)
 
         # Fallback: discard any remaining open estimated sessions for this book by abs_id.
         # Handles the case where kosync_doc had no device info and the key-based discard above was
@@ -2161,7 +2163,7 @@ def kosync_upload_sessions():
                     except Exception as e:
                         logger.warning(
                             "Session upload: failed to classify device from open session for '%s': %s",
-                            abs_id, e,
+                            abs_id, e, exc_info=True,
                         )
 
         # Forward to Grimmory if configured
@@ -2185,7 +2187,7 @@ def kosync_upload_sessions():
                     )
                     logger.debug(f"Forwarded session to Grimmory for '{book.abs_title}' (id={grimmory_id})")
             except Exception as e:
-                logger.warning(f"Session upload: Grimmory forwarding failed for '{abs_id}': {e}")
+                logger.warning(f"Session upload: Grimmory forwarding failed for '{abs_id}': {e}", exc_info=True)
 
         # Forward to BookOrbit if the ebook is hosted there
         _forward_reading_session_to_bookorbit(
@@ -2643,7 +2645,7 @@ def _try_find_epub_by_hash(doc_hash: str) -> Optional[str]:
                                 logger.info(f"📚 Matched EPUB via Grimmory download: {safe_title}")
                                 return safe_title
                     except Exception as e:
-                        logger.warning(f"⚠️ Failed to check Grimmory book '{book.title}': {e}")
+                        logger.warning(f"⚠️ Failed to check Grimmory book '{book.title}': {e}", exc_info=True)
 
                 logger.info(f"🔍 Grimmory search finished. Checked {len(books)} books. No match found")
 
@@ -2651,7 +2653,7 @@ def _try_find_epub_by_hash(doc_hash: str) -> Optional[str]:
                 logger.debug(f"Error querying Grimmory for EPUB matching: {e}")
 
     except Exception as e:
-        logger.error(f"❌ Error in EPUB auto-discovery: {e}")
+        logger.error(f"❌ Error in EPUB auto-discovery: {e}", exc_info=True)
 
     logger.info("🔍 Auto-discovery finished. No match found")
     return None
@@ -2950,7 +2952,7 @@ def _run_get_auto_discovery(doc_id: str, user_id=None) -> None:
 
         logger.info(f"🔍 KOSync: GET-discovery found epub '{epub_filename}' but no matching book")
     except Exception as e:
-        logger.error(f"❌ Error in GET auto-discovery: {e}")
+        logger.error(f"❌ Error in GET auto-discovery: {e}", exc_info=True)
 
 
 def _run_put_auto_discovery_inner(doc_hash_val: str, user_id=None) -> None:
@@ -3147,11 +3149,11 @@ def _cleanup_cache_for_hash(doc_hash):
                         os.remove(file_path)
                         logger.info(f"🗑️ Deleted cached EPUB: {filename}")
                     except Exception as e:
-                        logger.warning(f"⚠️ Failed to delete cached file '{filename}': {e}")
+                        logger.warning(f"⚠️ Failed to delete cached file '{filename}': {e}", exc_info=True)
         
         # Note: We don't delete the KosyncDocument record here, 
         # as it may contain important progress data. 
         # The filename/mtime/source fields just become stale or are cleared if unlinked.
 
     except Exception as e:
-        logger.error(f"❌ Error cleaning up cache for '{doc_hash}': {e}")
+        logger.error(f"❌ Error cleaning up cache for '{doc_hash}': {e}", exc_info=True)

@@ -6,6 +6,7 @@ import base64
 from defusedxml import ElementTree as ET
 from urllib.parse import quote
 
+from src.utils.logging_utils import get_persistent_condition_logger
 from src.utils.user_config import resolve_setting
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,7 @@ class CWAClient:
             kwargs.setdefault('timeout', self.timeout)
             return self.session.get(url, **kwargs)
         except Exception as e:
-            logger.error(f"❌ CWA Request failed: {e}")
+            logger.error(f"❌ CWA Request failed: {e}", exc_info=True)
             raise
 
     def is_configured(self):
@@ -97,10 +98,15 @@ class CWAClient:
                 if r.text.lstrip().lower().startswith(('<!doctype html', '<html')):
                     logger.error("❌ CWA Connection Failed: Server returned HTML login page instead of XML. Authentication failed.")
                     return False
-                
+
+                get_persistent_condition_logger().resolve(
+                    logger,
+                    f"cwa_connection:{self.base_url}",
+                    f"✅ CWA connection recovered at {self.base_url}",
+                )
                 logger.info(f"✅ Connected to CWA at {self.base_url}")
                 return True
-                
+
             elif r.status_code in [401, 403]:
                 logger.error(f"❌ CWA Connection Failed: Unauthorized ({r.status_code}). Check credentials.")
                 return False
@@ -109,7 +115,13 @@ class CWAClient:
                 return False
 
         except Exception as e:
-            logger.error(f"❌ CWA Connection Error: {e}")
+            get_persistent_condition_logger().warn(
+                logger,
+                f"cwa_connection:{self.base_url}",
+                f"❌ CWA Connection Error: {e}",
+                exc_info=True,
+                level=logging.ERROR,
+            )
             return False
 
     def _get_search_template(self):
@@ -177,7 +189,7 @@ class CWAClient:
                 return self.search_template
 
         except Exception as e:
-            logger.error(f"❌ CWA Discovery Error: {e}")
+            logger.error(f"❌ CWA Discovery Error: {e}", exc_info=True)
         
         return None
 
@@ -223,7 +235,7 @@ class CWAClient:
             return self._parse_opds(r.text)
 
         except Exception as e:
-            logger.error(f"❌ CWA Search Error: {e}")
+            logger.error(f"❌ CWA Search Error: {e}", exc_info=True)
             return []
 
     def _parse_opds(self, xml_content):
@@ -314,7 +326,7 @@ class CWAClient:
             return results
 
         except Exception as e:
-            logger.error(f"❌ Error parsing CWA OPDS: {e}")
+            logger.error(f"❌ Error parsing CWA OPDS: {e}", exc_info=True)
             logger.debug(f"Failed XML content (first 500 chars): {xml_content[:500]}")
             return []
 
@@ -346,12 +358,16 @@ class CWAClient:
                         if len(results) == 1:
                             return results[0]
             except Exception as e:
-                logger.warning(f"⚠️ CWA ID lookup failed for '{url}': {e}")
+                logger.warning(f"⚠️ CWA ID lookup failed for '{url}': {e}", exc_info=True)
 
         # 2. Fallback: Direct Download Link Construction
-        # If the server crashed (Author DB error) or lookup failed, assume the ID is valid 
+        # If the server crashed (Author DB error) or lookup failed, assume the ID is valid
         # and try to construct the download link blindly.
-        logger.warning(f"⚠️ CWA metadata lookup failed for ID '{cwa_id}' — Attempting direct download fallback")
+        get_persistent_condition_logger().warn(
+            logger,
+            "cwa_get_book_by_id_lookup_failed",
+            f"⚠️ CWA metadata lookup failed for ID '{cwa_id}' — Attempting direct download fallback",
+        )
         
         # Standard Calibre-Web OPDS download format: /opds/download/{id}/{format}/
         # We assume EPUB as it's the primary target
@@ -386,7 +402,7 @@ class CWAClient:
                 
             return True
         except Exception as e:
-            logger.error(f"❌ CWA Download failed: {e}")
+            logger.error(f"❌ CWA Download failed: {e}", exc_info=True)
             if os.path.exists(output_path):
                 os.remove(output_path)
             return False
@@ -429,5 +445,5 @@ class CWAClient:
             return None
 
         except Exception as e:
-            logger.error(f"❌ CWA UUID resolution error for '{calibre_id}': {e}")
+            logger.error(f"❌ CWA UUID resolution error for '{calibre_id}': {e}", exc_info=True)
             return None

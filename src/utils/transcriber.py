@@ -67,7 +67,7 @@ class AudioTranscriber:
         try:
             minutes = int(raw)
         except (TypeError, ValueError):
-            logger.warning(f"⚠️ Invalid AUDIO_SPLIT_DURATION_MINUTES '{raw}', using 45")
+            logger.warning(f"⚠️ Invalid AUDIO_SPLIT_DURATION_MINUTES '{raw}', using 45", exc_info=True)
             minutes = 45
         return max(1, minutes) * 60
 
@@ -179,7 +179,7 @@ class AudioTranscriber:
             logger.info(f"✅ SMIL Extraction complete: {len(transcript)} segments")
             return transcript # Return raw data!
         except Exception as e:
-            logger.error(f"❌ Failed to extract SMIL transcript: {e}")
+            logger.error(f"❌ Failed to extract SMIL transcript: {e}", exc_info=True)
             return None
 
     def _get_cached_transcript(self, path):
@@ -208,7 +208,7 @@ class AudioTranscriber:
                 self._transcript_cache.popitem(last=False)
             return loaded
         except Exception as e:
-            logger.error(f"❌ Error loading transcript '{path}': {e}")
+            logger.error(f"❌ Error loading transcript '{path}': {e}", exc_info=True)
             return None
 
     def _detect_transcript_format(self, data):
@@ -294,7 +294,7 @@ class AudioTranscriber:
             result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             return float(result.stdout.strip())
         except (ValueError, subprocess.CalledProcessError) as e:
-            logger.error(f"❌ Could not determine duration for '{file_path}': {e}")
+            logger.error(f"❌ Could not determine duration for '{file_path}': {e}", exc_info=True)
             return 0.0
 
     def normalize_audio_to_wav(self, input_path: Path) -> Optional[Path]:
@@ -340,7 +340,7 @@ class AudioTranscriber:
             return output_path
 
         except subprocess.CalledProcessError as e:
-            logger.error(f"❌ FFmpeg conversion failed for '{input_path}': {e.stderr}")
+            logger.error(f"❌ FFmpeg conversion failed for '{input_path}': {e.stderr}", exc_info=True)
             return None
 
     def split_audio_file(self, file_path, target_max_duration_sec=2700):
@@ -377,7 +377,7 @@ class AudioTranscriber:
                 new_files.append(new_path)
                 logger.info(f"      Created chunk {i+1}/{num_parts}: {new_filename}")
             except subprocess.CalledProcessError as e:
-                logger.error(f"❌ Failed to create chunk {i+1}: {e}")
+                logger.error(f"❌ Failed to create chunk {i+1}: {e}", exc_info=True)
 
         # Remove original file after splitting
         if new_files:
@@ -477,7 +477,7 @@ class AudioTranscriber:
                         resuming = True
                         logger.info(f"♻️ Resuming transcription: {chunks_completed} chunks previously done")
                 except Exception as e:
-                    logger.warning(f"⚠️ Could not resume (will start fresh): {e}")
+                    logger.warning(f"⚠️ Could not resume (will start fresh): {e}", exc_info=True)
                     if book_cache_dir.exists(): shutil.rmtree(book_cache_dir)
                     book_cache_dir.mkdir(parents=True, exist_ok=True)
                     resuming = False
@@ -594,7 +594,7 @@ class AudioTranscriber:
                 except Exception as e:
                     # Raw-audio providers get stream URLs (plain strings) here, not Paths.
                     source_label = getattr(local_path, 'name', local_path)
-                    logger.error(f"   ❌ Transcription failed for {source_label}: {e}")
+                    logger.error(f"   ❌ Transcription failed for {source_label}: {e}", exc_info=True)
                     raise
 
                 cumulative_duration += duration
@@ -639,7 +639,7 @@ class AudioTranscriber:
             # can skip the terminal DB write without logging a scary error.
             raise
         except Exception as e:
-            logger.error(f"❌ Transcription failed: {e}")
+            logger.error(f"❌ Transcription failed: {e}", exc_info=True)
             # Don't delete cache dir - allows resume on retry
             raise e
 
@@ -757,7 +757,7 @@ class AudioTranscriber:
             return self._clean_text(raw_text)
 
         except Exception as e:
-            logger.error(f"❌ Error reading transcript '{transcript_path}': {e}")
+            logger.error(f"❌ Error reading transcript '{transcript_path}': {e}", exc_info=True)
         return None
 
     def get_previous_segment_text(self, transcript_path, timestamp):
@@ -799,7 +799,7 @@ class AudioTranscriber:
             return None
 
         except Exception as e:
-            logger.error(f"❌ Error getting previous segment '{transcript_path}': {e}")
+            logger.error(f"❌ Error getting previous segment '{transcript_path}': {e}", exc_info=True)
             return None
 
     def _ollama_align_fallback(self, clean_search, windows, hint_percentage, data, title_prefix="") -> Optional[float]:
@@ -1002,6 +1002,6 @@ class AudioTranscriber:
                 return None
 
         except Exception as e:
-            logger.error(f"❌ {title_prefix}Error searching transcript '{transcript_path}': {e}")
+            logger.error(f"❌ {title_prefix}Error searching transcript '{transcript_path}': {e}", exc_info=True)
         return None
 

@@ -141,7 +141,7 @@ class BookOrbitClient:
                     logger.error("BookOrbit login failed: %s", resp.status_code)
             except Exception as exc:
                 self._login_retry_after = time.time() + _LOGIN_RETRY_COOLDOWN
-                logger.error("BookOrbit login error: %s", exc)
+                logger.error("BookOrbit login error: %s", exc, exc_info=True)
         return None
 
     # ------------------------------------------------------------------
@@ -167,7 +167,7 @@ class BookOrbitClient:
                 resp = self._dispatch(method, url, headers, json_data)
             return resp
         except Exception as exc:
-            logger.error("BookOrbit request failed (%s %s): %s", method, endpoint, exc)
+            logger.error("BookOrbit request failed (%s %s): %s", method, endpoint, exc, exc_info=True)
             return None
 
     def _dispatch(self, method: str, url: str, headers: dict, json_data):
@@ -986,7 +986,7 @@ class BookOrbitClient:
                             handle.write(chunk)
                 return True
         except Exception as e:
-            logger.error("BookOrbit file download error: file_id=%s: %s", file_id, e)
+            logger.error("BookOrbit file download error: file_id=%s: %s", file_id, e, exc_info=True)
             return False
 
     def get_cover_bytes(self, book_id) -> tuple:
@@ -1030,7 +1030,7 @@ class BookOrbitClient:
         try:
             resp = self.session.post(url, headers=headers, json=payload, timeout=30)
         except Exception as exc:
-            logger.error("BookOrbit koreader request failed (%s): %s", path, exc)
+            logger.error("BookOrbit koreader request failed (%s): %s", path, exc, exc_info=True)
             return None
         if resp.status_code not in (200, 201):
             logger.warning(

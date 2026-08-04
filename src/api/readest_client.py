@@ -103,7 +103,7 @@ class ReadestClient:
                 timeout=_REQUEST_TIMEOUT,
             )
         except Exception as e:
-            logger.error("Readest login request failed: %s", e)
+            logger.error("Readest login request failed: %s", e, exc_info=True)
             return False
 
         if resp.status_code != 200:
@@ -171,7 +171,7 @@ class ReadestClient:
                 timeout=_REQUEST_TIMEOUT,
             )
         except Exception as e:
-            logger.error("Readest token refresh failed: %s", e)
+            logger.error("Readest token refresh failed: %s", e, exc_info=True)
             return bool(self._access_token())
 
         if resp.status_code != 200:
@@ -199,14 +199,14 @@ class ReadestClient:
                     try:
                         self._db.set_user_credential(self._user_id, key, val)
                     except Exception as e:
-                        logger.warning("Readest: could not persist per-user setting %s: %s", key, e)
+                        logger.warning("Readest: could not persist per-user setting %s: %s", key, e, exc_info=True)
             else:
                 os.environ[key] = val
                 if self._db is not None:
                     try:
                         self._db.set_setting(key, val)
                     except Exception as e:
-                        logger.warning("Readest: could not persist setting %s: %s", key, e)
+                        logger.warning("Readest: could not persist setting %s: %s", key, e, exc_info=True)
 
         # Update local creds dict so subsequent calls in the same cycle see the new token.
         if self._creds is not None:
@@ -250,7 +250,7 @@ class ReadestClient:
                 timeout=_REQUEST_TIMEOUT,
             )
         except Exception as e:
-            logger.error("Readest pull_notes request failed: %s", e)
+            logger.error("Readest pull_notes request failed: %s", e, exc_info=True)
             return None
 
         if resp.status_code == 401:
@@ -278,7 +278,7 @@ class ReadestClient:
                 timeout=_REQUEST_TIMEOUT,
             )
         except Exception as e:
-            logger.error("Readest push_notes request failed: %s", e)
+            logger.error("Readest push_notes request failed: %s", e, exc_info=True)
             return False
 
         if resp.status_code in (200, 201):
@@ -330,7 +330,7 @@ class ReadestClient:
                     md5.update(chunk)
             digest = md5.hexdigest()
         except OSError as e:
-            logger.warning("Readest: could not hash %s: %s", path, e)
+            logger.warning("Readest: could not hash %s: %s", path, e, exc_info=True)
             return None
         cls._hash_cache[key] = digest
         return digest

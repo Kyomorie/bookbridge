@@ -125,7 +125,7 @@ class StorygraphSyncClient(SyncClient):
                 else:
                     match = self.storygraph_client.resolve_book(title=title, author='', isbn='')
             except Exception as exc:
-                logger.warning("StoryGraph automatch failed for '%s': %s", title, exc)
+                logger.warning("StoryGraph automatch failed for '%s': %s", title, exc, exc_info=True)
                 match = None
             if match and match.get('book_id'):
                 matched_by = strategy
@@ -139,7 +139,7 @@ class StorygraphSyncClient(SyncClient):
             try:
                 candidates = self.storygraph_client.search_books(craft_title, "")
             except Exception as exc:
-                logger.warning("StoryGraph LLM match search failed for '%s': %s", title, exc)
+                logger.warning("StoryGraph LLM match search failed for '%s': %s", title, exc, exc_info=True)
                 candidates = []
             conf_min = float(os.environ.get('OLLAMA_JUDGE_CONFIDENCE_MIN', 85))
             idx = judge_best_candidate(self.ollama_client, craft_title, craft_author, candidates, conf_min,
@@ -168,7 +168,7 @@ class StorygraphSyncClient(SyncClient):
                 except TypeError:
                     editions = []
         except Exception as exc:
-            logger.warning("StoryGraph: failed to fetch editions for automatch %s: %s", book_id, exc)
+            logger.warning("StoryGraph: failed to fetch editions for automatch %s: %s", book_id, exc, exc_info=True)
             editions = []
 
         chosen_edition = None
@@ -201,7 +201,7 @@ class StorygraphSyncClient(SyncClient):
         try:
             rating_info = self.storygraph_client.get_book_rating(book_id) or {}
         except Exception as exc:
-            logger.warning("StoryGraph: failed to fetch rating for automatch %s: %s", book_id, exc)
+            logger.warning("StoryGraph: failed to fetch rating for automatch %s: %s", book_id, exc, exc_info=True)
         if not isinstance(rating_info, dict):
             rating_info = {}
 
@@ -225,14 +225,14 @@ class StorygraphSyncClient(SyncClient):
             self.database_service.save_storygraph_details(details)
             self._book_id_cache[book.abs_id] = edition_id
         except Exception as exc:
-            logger.warning("StoryGraph: failed to save automatch details for %s: %s", book.abs_id, exc)
+            logger.warning("StoryGraph: failed to save automatch details for %s: %s", book.abs_id, exc, exc_info=True)
             return
 
         if set_initial_status:
             try:
                 self.storygraph_client.update_status(edition_id, 1)
             except Exception as exc:
-                logger.warning("StoryGraph: failed to set initial status after automatch for %s: %s", edition_id, exc)
+                logger.warning("StoryGraph: failed to set initial status after automatch for %s: %s", edition_id, exc, exc_info=True)
 
         logger.info(
             "StoryGraph: automatched '%s' to %s (edition=%s, pages=%s, matched_by=%s)",
@@ -264,7 +264,7 @@ class StorygraphSyncClient(SyncClient):
             updated = self.storygraph_client.update_progress(book_id, percentage)
             return SyncResult(percentage if updated else None, bool(updated))
         except Exception as e:
-            logger.warning("StoryGraph update skipped: %s", e)
+            logger.warning("StoryGraph update skipped: %s", e, exc_info=True)
             return SyncResult(None, False)
 
     def _resolve_book_id(self, book: Book) -> Optional[str]:

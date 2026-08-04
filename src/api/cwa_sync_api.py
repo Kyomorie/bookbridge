@@ -57,7 +57,7 @@ class CWASyncApi:
                 logger.error(f"❌ CWA Sync connection failed: {r.status_code}")
                 return False
         except Exception as e:
-            logger.error(f"❌ CWA Sync connection error: {e}")
+            logger.error(f"❌ CWA Sync connection error: {e}", exc_info=True)
             return False
 
     def get_reading_state(self, book_uuid: str) -> dict | None:
@@ -101,7 +101,7 @@ class CWASyncApi:
             }
 
         except Exception as e:
-            logger.error(f"❌ CWA Sync: Failed to get reading state for {book_uuid}: {e}")
+            logger.error(f"❌ CWA Sync: Failed to get reading state for {book_uuid}: {e}", exc_info=True)
             return None
 
     def update_reading_state(self, book_uuid: str, progress_percent: float, status: str = STATUS_READING) -> bool:
@@ -140,7 +140,7 @@ class CWASyncApi:
                 return False
 
         except Exception as e:
-            logger.error(f"❌ CWA Sync: Failed to update reading state for {book_uuid}: {e}")
+            logger.error(f"❌ CWA Sync: Failed to update reading state for {book_uuid}: {e}", exc_info=True)
             return False
 
     def resolve_book_uuid(self, calibre_id: str) -> str | None:

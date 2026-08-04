@@ -140,7 +140,7 @@ class BookloreClient:
                                 self.db.save_booklore_book(b_model)
                                 count += 1
                             except Exception as e:
-                                logger.warning(f"⚠️ Failed to migrate book '{filename}': {e}")
+                                logger.warning(f"⚠️ Failed to migrate book '{filename}': {e}", exc_info=True)
                         
                         logger.info(f"✅ Grimmory: Migrated {count} books to database.")
                         
@@ -149,9 +149,9 @@ class BookloreClient:
                         self.legacy_cache_file.rename(self.legacy_cache_file.with_suffix('.json.bak'))
                         logger.info("📦 Grimmory: Legacy cache file renamed to .bak")
                     except Exception as e:
-                        logger.warning(f"⚠️ Could not rename legacy cache file: {e}")
+                        logger.warning(f"⚠️ Could not rename legacy cache file: {e}", exc_info=True)
             except Exception as e:
-                logger.error(f"❌ Grimmory migration failed: {e}")
+                logger.error(f"❌ Grimmory migration failed: {e}", exc_info=True)
 
         # 2. Load from DB into memory
         if self.db:
@@ -183,7 +183,7 @@ class BookloreClient:
                 self._cache_timestamp = 0
                 logger.info(f"📚 Grimmory: Loaded {len(self._book_cache)} books from database")
             except Exception as e:
-                logger.error(f"❌ Failed to load Grimmory cache from DB: {e}")
+                logger.error(f"❌ Failed to load Grimmory cache from DB: {e}", exc_info=True)
                 with self._cache_lock:
                     self._book_cache = {}
                     self._book_id_cache = {}
@@ -257,7 +257,7 @@ class BookloreClient:
                     )
                     return None
             except Exception as e:
-                logger.error(f"❌ Grimmory login error: {e}")
+                logger.error(f"❌ Grimmory login error: {e}", exc_info=True)
         return None
 
     def _make_request(self, method, endpoint, json_data=None, timeout=None):
@@ -299,7 +299,7 @@ class BookloreClient:
                     response = self.session.delete(url, headers=headers, timeout=request_timeout)
             return response
         except Exception as e:
-            logger.error(f"❌ Grimmory API request failed: {e}")
+            logger.error(f"❌ Grimmory API request failed: {e}", exc_info=True)
             return None
 
     @staticmethod
@@ -322,7 +322,8 @@ class BookloreClient:
             logger.error(
                 f"❌ Grimmory: Failed to parse JSON from {context} "
                 f"(status={getattr(response, 'status_code', 'unknown')}, "
-                f"body={self._response_text_preview(response)!r}): {e}"
+                f"body={self._response_text_preview(response)!r}): {e}",
+                exc_info=True
             )
             return None
 
@@ -408,7 +409,7 @@ class BookloreClient:
                         }
                 return list(unique_libs.values())
         except Exception as e:
-            logger.error(f"❌ Grimmory: Failed to discover libraries via book scan: {e}")
+            logger.error(f"❌ Grimmory: Failed to discover libraries via book scan: {e}", exc_info=True)
             
         return []
 
@@ -538,7 +539,7 @@ class BookloreClient:
                 try:
                     self.db.delete_booklore_book(cached_filename)
                 except Exception as e:
-                    logger.error(f"❌ Failed to evict stale Grimmory book '{cached_filename}': {e}")
+                    logger.error(f"❌ Failed to evict stale Grimmory book '{cached_filename}': {e}", exc_info=True)
 
         removed_any = bool(removed_filenames or removed_ids)
         if removed_any:
@@ -771,7 +772,7 @@ class BookloreClient:
                 try:
                     self.db.delete_booklore_book(filename)
                 except Exception as e:
-                    logger.error(f"❌ Failed to prune stale book '{filename}': {e}")
+                    logger.error(f"❌ Failed to prune stale book '{filename}': {e}", exc_info=True)
 
         if stale_entries:
             logger.info(f"📚 Grimmory: Pruned {len(stale_entries)} books no longer in library")
@@ -1009,7 +1010,7 @@ class BookloreClient:
                         try:
                             self.db.delete_booklore_book(fname)
                         except Exception as e:
-                            logger.error(f"❌ Failed to prune stale book '{fname}': {e}")
+                            logger.error(f"❌ Failed to prune stale book '{fname}': {e}", exc_info=True)
 
                 if stale_count > 0:
                     logger.info(f"🧹 Grimmory: Pruned {stale_count} stale books from database.")
@@ -1196,7 +1197,7 @@ class BookloreClient:
                 try:
                     self.db.delete_booklore_book(stale_filename)
                 except Exception as e:
-                    logger.error(f"❌ Failed to remove stale Grimmory alias '{stale_filename}': {e}")
+                    logger.error(f"❌ Failed to remove stale Grimmory alias '{stale_filename}': {e}", exc_info=True)
 
         if stale_filenames:
             logger.info(
@@ -1219,7 +1220,7 @@ class BookloreClient:
                 )
                 self.db.save_booklore_book(b_model)
             except Exception as e:
-                logger.error(f"❌ Failed to persist book '{filename}' to DB: {e}")
+                logger.error(f"❌ Failed to persist book '{filename}' to DB: {e}", exc_info=True)
 
         return None
 
@@ -1505,7 +1506,7 @@ class BookloreClient:
 
             logger.info("📚 Grimmory: Cache cleared (memory + DB), starting full refresh...")
         except Exception as e:
-            logger.error(f"❌ Grimmory: Failed to clear cache before refresh: {e}")
+            logger.error(f"❌ Grimmory: Failed to clear cache before refresh: {e}", exc_info=True)
             return False
         finally:
             self._refresh_lock.release()
@@ -1670,7 +1671,7 @@ class BookloreClient:
 
             return response.content
         except Exception as e:
-            logger.error(f"❌ Download error: {e}")
+            logger.error(f"❌ Download error: {e}", exc_info=True)
             return None
 
     @staticmethod
@@ -2033,7 +2034,7 @@ class BookloreClient:
                         )
                     return True
             except Exception as e:
-                logger.error(f"❌ Grimmory audiobook download error: book_id={book_id} url={url} {e}")
+                logger.error(f"❌ Grimmory audiobook download error: book_id={book_id} url={url} {e}", exc_info=True)
                 return False
         logger.error(f"❌ Grimmory audiobook download: stream endpoint unavailable for book_id={book_id}")
         return False
@@ -2060,7 +2061,7 @@ class BookloreClient:
                             handle.write(chunk)
                 return True
         except Exception as e:
-            logger.error(f"❌ Grimmory audiobook track download error: {e}")
+            logger.error(f"❌ Grimmory audiobook track download error: {e}", exc_info=True)
             return False
 
     def update_audiobook_progress(
@@ -2713,7 +2714,7 @@ class BookloreClient:
             filter_tree = json.loads(filter_raw) if isinstance(filter_raw, str) else filter_raw
         except (json.JSONDecodeError, TypeError) as exc:
             logger.warning("Grimmory: Failed to parse filterJson for magic shelf '%s': %s",
-                           shelf.get("name"), exc)
+                           shelf.get("name"), exc, exc_info=True)
             return []
 
         logger.debug("Grimmory: Magic shelf '%s' filterJson: %s", shelf.get("name"), filter_tree)
@@ -2955,7 +2956,7 @@ class BookloreClient:
                 return False
 
         except Exception as e:
-            logger.error(f"❌ Error adding book to Grimmory shelf: {e}")
+            logger.error(f"❌ Error adding book to Grimmory shelf: {e}", exc_info=True)
             return False
 
     def remove_from_shelf(self, ebook_filename, shelf_name=None):
@@ -3011,7 +3012,7 @@ class BookloreClient:
                 return False
 
         except Exception as e:
-            logger.error(f"❌ Error removing book from Grimmory shelf: {e}")
+            logger.error(f"❌ Error removing book from Grimmory shelf: {e}", exc_info=True)
             return False
 
     def ensure_shelf_exists(self, shelf_name):
@@ -3026,7 +3027,7 @@ class BookloreClient:
         try:
             return self._get_or_create_shelf_id(shelf_name)
         except Exception as e:
-            logger.error(f"Failed to ensure Grimmory shelf '{shelf_name}' exists: {e}")
+            logger.error(f"Failed to ensure Grimmory shelf '{shelf_name}' exists: {e}", exc_info=True)
             return None
 
     def list_books_on_shelf(self, shelf_name):
@@ -3080,7 +3081,7 @@ class BookloreClient:
                     enriched.append(b)
             return enriched
         except Exception as e:
-            logger.error(f"Error listing books on Grimmory shelf '{shelf_name}': {e}")
+            logger.error(f"Error listing books on Grimmory shelf '{shelf_name}': {e}", exc_info=True)
             return []
 
     def move_between_shelves(self, ebook_filename, from_shelf, to_shelf):

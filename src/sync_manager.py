@@ -144,7 +144,7 @@ class SyncManager:
         try:
             val = float(os.getenv("SYNC_DELTA_BETWEEN_CLIENTS_PERCENT", 1))
         except (ValueError, TypeError):
-            logger.warning("⚠️ Invalid SYNC_DELTA_BETWEEN_CLIENTS_PERCENT value, defaulting to 1")
+            logger.warning("⚠️ Invalid SYNC_DELTA_BETWEEN_CLIENTS_PERCENT value, defaulting to 1", exc_info=True)
             val = 1.0
         self.sync_delta_between_clients = val / 100.0
         self.delta_chars_thresh = 2000  # ~400 words
@@ -489,7 +489,7 @@ class SyncManager:
         try:
             user_ids = db.get_book_user_ids(abs_id)
         except Exception as exc:
-            logger.warning("Could not resolve claimant for pending job '%s': %s", abs_id, exc)
+            logger.warning("Could not resolve claimant for pending job '%s': %s", abs_id, exc, exc_info=True)
             return None
 
         # Prefer the book's designated owner when it is among the claimants so a
@@ -515,6 +515,7 @@ class SyncManager:
                     abs_id,
                     user_id,
                     exc,
+                    exc_info=True,
                 )
         return None
 
@@ -587,7 +588,7 @@ class SyncManager:
                 client.check_connection()
                 logger.info(f"✅ '{client_name}' connection verified")
             except Exception as e:
-                logger.warning(f"⚠️ '{client_name}' connection failed: {e}")
+                logger.warning(f"⚠️ '{client_name}' connection failed: {e}", exc_info=True)
         
         # Check CWA integration status.
         if self.library_service and self.library_service.cwa_client:
@@ -622,7 +623,7 @@ class SyncManager:
                 else:
                     logger.warning("⚠️ ABS ebook methods missing - ebook search may not work")
             except Exception as e:
-                logger.warning(f"⚠️ ABS ebook check failed: {e}")
+                logger.warning(f"⚠️ ABS ebook check failed: {e}", exc_info=True)
 
         # Run the one-time migration.
         if self.migration_service:
@@ -685,7 +686,7 @@ class SyncManager:
                     self.database_service.save_job(job)
 
         except Exception as e:
-            logger.error(f"❌ Error cleaning up stale jobs: {e}")
+            logger.error(f"❌ Error cleaning up stale jobs: {e}", exc_info=True)
 
     def cleanup_cache(self):
         """Delete files from ebook cache that are not referenced in the DB."""
@@ -726,7 +727,7 @@ class SyncManager:
                         reclaimed_bytes += size
                         logger.debug(f"   🗑️ Deleted orphaned cache file: {file_path.name}")
                     except Exception as e:
-                        logger.warning(f"   ⚠️ Failed to delete {file_path.name}: {e}")
+                        logger.warning(f"   ⚠️ Failed to delete {file_path.name}: {e}", exc_info=True)
             
             if deleted_count > 0:
                 mb = reclaimed_bytes / (1024 * 1024)
@@ -735,7 +736,7 @@ class SyncManager:
                 logger.info("✨ Cache is clean (no orphaned files found)")
                 
         except Exception as e:
-            logger.error(f"❌ Error during cache cleanup: {e}")
+            logger.error(f"❌ Error during cache cleanup: {e}", exc_info=True)
 
     def get_abs_title(self, ab):
         media = ab.get('media', {})
@@ -788,7 +789,8 @@ class SyncManager:
             except Exception as e:
                 logger.warning(
                     f"⚠️ '{book.abs_id}' Failed to load ebook text for normalization "
-                    f"client '{client_name}' epub='{sanitize_log_data(client_epub)}': {e}"
+                    f"client '{client_name}' epub='{sanitize_log_data(client_epub)}': {e}",
+                    exc_info=True
                 )
                 continue
 
@@ -872,7 +874,7 @@ class SyncManager:
                     f"ts={ts_for_text:.2f}s"
                 )
             except Exception as e:
-                logger.warning(f"⚠️ '{book.abs_id}' Cross-format normalization failed for '{client_name}': {e}")
+                logger.warning(f"⚠️ '{book.abs_id}' Cross-format normalization failed for '{client_name}': {e}", exc_info=True)
 
         return normalized if len(normalized) > 1 else None
 
@@ -924,7 +926,7 @@ class SyncManager:
                         )
                         config[client_name] = state
                 except Exception as e:
-                    logger.warning(f"⚠️ '{client_name}' state fetch failed: {e}")
+                    logger.warning(f"⚠️ '{client_name}' state fetch failed: {e}", exc_info=True)
 
         return config
 
@@ -994,6 +996,7 @@ class SyncManager:
                 ebook_source,
                 sanitize_log_data(ebook_filename),
                 e,
+                exc_info=True,
             )
             return None
 
@@ -1013,6 +1016,7 @@ class SyncManager:
                 "⚠️ Failed to write cached EPUB for '%s': %s",
                 sanitize_log_data(ebook_filename),
                 e,
+                exc_info=True,
             )
             return None
 
@@ -1102,7 +1106,7 @@ class SyncManager:
                 else:
                     logger.error(f"❌ EPUB not found in BookOrbit: {sanitize_log_data(ebook_filename)}")
             except Exception as e:
-                logger.warning(f"⚠️ BookOrbit EPUB download failed: {e}")
+                logger.warning(f"⚠️ BookOrbit EPUB download failed: {e}", exc_info=True)
 
         return None
 
@@ -1210,6 +1214,7 @@ class SyncManager:
                                 "❌ Queued instant sync failed for '%s': %s",
                                 abs_id,
                                 exc,
+                                exc_info=True,
                             )
                     with self._pending_sync_lock:
                         pending = sorted(
@@ -1221,7 +1226,7 @@ class SyncManager:
                             self._replay_worker_running = False
                             return
             except Exception as worker_exc:
-                logger.error("❌ Replay worker exited with error: %s", worker_exc)
+                logger.error("❌ Replay worker exited with error: %s", worker_exc, exc_info=True)
                 with self._pending_sync_lock:
                     self._replay_worker_running = False
 
@@ -1267,7 +1272,7 @@ class SyncManager:
             )
             return locator, context_txt
         except Exception as e:
-            logger.warning(f"⚠️ '{book.abs_id}' Storyteller direct locator resolution failed: {e}")
+            logger.warning(f"⚠️ '{book.abs_id}' Storyteller direct locator resolution failed: {e}", exc_info=True)
             return None, None
 
     def _resolve_alignment_locator_from_abs_timestamp(self, book: Book, abs_timestamp: float):
@@ -1308,7 +1313,7 @@ class SyncManager:
             )
             return locator, context_txt
         except Exception as e:
-            logger.warning(f"⚠️ '{book.abs_id}' Alignment direct locator resolution failed: {e}")
+            logger.warning(f"⚠️ '{book.abs_id}' Alignment direct locator resolution failed: {e}", exc_info=True)
             return None, None
 
     # Suggestion Logic
@@ -1327,7 +1332,7 @@ class SyncManager:
                 bundle_token = _client_bundle_override.set(bundle)
                 library_token = _library_service_override.set(getattr(bundle, "library_service", None))
             except Exception as exc:
-                logger.warning("Suggestion discovery could not scope clients for user %s: %s", user_id, exc)
+                logger.warning("Suggestion discovery could not scope clients for user %s: %s", user_id, exc, exc_info=True)
                 return
 
         if os.environ.get("SUGGESTIONS_ENABLED", "true").lower() != "true":
@@ -1435,7 +1440,7 @@ class SyncManager:
                 else:
                     logger.debug(f"Skipping {abs_id}: no duration")
         except Exception as e:
-            logger.error(f"❌ Error checking suggestions: {e}")
+            logger.error(f"❌ Error checking suggestions: {e}", exc_info=True)
 
     def _create_suggestion(self, abs_id, progress_data):
         """Create a new suggestion for an unmapped book."""
@@ -1496,7 +1501,7 @@ class SyncManager:
                                  "confidence": "high" if search_title.lower() in b.get('title', '').lower() else "medium"
                              })
                 except Exception as e:
-                    logger.warning(f"⚠️ Grimmory search failed during suggestion: {e}")
+                    logger.warning(f"⚠️ Grimmory search failed during suggestion: {e}", exc_info=True)
 
             # 2b. Search Local Filesystem
             if self.books_dir and self.books_dir.exists():
@@ -1516,7 +1521,7 @@ class SyncManager:
                              })
                     logger.debug(f"Filesystem found {fs_matches} matches")
                 except Exception as e:
-                    logger.warning(f"⚠️ Filesystem search failed during suggestion: {e}")
+                    logger.warning(f"⚠️ Filesystem search failed during suggestion: {e}", exc_info=True)
             
             # 2c. ABS Direct Match (check if audiobook item has ebook files)
             if abs_client:
@@ -1535,7 +1540,7 @@ class SyncManager:
                                 "confidence": "high"
                             })
                 except Exception as e:
-                    logger.warning(f"⚠️ ABS Direct search failed during suggestion: {e}")
+                    logger.warning(f"⚠️ ABS Direct search failed during suggestion: {e}", exc_info=True)
             
             # 2d. CWA Search (Calibre-Web Automated via OPDS)
             if library_service and library_service.cwa_client and library_service.cwa_client.is_configured():
@@ -1557,7 +1562,7 @@ class SyncManager:
                                 "confidence": "high" if search_title.lower() in cr.get('title', '').lower() else "medium"
                             })
                 except Exception as e:
-                    logger.warning(f"⚠️ CWA search failed during suggestion: {e}")
+                    logger.warning(f"⚠️ CWA search failed during suggestion: {e}", exc_info=True)
 
             # 2e. ABS Search (search other libraries for matching ebook)
             if abs_client:
@@ -1580,7 +1585,7 @@ class SyncManager:
                                     "confidence": "medium"
                                 })
                 except Exception as e:
-                    logger.warning(f"⚠️ ABS Search failed during suggestion: {e}")
+                    logger.warning(f"⚠️ ABS Search failed during suggestion: {e}", exc_info=True)
             
             # 3. Save to DB
             if not matches:
@@ -1599,7 +1604,7 @@ class SyncManager:
             logger.info(f"✅ Created suggestion for '{title}' with {match_count} matches")
 
         except Exception as e:
-            logger.error(f"❌ Failed to create suggestion for '{abs_id}': {e}")
+            logger.error(f"❌ Failed to create suggestion for '{abs_id}': {e}", exc_info=True)
             logger.debug(traceback.format_exc())
 
     def check_pending_jobs(self):
@@ -1871,7 +1876,7 @@ class SyncManager:
                 except TranscriptionCancelled:
                     raise
                 except Exception as e:
-                    logger.warning(f"⚠️ Failed to eager-lock KOSync ID: {e}")
+                    logger.warning(f"⚠️ Failed to eager-lock KOSync ID: {e}", exc_info=True)
 
             if ebook_only_mode:
                 logger.info(
@@ -1941,7 +1946,7 @@ class SyncManager:
                         if ingested_manifest:
                             storyteller_manifest = self._get_storyteller_manifest_path(book) or Path(ingested_manifest)
                     except Exception as storyteller_ingest_err:
-                        logger.warning(f"Storyteller ingest retry failed for '{abs_id}': {storyteller_ingest_err}")
+                        logger.warning(f"Storyteller ingest retry failed for '{abs_id}': {storyteller_ingest_err}", exc_info=True)
 
                 if storyteller_manifest:
                     try:
@@ -1956,7 +1961,7 @@ class SyncManager:
                     except TranscriptionCancelled:
                         raise
                     except Exception as storyteller_err:
-                        logger.warning(f"Storyteller alignment failed for '{abs_id}': {storyteller_err}")
+                        logger.warning(f"Storyteller alignment failed for '{abs_id}': {storyteller_err}", exc_info=True)
                 else:
                     logger.info(f"Storyteller manifest unavailable for '{abs_id}', falling back to SMIL/Whisper")
 
@@ -2071,7 +2076,7 @@ class SyncManager:
             if is_cancelled(abs_id, cancellation_token) or self.database_service.get_book(abs_id) is None:
                 logger.info(f"🛑 Background work cancelled for {sanitize_log_data(abs_title)}: mapping deleted")
                 return
-            logger.error(f"❌ {sanitize_log_data(abs_title)}: {e}")
+            logger.error(f"❌ {sanitize_log_data(abs_title)}: {e}", exc_info=True)
 
             # --- Failure Update using database service ---
             # Get current job to increment retry count
@@ -2093,7 +2098,7 @@ class SyncManager:
             # Update book status based on retry count
             if new_retry_count >= max_retries:
                 book.status = 'failed_permanent'
-                logger.warning(f"⚠️ {sanitize_log_data(abs_title)}: Max retries exceeded")
+                logger.warning(f"⚠️ {sanitize_log_data(abs_title)}: Max retries exceeded", exc_info=True)
                 
                 # Clean up audio cache on permanent failure to free disk space
                 if self.data_dir:
@@ -2104,7 +2109,7 @@ class SyncManager:
                             shutil.rmtree(audio_cache_dir)
                             logger.info(f"✅ Cleaned up audio cache for {sanitize_log_data(abs_title)}")
                         except Exception as cleanup_err:
-                            logger.warning(f"⚠️ Failed to clean audio cache: {cleanup_err}")
+                            logger.warning(f"⚠️ Failed to clean audio cache: {cleanup_err}", exc_info=True)
             else:
                 book.status = 'failed_retry_later'
                 # Log which claimant was used so cross-user identity mismatches
@@ -2128,7 +2133,7 @@ class SyncManager:
                         shutil.rmtree(audio_cache_dir)
                         logger.info(f"✅ Cleaned cancelled transcription cache for {sanitize_log_data(abs_title)}")
                     except Exception as cleanup_err:
-                        logger.warning(f"⚠️ Failed to clean cancelled transcription cache: {cleanup_err}")
+                        logger.warning(f"⚠️ Failed to clean cancelled transcription cache: {cleanup_err}", exc_info=True)
             unregister_worker(abs_id, cancellation_token)
             if library_token is not None:
                 _library_service_override.reset(library_token)
@@ -2317,7 +2322,7 @@ class SyncManager:
                     f"📈 '{abs_id}' {client_key} cooldown post: {current_pct * 100:.1f}% ({reason})"
                 )
         except Exception as e:
-            logger.warning(f"⚠️ '{getattr(book, 'abs_id', '?')}' {client_key} cooldown handler failed: {e}")
+            logger.warning(f"⚠️ '{getattr(book, 'abs_id', '?')}' {client_key} cooldown handler failed: {e}", exc_info=True)
 
     def _determine_leader(self, config, book, abs_id, title_snip):
         """
@@ -2362,7 +2367,7 @@ class SyncManager:
 
             effective_delta = abs(locator_pct - state.previous_pct)
             if not self._is_significant_pct_delta(effective_delta, book):
-                logger.debug(
+                logger.info(
                     f"'{abs_id}' '{title_snip}' Ignoring stale pct delta for '{client_name}' "
                     f"(raw={raw_pct:.4%}, locator={locator_pct:.4%}, prev={state.previous_pct:.4%})"
                 )
@@ -2617,12 +2622,12 @@ class SyncManager:
                     # Fallback to percentage-based comparison among candidates
                     leader = max(candidates, key=candidates.get)
                     leader_pct = vals[leader]
-                    logger.info(f"🔄 '{abs_id}' '{title_snip}' {leader} leads at {config[leader].value_formatter(leader_pct)}")
+                    logger.info(f"🔄 '{abs_id}' '{title_snip}' {leader} leads at {config[leader].value_formatter(leader_pct)} (furthest progress, no normalized candidates)")
             else:
                 # Same-format sync or normalization failed - use raw percentages
                 leader = max(candidates, key=candidates.get)
                 leader_pct = vals[leader]
-                logger.info(f"🔄 '{abs_id}' '{title_snip}' {leader} leads at {config[leader].value_formatter(leader_pct)}")
+                logger.info(f"🔄 '{abs_id}' '{title_snip}' {leader} leads at {config[leader].value_formatter(leader_pct)} (furthest progress, same-format comparison)")
                 
         return leader, leader_pct
 
@@ -2693,7 +2698,7 @@ class SyncManager:
                 creds_token = set_current_user_credentials(bundle.credentials)
                 logger.debug("🔄 Sync cycle scoped to user_id=%s (%d clients)", user_id, len(configured))
             except Exception as e:
-                logger.error("Failed to set up per-user sync context for user %s: %s", user_id, e)
+                logger.error("Failed to set up per-user sync context for user %s: %s", user_id, e, exc_info=True)
                 return
 
         try:
@@ -2720,9 +2725,9 @@ class SyncManager:
             try:
                 self._sync_cycle_internal(target_abs_id)
             except Exception as e:
-                logger.error(f"❌ Sync cycle internal error: {e}")
+                logger.error(f"❌ Sync cycle internal error: {e}", exc_info=True)
                 # Log traceback for robust debugging
-                logger.error(traceback.format_exc())
+                logger.error(traceback.format_exc(), exc_info=True)
             finally:
                 self._sync_lock.release()
                 self._dispatch_pending_syncs()
@@ -2754,7 +2759,7 @@ class SyncManager:
         try:
             users = [u for u in db.list_users() if getattr(u, "active", 1)]
         except Exception as e:
-            logger.warning("Could not list users for multi-user sync: %s", e)
+            logger.warning("Could not list users for multi-user sync: %s", e, exc_info=True)
             return []
         eligible = []
         for user in users:
@@ -2763,7 +2768,7 @@ class SyncManager:
                 if any(c.is_configured() for c in bundle.sync_clients.values()):
                     eligible.append(user)
             except Exception as e:
-                logger.warning("Skipping user %s (client build failed): %s", getattr(user, "id", None), e)
+                logger.warning("Skipping user %s (client build failed): %s", getattr(user, "id", None), e, exc_info=True)
         return eligible
 
     def run_sync_for_all_users(self, target_abs_id=None):
@@ -2778,7 +2783,7 @@ class SyncManager:
             try:
                 self.sync_cycle(target_abs_id=target_abs_id, user_id=user.id)
             except Exception as e:
-                logger.error("Sync cycle failed for user %s: %s", getattr(user, "id", None), e)
+                logger.error("Sync cycle failed for user %s: %s", getattr(user, "id", None), e, exc_info=True)
 
     def _filter_books_for_current_user(self, books, bulk_states_per_client=None):
         """Limit a per-user cycle to the books this user has matched/claimed.
@@ -2816,6 +2821,7 @@ class SyncManager:
                     abs_id,
                     user_id,
                     exc,
+                    exc_info=True,
                 )
                 linked = False
             if not linked:
@@ -2929,7 +2935,7 @@ class SyncManager:
                             continue
                         shelf_watch.process_watch_shelf(user_id=shelf_user)
                     except Exception as e:
-                        logger.warning(f"Shelf-watch run failed: {e}")
+                        logger.warning(f"Shelf-watch run failed: {e}", exc_info=True)
 
         # Optimization: Pre-fetch bulk data from all clients that support it
         # Only do this if we are in a full cycle (target_abs_id is None)
@@ -3081,7 +3087,7 @@ class SyncManager:
                                          char_delta_triggered = True  # Mark that this came from char delta
                                          break
                              except Exception as e:
-                                 logger.warning(f"⚠️ Failed to check char delta for '{client_name_key}': {e}")
+                                 logger.warning(f"⚠️ Failed to check char delta for '{client_name_key}': {e}", exc_info=True)
 
                 # Check if all 'delta' fields in config are zero
                 # We typically skip if nothing changed, BUT if there is a significant discrepancy
@@ -3294,6 +3300,19 @@ class SyncManager:
                                     f"'{abs_id}' '{title_snip}' Hydrated missing ABS ebook CFI "
                                     f"at offset {target_offset} (roundtrip={cfi_offset})"
                                 )
+                            elif (
+                                cfi_offset is not None
+                                and abs(int(cfi_offset) - target_offset) / total_len <= 0.01
+                                and self._locator_collapsed_to_start(
+                                    LocatorResult(percentage=cfi_offset / total_len),
+                                    locator.percentage,
+                                )
+                            ):
+                                logger.info(
+                                    f"🕳️ '{abs_id}' '{title_snip}' Collapse guard: blocked hydrated ABS ebook "
+                                    f"CFI for leader '{leader}' at {leader_formatter(leader_pct)} — roundtrip "
+                                    f"resolution collapsed to start-of-book (~0%); keeping percentage-based locator"
+                                )
                     except Exception as exc:
                         logger.debug(
                             f"'{abs_id}' '{title_snip}' ABS ebook CFI hydration failed: {exc}"
@@ -3356,7 +3375,7 @@ class SyncManager:
                         result = client.update_progress(book, request)
                         results[client_name] = result
                     except Exception as e:
-                        logger.warning(f"⚠️ Failed to update '{client_name}': {e}")
+                        logger.warning(f"⚠️ Failed to update '{client_name}': {e}", exc_info=True)
                         results[client_name] = SyncResult(None, False)
 
                 # Save states directly to database service using State models
@@ -3450,8 +3469,8 @@ class SyncManager:
                         handler.flush()
 
             except Exception as e:
-                logger.error(traceback.format_exc())
-                logger.error(f"❌ Sync error: {e}")
+                logger.error(traceback.format_exc(), exc_info=True)
+                logger.error(f"❌ Sync error: {e}", exc_info=True)
             finally:
                 book_durations.append((time.monotonic() - book_t0, title_snip))
 
@@ -3809,7 +3828,7 @@ class SyncManager:
                             'success': False,
                             'message': str(e)
                         }
-                        logger.warning(f"⚠️ Error resetting '{client_name}': {e}")
+                        logger.warning(f"⚠️ Error resetting '{client_name}': {e}", exc_info=True)
 
                 reset_time = time.time()
                 reset_snapshots_saved = 0
@@ -3902,6 +3921,6 @@ class SyncManager:
 
         except Exception as e:
             error_msg = f"Error clearing progress for {abs_id}: {e}"
-            logger.error(error_msg)
-            logger.error(traceback.format_exc())
+            logger.error(error_msg, exc_info=True)
+            logger.error(traceback.format_exc(), exc_info=True)
             raise RuntimeError(error_msg) from e

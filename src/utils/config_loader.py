@@ -351,7 +351,7 @@ class ConfigLoader:
             logger.info(f"✅ Bootstrapped {count} settings to database")
 
         except Exception as e:
-            logger.error(f"❌ Error bootstrapping config: {e}")
+            logger.error(f"❌ Error bootstrapping config: {e}", exc_info=True)
 
     @staticmethod
     def load_settings(db_service: DatabaseService):
@@ -380,5 +380,5 @@ class ConfigLoader:
             logger.info(f"⚙️  Loaded {count} settings from database")
             
         except Exception as e:
-            logger.error(f"❌ Error loading settings from database: {e}")
+            logger.error(f"❌ Error loading settings from database: {e}", exc_info=True)
             # Do not re-raise, fall back to existing env vars

@@ -17,6 +17,7 @@ import requests
 import socketio
 
 from src.services.write_tracker import is_own_write as _tracker_is_own_write
+from src.utils.logging_utils import get_persistent_condition_logger
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +190,7 @@ class ABSSocketListener:
                 else:
                     logger.warning(f"⚠️ ABS Socket.IO: /api/me returned {resp.status_code}")
             except Exception as e:
-                logger.warning(f"⚠️ ABS Socket.IO: Token exchange attempt {attempt}/{max_retries} failed — {e}")
+                logger.warning(f"⚠️ ABS Socket.IO: Token exchange attempt {attempt}/{max_retries} failed — {e}", exc_info=True)
             if attempt < max_retries:
                 time.sleep(5 * attempt)
 
@@ -237,6 +238,11 @@ class ABSSocketListener:
                 if isinstance(user, dict):
                     username = user.get("username", "unknown")
             logger.info(f"🔌 ABS Socket.IO: Authenticated as '{username}'")
+            get_persistent_condition_logger().resolve(
+                logger,
+                f"abs_socket:{self._user_id}",
+                f"🔌 ABS Socket.IO: Connection recovered — authenticated as '{username}'{self._scope_suffix}",
+            )
             self._auth_ok_event.set()
 
         @sio.on("auth_failed")
@@ -430,7 +436,7 @@ class ABSSocketListener:
                 )
                 self._sio.wait()
             except Exception as e:
-                logger.error(f"❌ ABS Socket.IO: Connection error — {e}")
+                logger.error(f"❌ ABS Socket.IO: Connection error — {e}", exc_info=True)
                 break
 
             if self._auth_ok_event.is_set():

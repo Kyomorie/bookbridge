@@ -19,6 +19,7 @@ import threading
 import time
 
 from src.services.abs_socket_listener import ABSSocketListener
+from src.utils.logging_utils import get_persistent_condition_logger
 from src.utils.user_config import resolve_setting
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,7 @@ class ABSSocketManager:
         try:
             users = [u for u in self._db.list_users() if getattr(u, "active", 1)]
         except Exception as e:
-            logger.warning("ABS Socket.IO: could not list users for per-user listeners: %s", e)
+            logger.warning("ABS Socket.IO: could not list users for per-user listeners: %s", e, exc_info=True)
             return targets
 
         for user in users:
@@ -74,7 +75,7 @@ class ABSSocketManager:
             except Exception as e:
                 logger.warning(
                     "ABS Socket.IO: skipping user %s (client build failed): %s",
-                    getattr(user, "id", None), e,
+                    getattr(user, "id", None), e, exc_info=True,
                 )
                 continue
 
@@ -148,7 +149,7 @@ class ABSSocketManager:
             try:
                 listener.start()  # blocks until the socket session ends
             except Exception as e:
-                logger.warning("🔌 ABS Socket.IO: %s listener crashed: %s", scope, e)
+                logger.warning("🔌 ABS Socket.IO: %s listener crashed: %s", scope, e, exc_info=True)
             finally:
                 listener.stop()
 
@@ -158,7 +159,9 @@ class ABSSocketManager:
             elapsed = time.monotonic() - t0
             if elapsed >= self._healthy_session_secs:
                 backoff = self._restart_base_secs
-            logger.warning(
+            get_persistent_condition_logger().warn(
+                logger,
+                f"abs_socket:{user_id}",
                 "🔌 ABS Socket.IO: %s listener exited after %.0fs — restarting in %.0fs",
                 scope, elapsed, backoff,
             )
