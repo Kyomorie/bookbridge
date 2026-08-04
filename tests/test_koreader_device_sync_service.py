@@ -81,6 +81,32 @@ class TestKOReaderDeviceSyncService(unittest.TestCase):
         self.assertEqual(item["download_path"], "/koreader/device-sync/books/abs-1/download")
         self.assertEqual(item["filename"], "Dragon's Justice.epub")
 
+    def test_manifest_uses_storyteller_artifact_for_ebook_only_mode(self):
+        """Regression for #1375: when sync_mode is 'ebook_only' and the only
+        available filename is a Storyteller artifact, it should be used instead
+        of emitting a warning and skipping the book."""
+        self._write_book_file("storyteller_abc.epub")
+        book = Book(
+            abs_id="abs-ebook-only-1",
+            abs_title="Storyteller Only Book",
+            ebook_filename="storyteller_abc.epub",
+            original_ebook_filename=None,
+            sync_mode="ebook_only",
+            kosync_doc_id="hash-1",
+            status="active",
+        )
+        self.db.save_book(book)
+
+        with self.assertNoLogs("src.services.koreader_device_sync_service", level="WARNING"):
+            manifest = self.service.build_manifest()
+
+        self.assertEqual(len(manifest["books"]), 1)
+        item = manifest["books"][0]
+        self.assertEqual(item["abs_id"], "abs-ebook-only-1")
+        self.assertEqual(item["content_hash"], "hash-storyteller_abc")
+        self.assertEqual(item["download_path"], "/koreader/device-sync/books/abs-ebook-only-1/download")
+        self.assertEqual(item["filename"], "Storyteller Only Book.epub")
+
     def test_manifest_excludes_audiobook_only_book_without_warning(self):
         """Audiobook-only mappings have no ebook file by design and must not be
         pulled into the ebook device-sync manifest -- previously every cycle

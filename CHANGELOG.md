@@ -8,6 +8,13 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Storyteller-only ebooks now appear in KOReader managed-folder sync.** Ebook-only
+  mappings whose only local EPUB is the downloaded Storyteller ReadAloud artifact
+  were previously rejected as if they had no ebook, producing a warning on every
+  manifest rebuild. BookBridge now uses that artifact as the ebook-only fallback,
+  hashes the exact bytes it serves, and keeps preferring the original publisher EPUB
+  whenever one is available.
+
 - **Local transcription no longer crashes with `No module named 'nvidia'` on the
   standard image.** Since 7.3.0, the automatic GPU check that runs before local
   Whisper transcription assumed the NVIDIA CUDA libraries were at least present to

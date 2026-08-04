@@ -150,13 +150,21 @@ class KOReaderDeviceSyncService:
         return filename_map
 
     def _select_source_filename(self, book) -> Optional[str]:
+        storyteller_fallback = None
         for candidate in (
             getattr(book, "original_ebook_filename", None),
             getattr(book, "ebook_filename", None),
         ):
             filename = str(candidate or "").strip()
-            if filename and not self._is_storyteller_artifact_filename(filename):
-                return filename
+            if not filename:
+                continue
+            if self._is_storyteller_artifact_filename(filename):
+                if storyteller_fallback is None:
+                    storyteller_fallback = filename
+                continue
+            return filename
+        if storyteller_fallback and getattr(book, "sync_mode", None) == "ebook_only":
+            return storyteller_fallback
         logger.warning(
             "Skipping KOReader device-sync manifest item for '%s': no original ebook filename",
             sanitize_log_data(getattr(book, "abs_title", None) or getattr(book, "abs_id", None)),
