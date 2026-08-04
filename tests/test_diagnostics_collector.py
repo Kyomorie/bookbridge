@@ -3,7 +3,10 @@ import json
 import logging
 import os
 import tempfile
+import time
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from src.services.diagnostics import (
     DiagnosticsLogHandler,
@@ -120,6 +123,51 @@ class TestScrubDiagnosticText(unittest.TestCase):
 
     def test_empty_string(self):
         self.assertEqual(scrub_diagnostic_text(""), "")
+
+    # -- email scrubbing -------------------------------------------------
+
+    def test_email_replaced_with_stable_token(self):
+        text = "Contact admin@example.com for help"
+        result = scrub_diagnostic_text(text)
+        self.assertIn("email:", result)
+        self.assertNotIn("admin@example.com", result)
+
+    def test_email_token_is_deterministic(self):
+        text = "Reported by reader.one@my-library.io"
+        r1 = scrub_diagnostic_text(text)
+        r2 = scrub_diagnostic_text(text)
+        self.assertEqual(r1, r2)
+        expected = f"email:{_sha1_prefix('reader.one@my-library.io')}"
+        self.assertIn(expected, r1)
+
+    # -- bare IPv4 scrubbing -----------------------------------------------
+
+    def test_bare_ipv4_with_port_hashes_address_only(self):
+        text = "KoSync backend at 192.168.1.50:5758 timed out"
+        result = scrub_diagnostic_text(text)
+        expected = f"ip:{_sha1_prefix('192.168.1.50')}:5758"
+        self.assertIn(expected, result)
+        self.assertNotIn("192.168.1.50", result)
+
+    def test_bare_ipv4_without_port_hashes_address(self):
+        text = "Ping to 10.0.0.1 failed"
+        result = scrub_diagnostic_text(text)
+        expected = f"ip:{_sha1_prefix('10.0.0.1')}"
+        self.assertIn(expected, result)
+        self.assertNotIn("10.0.0.1", result)
+
+    def test_three_octet_version_string_not_treated_as_ip(self):
+        text = "Upgraded to version 7.3.4 successfully"
+        result = scrub_diagnostic_text(text)
+        self.assertIn("7.3.4", result)
+        self.assertNotIn("ip:", result)
+
+    def test_ip_inside_url_handled_by_url_rule_not_ip_rule(self):
+        text = "See http://192.168.1.50:8080/status for details"
+        result = scrub_diagnostic_text(text)
+        self.assertIn("url:", result)
+        self.assertNotIn("192.168.1.50", result)
+        self.assertNotIn("ip:", result)
 
 
 class TestMakeTemplate(unittest.TestCase):
@@ -258,12 +306,13 @@ class TestMakeTemplate(unittest.TestCase):
 
     def test_kosync_bare_hash_warnings_collapse_when_quoted(self):
         """The three KoSync WARNING log shapes collapse to one template each when the hash is quoted.
-        
+
         This guards the fix for diagnostics log-cardinality overflow (fleet findings #940/#713/#714).
         The quotes around the 32-hex hash make scrub_diagnostic_text tokenize it as a quoted span
-        (t:<hash>), which _make_template then collapses to t:#. Without quotes, the bare hex hash
-        survives digit-collapse (its letters differ per value) and each distinct hash becomes its
-        own template, blowing the 500-template cap.
+        (t:<hash>), which _make_template then collapses to t:#. A bare (unquoted) hex hash is now
+        ALSO collapsed, by _make_template's hex-run collapse (>= 6 hex chars containing a digit) --
+        this generalizes the original quote-only fix so unquoted ids can no longer blow the
+        500-template cap either. See the companion assertions below.
         """
         from src.services.diagnostics import scrub_diagnostic_text, _make_template
         
@@ -283,7 +332,9 @@ class TestMakeTemplate(unittest.TestCase):
         self.assertEqual(tpl_a1, tpl_a2)
         self.assertIn("t:#", tpl_a1)
         self.assertIn("KOSync: Document not found:", tpl_a1)
-        self.assertIn("(GET from #.#.#.#).", tpl_a1)
+        # The bare IP is now scrubbed to ip:<hash> by scrub_diagnostic_text
+        # and collapsed to ip:# by _make_template's scrub-token collapse.
+        self.assertIn("(GET from ip:#).", tpl_a1)
         
         # Shape B: "KOSync: GET-discovery for '<HASH>' dropped — discovery queue full (5/5)"
         msg_b1 = f"KOSync: GET-discovery for '{hash1}' dropped \u2014 discovery queue full (5/5)"
@@ -314,7 +365,9 @@ class TestMakeTemplate(unittest.TestCase):
         self.assertIn("percentage #.#% but no locator available. Returning # to prevent page-# reset.", tpl_c1)
         
         # Companion assertion: the SAME message shapes but with BARE (unquoted) hashes
-        # produce DIFFERENT templates for the two hashes — proving the quotes are load-bearing.
+        # ALSO collapse to the same template per hash pair -- the hex-run collapse in
+        # _make_template (change: template canonicalization) catches unquoted hex ids
+        # directly, so quoting is no longer required for a hex hash to collapse.
         bare_a1 = f"KOSync: Document not found: {hash1} (GET from 10.0.0.1). Document not found on server"
         bare_a2 = f"KOSync: Document not found: {hash2} (GET from 10.0.0.1). Document not found on server"
         bare_b1 = f"KOSync: GET-discovery for {hash1} dropped \u2014 discovery queue full (5/5)"
@@ -337,10 +390,14 @@ class TestMakeTemplate(unittest.TestCase):
         bare_tpl_c1 = _make_template(bare_scrubbed_c1)
         bare_tpl_c2 = _make_template(bare_scrubbed_c2)
         
-        # Bare hashes should NOT collapse — each distinct hash yields a different template
-        self.assertNotEqual(bare_tpl_a1, bare_tpl_a2, "Bare hashes in shape A should NOT collapse (quotes are load-bearing)")
-        self.assertNotEqual(bare_tpl_b1, bare_tpl_b2, "Bare hashes in shape B should NOT collapse (quotes are load-bearing)")
-        self.assertNotEqual(bare_tpl_c1, bare_tpl_c2, "Bare hashes in shape C should NOT collapse (quotes are load-bearing)")
+        # Bare hex hashes now collapse too, via the hex-run rule in _make_template --
+        # quoting is a sufficient but no longer necessary condition for collapse.
+        self.assertEqual(bare_tpl_a1, bare_tpl_a2, "Bare hex hashes in shape A should collapse (hex-run rule)")
+        self.assertEqual(bare_tpl_b1, bare_tpl_b2, "Bare hex hashes in shape B should collapse (hex-run rule)")
+        self.assertEqual(bare_tpl_c1, bare_tpl_c2, "Bare hex hashes in shape C should collapse (hex-run rule)")
+        self.assertIn('#', bare_tpl_a1)
+        self.assertIn('#', bare_tpl_b1)
+        self.assertIn('#', bare_tpl_c1)
 
     def test_schedule_auto_discovery_warning_collapses_across_hashes(self):
         """Production warning from _schedule_auto_discovery collapses to same template across hashes.
@@ -397,6 +454,47 @@ class TestMakeTemplate(unittest.TestCase):
                 os.environ.pop('AUTO_CREATE_EBOOK_MAPPING', None)
             else:
                 os.environ['AUTO_CREATE_EBOOK_MAPPING'] = original_auto_create
+
+    # -- per-value id collapse (UUIDs, hex ids, long alnum ids) -----------
+
+    def test_uuids_collapse_to_same_template(self):
+        first = _make_template(
+            "Sync failed for book_id 4f9c2a10-8b3e-4d1a-9c7f-6e2b1a0d5c33"
+        )
+        second = _make_template(
+            "Sync failed for book_id a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        )
+        self.assertEqual(first, second)
+        self.assertIn('#', first)
+        self.assertIn("Sync failed for book_id #", first)
+
+    def test_hex_ids_collapse_to_same_template(self):
+        first = _make_template("Resolved hash 3f9ab42c1d to book")
+        second = _make_template("Resolved hash 9c1d2e3f4a to book")
+        self.assertEqual(first, second)
+        self.assertIn('#', first)
+
+    def test_long_alnum_ids_collapse_to_same_template(self):
+        first = _make_template("Fetching li_4nrp2qhewiqe3xdi2q from library")
+        second = _make_template("Fetching li_9xz8qhewiqe3aa1b from library")
+        self.assertEqual(first, second)
+        self.assertIn('#', first)
+        self.assertIn("Fetching # from library", first)
+
+    def test_hex_shaped_english_words_are_not_collapsed(self):
+        self.assertEqual(
+            _make_template("decade retention policy"),
+            "decade retention policy",
+        )
+        self.assertEqual(
+            _make_template("efface old cache entries"),
+            "efface old cache entries",
+        )
+
+    def test_http_status_preserved_alongside_id_collapse(self):
+        tpl = _make_template("Request to service abc123defabc returned 502")
+        self.assertIn("502", tpl)
+        self.assertIn('#', tpl)
 
 
 class TestDiagnosticsHandler(unittest.TestCase):
@@ -601,6 +699,41 @@ class TestDiagnosticsHandler(unittest.TestCase):
                 for entry in handler._entries.values()
             ))
 
+    # -- traceback capture ----------------------------------------------
+
+    def test_traceback_captured_on_exc_info(self):
+        os.environ['DIAGNOSTICS_OPT_IN'] = 'true'
+        handler = self._make_handler()
+        try:
+            1 / 0
+        except ZeroDivisionError:
+            self._test_logger.warning("Division failed", exc_info=True)
+        with handler._lock:
+            entry = list(handler._entries.values())[0]
+            self.assertIn('traceback', entry)
+            self.assertIn('ZeroDivisionError', entry['traceback'])
+            self.assertLessEqual(len(entry['traceback']), 1200)
+            self.assertLessEqual(len(entry['traceback'].split('\n')), 12)
+
+    def test_no_traceback_key_without_exc_info(self):
+        os.environ['DIAGNOSTICS_OPT_IN'] = 'true'
+        handler = self._make_handler()
+        self._test_logger.warning("Plain warning, no exception here")
+        with handler._lock:
+            entry = list(handler._entries.values())[0]
+            self.assertNotIn('traceback', entry)
+
+    def test_traceback_not_touched_on_repeat_occurrence(self):
+        """Incrementing an existing entry must not add/alter 'traceback'."""
+        os.environ['DIAGNOSTICS_OPT_IN'] = 'true'
+        handler = self._make_handler()
+        self._test_logger.warning("Repeatable warning")
+        self._test_logger.warning("Repeatable warning")
+        with handler._lock:
+            entry = list(handler._entries.values())[0]
+            self.assertEqual(entry['count'], 2)
+            self.assertNotIn('traceback', entry)
+
 
 class TestPersistence(unittest.TestCase):
     """Tests for disk persistence and merge-on-reload."""
@@ -650,6 +783,59 @@ class TestPersistence(unittest.TestCase):
             self.assertEqual(len(handler2._entries), 1)
             entry = list(handler2._entries.values())[0]
             self.assertEqual(entry['count'], 2)
+
+    def test_flush_now_writes_compact_json_readable_by_json_load(self):
+        """The buffer file is now compact (no indent) but still valid JSON."""
+        handler = self._make_handler()
+        self._test_logger.warning("Compact flush test")
+        handler.flush_now()
+
+        buf_path = Path(self._data_dir) / 'diagnostics_buffer.json'
+        with open(buf_path, 'r', encoding='utf-8') as f:
+            raw = f.read()
+        data = json.loads(raw)
+        self.assertEqual(len(data['entries']), 1)
+        self.assertIn('Compact flush test', data['entries'][0]['message'])
+        # Compact separators (',', ':') and no indent -> single line.
+        self.assertNotIn('\n', raw)
+
+
+class TestTmpFileSweep(unittest.TestCase):
+    """Tests for the orphaned mkstemp .tmp-file sweep on handler construction."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._data_dir = self._tmp.name
+        os.environ.pop('DIAGNOSTICS_OPT_IN', None)
+
+    def tearDown(self):
+        os.environ.pop('DIAGNOSTICS_OPT_IN', None)
+        self._tmp.cleanup()
+
+    def test_stale_tmp_swept_fresh_kept_buffer_untouched(self):
+        stale = Path(self._data_dir) / 'diagnostics_aaaaaaaa.tmp'
+        fresh = Path(self._data_dir) / 'diagnostics_bbbbbbbb.tmp'
+        buffer_file = Path(self._data_dir) / 'diagnostics_buffer.json'
+
+        stale.write_text('stale-orphan', encoding='utf-8')
+        fresh.write_text('fresh-inflight', encoding='utf-8')
+        buffer_contents = (
+            '{"entries": [], "dropped": 0, '
+            '"window_start": "2026-01-01T00:00:00+00:00"}'
+        )
+        buffer_file.write_text(buffer_contents, encoding='utf-8')
+
+        old_time = time.time() - 7200  # 2 hours old, well past the 3600s cutoff
+        os.utime(stale, (old_time, old_time))
+
+        DiagnosticsLogHandler(data_dir=self._data_dir)
+
+        self.assertFalse(stale.exists(), "Stale .tmp file should be swept")
+        self.assertTrue(fresh.exists(), "Fresh .tmp file should survive")
+        self.assertEqual(
+            buffer_file.read_text(encoding='utf-8'), buffer_contents,
+            "Buffer file content must be untouched by the sweep",
+        )
 
 
 class TestSnapshotAndClear(unittest.TestCase):
@@ -785,6 +971,35 @@ class TestSetupAndGetters(unittest.TestCase):
                  if isinstance(h, DiagnosticsLogHandler)]
         self.assertEqual(len(after), len(before) + 1)
         logging.getLogger().removeHandler(handler_a)
+
+
+class TestShutdownFlushRegistration(unittest.TestCase):
+    """Tests for the atexit-registered shutdown flush (fires once, on first
+    handler creation only)."""
+
+    def setUp(self):
+        import src.services.diagnostics as _mod
+        self._saved_handler = _mod._diagnostics_handler
+        _mod._diagnostics_handler = None
+
+    def tearDown(self):
+        import src.services.diagnostics as _mod
+        if _mod._diagnostics_handler is not None and _mod._diagnostics_handler is not self._saved_handler:
+            logging.getLogger().removeHandler(_mod._diagnostics_handler)
+        _mod._diagnostics_handler = self._saved_handler
+
+    @patch('src.services.diagnostics.atexit.register')
+    def test_first_setup_registers_flush_now_once(self, mock_register):
+        handler = setup_diagnostics_logging()
+        mock_register.assert_called_once_with(handler.flush_now)
+
+    @patch('src.services.diagnostics.atexit.register')
+    def test_second_setup_does_not_register_again(self, mock_register):
+        handler_a = setup_diagnostics_logging()
+        mock_register.reset_mock()
+        handler_b = setup_diagnostics_logging()
+        self.assertIs(handler_a, handler_b)
+        mock_register.assert_not_called()
 
 
 class TestMessageTruncation(unittest.TestCase):

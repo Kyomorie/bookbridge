@@ -50,6 +50,13 @@ sent unless the user explicitly enables it.
     "end": "2026-07-15T12:00:00+00:00"
   },
   "dropped": 3,
+  "env": {
+    "python": "3.11.9",
+    "platform": "Linux",
+    "machine": "x86_64",
+    "container": true,
+    "journal_override": null
+  },
   "warnings": [
     {
       "template": "Sync failed after # retries",
@@ -59,7 +66,8 @@ sent unless the user explicitly enables it.
       "count": 5,
       "first_seen": "2026-07-14T12:00:00+00:00",
       "last_seen": "2026-07-15T11:58:00+00:00",
-      "context": ["2026-07-15 11:58:00 WARNING …"]
+      "context": ["2026-07-15 11:58:00 WARNING …"],
+      "traceback": "File \"src/sync_manager.py\", line 245, in sync_cycle…"
     }
   ],
   "manual": true,
@@ -86,6 +94,8 @@ the **Send bug report** button.
 | `window.start` | `string \| null` | Start of the observation window |
 | `window.end` | `string \| null` | Snapshot taken-at timestamp |
 | `dropped` | `int` | Warning entries dropped (capacity exceeded) |
+| `env` | `object` | Coarse environment facts: `python`, `platform`, `machine`, `container`, `journal_override` |
+| `shed` | `bool` | Present only when the client dropped context/entries to fit the 1MB receiver cap |
 | `warnings` | `array<object>` | Deduplicated warning entries |
 | `manual` | `bool` | Marks a user-submitted report (manual reports only) |
 | `user_message` | `string` | Optional written problem description (manual reports only) |
@@ -93,8 +103,9 @@ the **Send bug report** button.
 
 Each warning object contains: `template`, `message`, `logger`, `level`,
 `count`, `first_seen`, `last_seen`, `context` (array of scrubbed log
-lines).  All PII (URLs, filesystem paths, long quoted spans) is
-deterministically scrubbed before inclusion.
+lines), and optionally `traceback` (a scrubbed stack tail, capped at 1200
+characters client-side).  All PII (URLs, filesystem paths, long quoted spans)
+is deterministically scrubbed before inclusion.
 
 ## Send Semantics
 
@@ -223,8 +234,9 @@ Two additional tables (created idempotently):
   unknown), `status` (open / triaged / fixed / ignored), optional
   `severity` (low / medium / high), `first_seen`, `last_seen`,
   `total_count`, `instance_count`, `app_versions_json`, sample
-  message/context, and triage fields (`analysis_md`, `analysis_at`,
-  `reopened_at`).
+  message/context, triage fields (`analysis_md`, `analysis_at`,
+  `reopened_at`), and fix/recurrence tracking (`fixed_at`,
+  `versions_at_fix_json`, `stale_recurrence_count`, `last_stale_at`).
 - **`finding_instances`** — join table linking findings to the instance
   IDs that reported them; drives `instance_count`.
 
@@ -232,9 +244,15 @@ Two additional tables (created idempotently):
 
 1. A new warning arrives → finding created with status **open**.
 2. Triage sets `analysis_md` → status auto-promotes to **triaged**.
-3. Fix verified → manual PATCH to status **fixed**.
-4. Same warning recurs while fixed → status auto-reopens to **open**
-   (`reopened_at` stamped).  Status **ignored** is never auto-reopened.
+3. Fix verified → manual PATCH to status **fixed**, which snapshots the app
+   versions seen so far into `versions_at_fix_json` and stamps `fixed_at`.
+4. Same warning recurs while fixed → **version-gated reopen**: status
+   auto-reopens to **open** (`reopened_at` stamped) only when the recurrence
+   comes from an app version newer than every version in `versions_at_fix_json`
+   (for non code-bug categories, any new instance reopens it). A recurrence from
+   an older, already-captured build does not reopen the finding; it is counted
+   in `stale_recurrence_count` and stamps `last_stale_at` instead.  Status
+   **ignored** is never auto-reopened.
 
 #### Ranking
 
@@ -289,6 +307,7 @@ authentication for the ingest endpoint.
 | **Subsequent POSTs** | Must include `Authorization: Bearer <token>`. Missing or wrong token → `401 {"ok": false, "error": "invalid token"}`. |
 | **Grandfathering** | An existing instance row with no stored token (pre-upgrade) gets a token issued and returned on its next successful POST, then requires it thereafter. |
 | **Banned** | `instances.banned = 1` → `403 {"ok": false, "error": "banned"}`, checked before anything else. |
+| **Storage** | Tokens are stored as a SHA-256 hash, not plaintext. Legacy plaintext rows are migrated transparently (re-hashed) the next time that instance authenticates successfully. |
 
 The sender (`diagnostics.py`) automatically persists the received token
 in the `DIAGNOSTICS_INGEST_TOKEN` environment variable and database
@@ -313,10 +332,11 @@ requests cannot race past the cap.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DIAG_READ_TOKEN` | **required** | Maintainer read and PATCH endpoints require `Authorization: Bearer <that token>`. Missing configuration fails closed. `GET /api/v1/health` remains open and ingest uses per-instance tokens. |
+| `DIAG_READ_TOKEN` | **required** | Maintainer read endpoints require `Authorization: Bearer <that token>`. Missing configuration fails closed. `GET /api/v1/health` remains open and ingest uses per-instance tokens. |
+| `DIAG_ADMIN_TOKEN` | (unset) | When set, PATCH and other mutation endpoints require `Authorization: Bearer <that token>` instead of the read token, which then only reads. Unset means the read token also authorizes PATCH. |
 
-The receiver Compose file also requires the variable and binds port 20129 to
-`127.0.0.1`; expose it through a TLS reverse proxy rather than a public raw
+The receiver Compose file also requires `DIAG_READ_TOKEN` and binds port 20129
+to `127.0.0.1`; expose it through a TLS reverse proxy rather than a public raw
 port.
 
 ### Manual Bug Reports and Replies

@@ -1,4 +1,5 @@
 """Tests for the diagnostics sender (Phase 2: payload builder, daily sender, admin endpoint)."""
+import json
 import logging
 import os
 import tempfile
@@ -11,7 +12,10 @@ from src.services.diagnostics import (
     DiagnosticsLogHandler,
     ensure_instance_id,
     build_diagnostics_payload,
+    collect_env_facts,
     maybe_send_diagnostics,
+    _resolve_max_payload_bytes,
+    _shed_to_budget,
     _utc_iso,
 )
 
@@ -142,6 +146,274 @@ class TestBuildDiagnosticsPayload(unittest.TestCase):
     def test_total_books_none_allowed(self):
         payload = build_diagnostics_payload('id', {}, None, {'entries': []})
         self.assertIsNone(payload['total_books'])
+
+    def test_env_facts_present_and_typed(self):
+        payload = build_diagnostics_payload('id', {}, None, {'entries': []})
+        self.assertIn('env', payload)
+        self.assertIn('python', payload['env'])
+        self.assertIn('platform', payload['env'])
+        self.assertIsInstance(payload['env']['python'], str)
+        self.assertIsInstance(payload['env']['platform'], str)
+
+    def test_traceback_field_passes_through_when_present(self):
+        entry = {
+            'template': 'tpl', 'message': 'msg', 'logger': 'lg', 'level': 'WARNING',
+            'count': 1, 'first_seen': 'f', 'last_seen': 'l', 'context': [],
+            'traceback': 'Traceback (most recent call last):\nZeroDivisionError: division by zero',
+        }
+        payload = build_diagnostics_payload(
+            instance_id='x', service_flags={}, total_books=None,
+            snapshot={'entries': [entry], 'window_start': None, 'taken_at': None, 'dropped': 0},
+        )
+        self.assertEqual(payload['warnings'][0]['traceback'], entry['traceback'])
+
+    def test_warnings_without_traceback_have_no_traceback_key(self):
+        entry = {
+            'template': 'tpl', 'message': 'msg', 'logger': 'lg', 'level': 'WARNING',
+            'count': 1, 'first_seen': 'f', 'last_seen': 'l', 'context': [],
+        }
+        payload = build_diagnostics_payload(
+            instance_id='x', service_flags={}, total_books=None,
+            snapshot={'entries': [entry], 'window_start': None, 'taken_at': None, 'dropped': 0},
+        )
+        self.assertNotIn('traceback', payload['warnings'][0])
+
+
+# ---------------------------------------------------------------------------
+# collect_env_facts
+# ---------------------------------------------------------------------------
+
+class TestCollectEnvFacts(unittest.TestCase):
+
+    def test_facts_have_expected_types(self):
+        facts = collect_env_facts()
+        self.assertIsInstance(facts['python'], str)
+        self.assertIsInstance(facts['platform'], str)
+        self.assertIsInstance(facts['container'], bool)
+
+    def test_journal_override_included_only_when_env_set(self):
+        orig = os.environ.pop('DB_JOURNAL_MODE', None)
+        try:
+            facts = collect_env_facts()
+            self.assertNotIn('journal_override', facts)
+
+            os.environ['DB_JOURNAL_MODE'] = 'DELETE'
+            facts2 = collect_env_facts()
+            self.assertEqual(facts2['journal_override'], 'DELETE')
+        finally:
+            if orig is None:
+                os.environ.pop('DB_JOURNAL_MODE', None)
+            else:
+                os.environ['DB_JOURNAL_MODE'] = orig
+
+
+# ---------------------------------------------------------------------------
+# _resolve_max_payload_bytes / _shed_to_budget
+# ---------------------------------------------------------------------------
+
+class TestResolveMaxPayloadBytes(unittest.TestCase):
+
+    def setUp(self):
+        self._orig = os.environ.pop('DIAGNOSTICS_MAX_PAYLOAD_BYTES', None)
+
+    def tearDown(self):
+        if self._orig is not None:
+            os.environ['DIAGNOSTICS_MAX_PAYLOAD_BYTES'] = self._orig
+        else:
+            os.environ.pop('DIAGNOSTICS_MAX_PAYLOAD_BYTES', None)
+
+    def test_unset_returns_default(self):
+        os.environ.pop('DIAGNOSTICS_MAX_PAYLOAD_BYTES', None)
+        self.assertEqual(_resolve_max_payload_bytes(), 800_000)
+
+    def test_invalid_value_returns_default(self):
+        os.environ['DIAGNOSTICS_MAX_PAYLOAD_BYTES'] = 'not-a-number'
+        self.assertEqual(_resolve_max_payload_bytes(), 800_000)
+
+    def test_zero_is_passed_through_to_disable_shedding(self):
+        os.environ['DIAGNOSTICS_MAX_PAYLOAD_BYTES'] = '0'
+        self.assertEqual(_resolve_max_payload_bytes(), 0)
+
+    def test_valid_value_is_used(self):
+        os.environ['DIAGNOSTICS_MAX_PAYLOAD_BYTES'] = '12345'
+        self.assertEqual(_resolve_max_payload_bytes(), 12345)
+
+
+class TestShedToBudget(unittest.TestCase):
+    """Tests for _shed_to_budget as a pure function (change 3)."""
+
+    def _make_entries(self, n: int, bulky: bool = True) -> list:
+        entries = []
+        for i in range(n):
+            entry = {
+                'template': f'Template shape number {i}',
+                'message': f'Message body for entry {i}',
+                'logger': 'src.sync_manager',
+                'level': 'WARNING',
+                'count': i + 1,  # strictly increasing count
+                'first_seen': '2026-01-01T00:00:00+00:00',
+                'last_seen': '2026-01-01T00:00:00+00:00',
+            }
+            if bulky:
+                entry['context'] = [f'context line {j} padding text' for j in range(15)]
+                entry['traceback'] = 'Traceback (most recent call last):\n' + ('frame line\n' * 8)
+            entries.append(entry)
+        return entries
+
+    def test_max_bytes_zero_leaves_payload_untouched(self):
+        entries = self._make_entries(5)
+        payload = {'warnings': entries}
+        snapshot = {'_snapshot_key_counts': {}, 'entries': []}
+        result = _shed_to_budget(payload, snapshot, 0)
+        self.assertIs(result, payload)
+        self.assertNotIn('shed', payload)
+        self.assertTrue(all('context' in e for e in payload['warnings']))
+
+    def test_already_under_budget_is_untouched(self):
+        entries = self._make_entries(2)
+        payload = {'warnings': entries}
+        snapshot = {'_snapshot_key_counts': {}, 'entries': []}
+        full_size = len(json.dumps(payload))
+        result = _shed_to_budget(payload, snapshot, full_size + 1000)
+        self.assertIs(result, payload)
+        self.assertNotIn('shed', payload)
+
+    def test_moderate_overage_strips_context_lowest_count_first(self):
+        entries = self._make_entries(30)
+        payload = {'warnings': entries}
+        snapshot_key_counts = {
+            (e['logger'], e['level'], e['template']): e['count'] for e in entries
+        }
+        snapshot = {
+            '_snapshot_key_counts': snapshot_key_counts,
+            'entries': [dict(e) for e in entries],
+        }
+        full_size = len(json.dumps(payload))
+        # Comfortably below the full size, but not so small it forces whole
+        # low-count entries to be dropped outright (pass 2).
+        budget = int(full_size * 0.6)
+
+        result = _shed_to_budget(payload, snapshot, budget)
+
+        self.assertLessEqual(len(json.dumps(result)), budget)
+        self.assertEqual(len(result['warnings']), 30, "no whole entries should be dropped at this budget")
+        stripped = [e for e in result['warnings'] if 'context' not in e]
+        kept = [e for e in result['warnings'] if 'context' in e]
+        self.assertTrue(stripped, "expected at least one entry to lose context")
+        if kept:
+            self.assertLessEqual(
+                max(e['count'] for e in stripped), min(e['count'] for e in kept),
+                "lowest-count entries must lose context before higher-count ones",
+            )
+        self.assertIn('shed', result)
+        self.assertGreater(result['shed']['context_stripped'], 0)
+        self.assertEqual(result['shed']['entries_deferred'], 0)
+
+    def test_severe_overage_defers_whole_entries_out_of_snapshot(self):
+        entries = self._make_entries(30)
+        payload = {'warnings': entries}
+        snapshot_key_counts = {
+            (e['logger'], e['level'], e['template']): e['count'] for e in entries
+        }
+        snapshot = {
+            '_snapshot_key_counts': snapshot_key_counts,
+            'entries': [dict(e) for e in entries],
+        }
+        budget = 900  # small enough to force pass 2 even after stripping everything
+
+        result = _shed_to_budget(payload, snapshot, budget)
+
+        self.assertLessEqual(len(json.dumps(result)), budget)
+        self.assertLess(len(result['warnings']), 30)
+        self.assertIn('shed', result)
+        self.assertGreater(result['shed']['entries_deferred'], 0)
+
+        remaining_keys = {
+            (e['logger'], e['level'], e['template']) for e in result['warnings']
+        }
+        original_keys = {
+            (e['logger'], e['level'], e['template']) for e in entries
+        }
+        deferred_keys = original_keys - remaining_keys
+        self.assertTrue(deferred_keys)
+
+        # Deferred entries must be gone from BOTH the snapshot key-count
+        # index and the snapshot's entries list, so clear_snapshot() will
+        # leave them buffered in the live handler.
+        for key in deferred_keys:
+            self.assertNotIn(key, snapshot['_snapshot_key_counts'])
+            self.assertFalse(any(
+                (e['logger'], e['level'], e['template']) == key
+                for e in snapshot['entries']
+            ))
+
+        # Deferral is ascending-count-first.
+        deferred_counts = [
+            e['count'] for e in entries
+            if (e['logger'], e['level'], e['template']) in deferred_keys
+        ]
+        remaining_counts = [e['count'] for e in result['warnings']]
+        if remaining_counts:
+            self.assertLessEqual(max(deferred_counts), min(remaining_counts))
+
+
+class TestShedToBudgetHandlerRoundTrip(unittest.TestCase):
+    """Real-handler round trip: entries deferred by shedding survive clear_snapshot."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._data_dir = self._tmp.name
+        os.environ['DIAGNOSTICS_OPT_IN'] = 'true'
+        self._test_logger = logging.getLogger('test_shed_roundtrip')
+        self._test_logger.propagate = False
+        self._test_logger.setLevel(logging.DEBUG)
+        self.handler = DiagnosticsLogHandler(data_dir=self._data_dir)
+        self.handler.setLevel(logging.INFO)
+        self._test_logger.addHandler(self.handler)
+
+    def tearDown(self):
+        self._test_logger.handlers.clear()
+        os.environ.pop('DIAGNOSTICS_OPT_IN', None)
+        self._tmp.cleanup()
+
+    def test_deferred_entries_remain_buffered_after_clear_snapshot(self):
+        import string
+
+        for i, letter in enumerate(string.ascii_lowercase):
+            for _ in range(i + 1):
+                self._test_logger.warning("Distinct warning shape %s", letter)
+
+        snap = self.handler.snapshot()
+        payload = build_diagnostics_payload('inst', {}, None, snap)
+        total_before = len(payload['warnings'])
+        self.assertEqual(total_before, 26)
+
+        shed_payload = _shed_to_budget(payload, snap, 900)
+        remaining_keys = {
+            (e['logger'], e['level'], e['template']) for e in shed_payload['warnings']
+        }
+        self.assertLess(len(remaining_keys), total_before)
+
+        with self.handler._lock:
+            keys_before_clear = set(self.handler._entries.keys())
+        deferred_keys = keys_before_clear - remaining_keys
+        self.assertTrue(deferred_keys)
+
+        self.handler.clear_snapshot(snap)
+
+        with self.handler._lock:
+            keys_after_clear = set(self.handler._entries.keys())
+
+        for key in deferred_keys:
+            self.assertIn(
+                key, keys_after_clear,
+                f"deferred key {key} should survive clear_snapshot",
+            )
+        for key in remaining_keys:
+            self.assertNotIn(
+                key, keys_after_clear,
+                f"successfully-sent key {key} should be cleared",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +811,35 @@ class TestMaybeSendPaths(unittest.TestCase):
         result = maybe_send_diagnostics(self.db, force=True)
         self.assertTrue(result['sent'])
         self.assertNotIn('DIAGNOSTICS_INGEST_TOKEN', os.environ)
+
+    @patch('src.services.diagnostics.requests.post')
+    def test_max_payload_bytes_env_sheds_oversized_payload(self, mock_post):
+        """DIAGNOSTICS_MAX_PAYLOAD_BYTES forces _maybe_send to shed before posting."""
+        for i in range(30):
+            self.handler.emit(_make_record(
+                f'test.shed.{i}', logging.WARNING,
+                f'Oversized payload warning shape {i} ' + ('z' * 200),
+            ))
+
+        orig_budget = os.environ.pop('DIAGNOSTICS_MAX_PAYLOAD_BYTES', None)
+        os.environ['DIAGNOSTICS_MAX_PAYLOAD_BYTES'] = '2000'
+        try:
+            mock_resp = Mock()
+            mock_resp.status_code = 200
+            mock_post.return_value = mock_resp
+
+            result = maybe_send_diagnostics(self.db)
+            self.assertTrue(result['sent'])
+
+            posted_payload = mock_post.call_args.kwargs['json']
+            posted_size = len(json.dumps(posted_payload))
+            self.assertLessEqual(posted_size, 2000)
+            self.assertIn('shed', posted_payload)
+        finally:
+            if orig_budget is None:
+                os.environ.pop('DIAGNOSTICS_MAX_PAYLOAD_BYTES', None)
+            else:
+                os.environ['DIAGNOSTICS_MAX_PAYLOAD_BYTES'] = orig_budget
 
 
 # ---------------------------------------------------------------------------

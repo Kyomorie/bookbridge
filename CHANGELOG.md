@@ -4,6 +4,23 @@
 
 All notable changes to BookBridge will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **Opt-in diagnostics are more private and easier to act on.** Email addresses
+  and bare IP addresses are now anonymized the same way URLs and file paths
+  already were. Warning reports that only differed by a random id — a book
+  hash, a device id — used to quietly split into a new entry every time; they
+  now dedupe into one, the same as any other repeated warning. Error reports
+  now travel with a short, scrubbed snippet of the surrounding stack trace and
+  a small note about your Python version, platform, and whether you're
+  running in a container, making it much easier to tell an environment quirk
+  from a real bug. Reports that would have been too large to send now trim
+  themselves down and still go out instead of failing silently, and stray
+  temporary files left behind by an interrupted send are cleaned up
+  automatically.
+
 ## [7.3.4] - 2026-08-04
 
 ### Fixed
