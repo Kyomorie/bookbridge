@@ -571,12 +571,13 @@ class DatabaseService:
 
     def get_all_books(self, user_id: int = None) -> List[Book]:
         """Get all books as model objects. When user_id is given, scope to the
-        books that user has matched/claimed (shared catalog, per-user links)."""
-        if user_id is None:
-            logger.debug(
-                "get_all_books called with user_id=None — returning unfiltered "
-                "bulk data. Future callers should pass an explicit user_id."
-            )
+        books that user has matched/claimed (shared catalog, per-user links).
+
+        Passing user_id is required for user-facing request paths. Omitting it
+        returns the whole shared catalog — correct and intended for catalog-wide
+        background work (cache cleanup, suggestion dedupe, library metadata sync)
+        and admin views.
+        """
         with self.get_session() as session:
             query = session.query(Book)
             if user_id is not None:

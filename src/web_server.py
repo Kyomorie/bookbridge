@@ -4689,7 +4689,7 @@ def index():
     """Dashboard - loads books and progress from database service"""
     user = current_user()
     user_id = user.id if user else None
-    books = database_service.get_all_books()
+    books = database_service.get_all_books(user_id=user_id)
     all_states = database_service.get_all_states(
         user_id=user_id
     )
@@ -8858,7 +8858,7 @@ def api_status():
     """Return status of all books from database service"""
     user = current_user()
     user_id = user.id if user else None
-    books = database_service.get_all_books()
+    books = database_service.get_all_books(user_id=user_id)
     all_states = database_service.get_all_states(
         user_id=user_id
     )
