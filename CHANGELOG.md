@@ -4,6 +4,20 @@
 
 All notable changes to BookBridge will be documented in this file.
 
+## [7.3.4] - 2026-08-04
+
+### Fixed
+
+- **Local transcription no longer crashes with `No module named 'nvidia'` on the
+  standard image.** Since 7.3.0, the automatic GPU check that runs before local
+  Whisper transcription assumed the NVIDIA CUDA libraries were at least present to
+  inspect — but the standard (non-`-cuda`) image ships without them entirely, so on
+  CPU-only installs every transcription failed immediately and books never finished
+  syncing. The check now treats missing CUDA libraries as "use the CPU," which is
+  what it always meant to do. Affected books were parked for retry, so they pick
+  themselves back up on the next sync cycle after updating — no manual steps needed.
+  Reported by [@ibrodebill](https://github.com/ibrodebill). (#355)
+
 ## [7.3.3] - 2026-08-03
 
 ### Added

@@ -4,6 +4,12 @@ For the full history of changes, please refer to the **[GitHub Releases](https:/
 
 ---
 
+## [7.3.4]
+
+A single-fix release: **local transcription works again on the standard image.** Since 7.3.0, the automatic GPU check before local Whisper transcription crashed with `No module named 'nvidia'` on CPU-only installs, so every transcription failed before it began and books never finished syncing. Missing CUDA libraries now simply mean "use the CPU." Affected books were parked for retry, so they pick themselves back up after updating — no manual steps. The `-cuda` image, external transcription servers, and Deepgram were unaffected. Reported by [@ibrodebill](https://github.com/ibrodebill). (#355)
+
+---
+
 ## [7.3.3]
 
 The headline is **audiobook covers load again, and your Audiobookshelf token stays on the server**: if Audiobookshelf is only reachable from the server, every cover came up blank and the address and token went to the browser with it. This release also adds external GPU transcription against any OpenAI-compatible server, stops an Audiobookshelf ebook library from burying real audiobook suggestions, and repairs matching for libraries BookBridge reaches only over the network.

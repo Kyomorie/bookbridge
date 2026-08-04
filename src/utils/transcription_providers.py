@@ -55,7 +55,14 @@ class LocalWhisperProvider(TranscriptionProvider):
         This is dependent on the image that is used (only the image with the -cuda suffix has CUDA libraries)
         and whether the GPU is visible in the container (via deploy block in the compose file)
         """
-        if importlib.util.find_spec("nvidia.cudnn") is None:
+        try:
+            cudnn_spec = importlib.util.find_spec("nvidia.cudnn")
+        except (ImportError, ValueError):
+            # find_spec only returns None when the parent "nvidia" package exists;
+            # on the non-CUDA image no nvidia-* wheels are installed at all, so it
+            # raises ModuleNotFoundError instead (#355).
+            cudnn_spec = None
+        if cudnn_spec is None:
             return False, "CUDA libraries not bundled (use the -cuda image tag)"
 
         try:

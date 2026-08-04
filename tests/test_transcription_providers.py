@@ -61,6 +61,39 @@ class TestLocalWhisperProvider(unittest.TestCase):
         self.assertEqual(compute_type, "int8")  # Default for CPU in auto mode
 
     @patch("utils.transcription_providers.logger")
+    def test_get_device_config_cpu_image_without_nvidia_package(self, mock_logger):
+        """Regression for #355: on the non-CUDA image the parent 'nvidia' package
+        does not exist, so find_spec('nvidia.cudnn') RAISES ModuleNotFoundError
+        instead of returning None. auto must fall back to CPU, not crash."""
+        provider = LocalWhisperProvider()
+
+        with patch(
+            "utils.transcription_providers.importlib.util.find_spec",
+            side_effect=ModuleNotFoundError("No module named 'nvidia'"),
+        ):
+            device, compute_type = provider._get_device_config()
+
+        self.assertEqual(device, "cpu")
+        self.assertEqual(compute_type, "int8")
+        logged = " ".join(str(c) for c in mock_logger.info.call_args_list)
+        self.assertIn("CUDA libraries not bundled", logged)
+
+    @patch("utils.transcription_providers.logger")
+    def test_get_device_config_survives_find_spec_valueerror(self, mock_logger):
+        """find_spec can also raise ValueError (parent with __spec__ = None);
+        treat it the same as 'CUDA libraries absent'."""
+        provider = LocalWhisperProvider()
+
+        with patch(
+            "utils.transcription_providers.importlib.util.find_spec",
+            side_effect=ValueError("nvidia.__spec__ is None"),
+        ):
+            device, compute_type = provider._get_device_config()
+
+        self.assertEqual(device, "cpu")
+        self.assertEqual(compute_type, "int8")
+
+    @patch("utils.transcription_providers.logger")
     def test_get_device_config_auto_cpu_no_gpu(self, mock_logger):
         """CUDA image with no GPU passed through to the container: stay on CPU."""
         provider = LocalWhisperProvider()
