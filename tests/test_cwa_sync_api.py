@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.api.cwa_sync_api import CWASyncApi, STATUS_READING, STATUS_FINISHED, STATUS_READY
+from src.utils.logging_utils import get_persistent_condition_logger
 
 
 class TestCWASyncApi(unittest.TestCase):
@@ -154,6 +155,47 @@ class TestCWASyncApi(unittest.TestCase):
         client = self._make_client(cwa_client=None)
         result = client.resolve_book_uuid("42")
         self.assertIsNone(result)
+
+    # -- Connection-check repeat suppression --
+
+    def test_connection_error_repeats_are_suppressed_at_error_level(self):
+        """An unreachable CWA host logs once at ERROR, then drops to DEBUG.
+
+        The check runs every cycle and the condition holds until the host comes
+        back, so it re-logged the identical ERROR forever.
+        """
+        get_persistent_condition_logger().reset()
+        self.addCleanup(get_persistent_condition_logger().reset)
+        self.client._session = Mock()
+        self.client._session.get.side_effect = OSError("connection refused")
+
+        with self.assertLogs('src.api.cwa_sync_api', level='DEBUG') as captured:
+            for _ in range(5):
+                self.assertFalse(self.client.check_connection())
+
+        errors = [r for r in captured.records
+                  if r.levelname == 'ERROR' and 'CWA Sync connection error' in r.getMessage()]
+        self.assertEqual(len(errors), 1)
+
+    def test_connection_recovery_is_announced_once(self):
+        """Recovery is announced at INFO after the condition cleared."""
+        get_persistent_condition_logger().reset()
+        self.addCleanup(get_persistent_condition_logger().reset)
+        self.client._session = Mock()
+        self.client._session.get.side_effect = OSError("connection refused")
+        self.client.check_connection()
+
+        ok = Mock()
+        ok.status_code = 200
+        self.client._session.get.side_effect = None
+        self.client._session.get.return_value = ok
+
+        with self.assertLogs('src.api.cwa_sync_api', level='INFO') as captured:
+            self.assertTrue(self.client.check_connection())
+            self.assertTrue(self.client.check_connection())
+
+        recovered = [r for r in captured.records if 'connection recovered' in r.getMessage()]
+        self.assertEqual(len(recovered), 1)
 
 
 if __name__ == '__main__':

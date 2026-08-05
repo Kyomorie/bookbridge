@@ -471,6 +471,18 @@ class EbookParser:
                     progress_callback(i / total_spine)
 
                 item = book.get_item_with_id(item_ref[0])
+                if item is None:
+                    # A spine entry can reference an idref that isn't in the
+                    # manifest (malformed EPUB). ebooklib returns None rather
+                    # than raising, so calling get_type() on it threw
+                    # AttributeError, hit the except below, and abandoned the
+                    # WHOLE book as ("", []) -- which then surfaced downstream
+                    # as misleading "Could not resolve XPath" warnings.
+                    logger.debug(
+                        "Skipping spine entry %s: no manifest item with that id",
+                        item_ref[0],
+                    )
+                    continue
                 if item.get_type() == ebooklib.ITEM_DOCUMENT:
                     soup = BeautifulSoup(item.get_content(), 'html.parser')
                     text = soup.get_text(separator=' ', strip=True)

@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from src.db.models import PendingSuggestion
+from src.utils.logging_utils import get_persistent_condition_logger
 from src.utils.time_utils import utcnow
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,20 @@ class ShelfWatchService:
         """User-facing label for this ebook source. 'BookLore' is the internal
         key for the library displayed to users as 'Grimmory'."""
         return 'Grimmory' if self._source_name == 'BookLore' else self._source_name
+
+    def _missing_shelf_key(self, shelf_name: str) -> str:
+        """Persistent-condition key for a watch shelf that doesn't exist yet."""
+        return f"shelf_watch_missing_shelf:{self._source_name}:{shelf_name}"
+
+    def _resolve_missing_shelf(self, shelf_name: str) -> None:
+        """Announce recovery once the watch shelf exists again (no-op if it
+        never went missing)."""
+        get_persistent_condition_logger().resolve(
+            logger,
+            self._missing_shelf_key(shelf_name),
+            "✅ Shelf-watch: shelf '%s' now exists in %s — resuming scans.",
+            shelf_name, self._display_name(),
+        )
 
     def _resolve_user_bundle(self, user_id=None):
         """Return the explicit user's client bundle when one is available."""
@@ -242,24 +257,33 @@ class ShelfWatchService:
             return stats
 
         # If the shelf doesn't exist in the library, list_books_on_shelf returns [].
-        # We log a one-time-per-run actionable warning so the user knows what to
-        # do; we don't try to auto-create because the POST /shelves endpoint has
-        # been unreliable across server versions, and the user can set the icon
-        # they want via the library UI directly.
+        # We log an actionable warning so the user knows what to do; we don't try
+        # to auto-create because the POST /shelves endpoint has been unreliable
+        # across server versions, and the user can set the icon they want via the
+        # library UI directly.  The condition holds until the user acts, and this
+        # runs once per poll tick, so it goes through the persistent-condition
+        # logger — the first occurrence is verbatim, repeats drop to DEBUG.
         if not books:
             try:
                 shelves = active_client.get_all_shelves() or []
                 shelf_names = {s.get('name') for s in shelves if isinstance(s, dict)}
                 if shelf_name not in shelf_names:
                     display = self._display_name()
-                    logger.warning(
+                    get_persistent_condition_logger().warn(
+                        logger,
+                        self._missing_shelf_key(shelf_name),
                         "Shelf-watch: shelf '%s' does not exist in %s yet. "
                         "Create it in the %s UI (and pick an icon) — the watcher "
                         "will start scanning books placed on it on the next cycle.",
                         shelf_name, display, display,
                     )
+                else:
+                    self._resolve_missing_shelf(shelf_name)
             except Exception:
                 pass
+        else:
+            # A non-empty listing proves the shelf exists.
+            self._resolve_missing_shelf(shelf_name)
 
         if not books:
             return stats

@@ -16,7 +16,17 @@ import pytest
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.services.shelf_watch_service import ShelfWatchService
+from src.utils.logging_utils import get_persistent_condition_logger
 from src.utils.time_utils import utcnow
+
+
+@pytest.fixture(autouse=True)
+def _reset_persistent_conditions():
+    """The missing-shelf warning is repeat-suppressed by a process-global
+    counter; clear it around every test so the suite passes in any order."""
+    get_persistent_condition_logger().reset()
+    yield
+    get_persistent_condition_logger().reset()
 
 
 # --------------------------------------------------------------------------
@@ -232,6 +242,56 @@ def test_missing_watch_shelf_logs_actionable_warning(caplog):
 
     assert any('Up Next' in r.message and 'Grimmory UI' in r.message
                for r in caplog.records)
+
+
+@patch.dict(os.environ, {
+    'BOOKLORE_SHELF_WATCH_ENABLED': 'true',
+    'BOOKLORE_SHELF_WATCH_NAME': 'Up Next',
+})
+def test_missing_watch_shelf_warning_suppressed_on_repeat(caplog):
+    """The missing-shelf warning fires once, then drops to DEBUG.
+
+    It is a persistent condition re-evaluated every poll tick — one fleet
+    instance shipped 484 copies of this single warning, which is what the
+    persistent-condition logger exists to stop.
+    """
+    svc, bl, _db, _bms, _ = _build_service(
+        suggestions_result=None,
+        list_books_return=[],
+    )
+    bl.get_all_shelves.return_value = [{'name': 'Kobo'}]  # Up Next missing
+
+    with caplog.at_level('WARNING'):
+        for _ in range(5):
+            svc.process_watch_shelf()
+
+    warnings = [r for r in caplog.records
+                if r.levelname == 'WARNING' and 'Grimmory UI' in r.message]
+    assert len(warnings) == 1
+
+
+@patch.dict(os.environ, {
+    'BOOKLORE_SHELF_WATCH_ENABLED': 'true',
+    'BOOKLORE_SHELF_WATCH_NAME': 'Up Next',
+})
+def test_missing_watch_shelf_recovery_announced_once(caplog):
+    """Once the shelf appears, recovery is announced at INFO exactly once."""
+    svc, bl, _db, _bms, _ = _build_service(
+        suggestions_result=None,
+        list_books_return=[],
+    )
+    bl.get_all_shelves.return_value = [{'name': 'Kobo'}]  # Up Next missing
+
+    with caplog.at_level('INFO'):
+        svc.process_watch_shelf()
+        # User creates the shelf; it exists but is still empty.
+        bl.get_all_shelves.return_value = [{'name': 'Kobo'}, {'name': 'Up Next'}]
+        svc.process_watch_shelf()
+        svc.process_watch_shelf()
+
+    recoveries = [r for r in caplog.records if 'resuming scans' in r.message]
+    assert len(recoveries) == 1
+    assert recoveries[0].levelname == 'INFO'
 
 
 @patch.dict(os.environ, {

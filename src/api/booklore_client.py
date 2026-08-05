@@ -25,6 +25,11 @@ MAX_DETAIL_FETCHES_PER_SEARCH = 20
 # Safety bound on paginated scans so a server that never reports the last page
 # (or ignores the size param) can't loop forever. 10000 pages * 200 = 2M books.
 SCAN_MAX_PAGES = int(os.getenv("BOOKLORE_SCAN_MAX_PAGES", "10000"))
+# Concurrency for the detail-fetch fan-out during a full library refresh. The
+# session's connection pool is sized from this (see __init__) — urllib3's
+# default pool of 10 is exactly this worker count, which leaves no headroom and
+# makes urllib3 discard and reopen connections mid-scan.
+DETAIL_FETCH_WORKERS = 10
 
 class BookloreClient:
     def __init__(self, database_service=None, ollama_client=None, credentials: dict = None):
@@ -83,6 +88,18 @@ class BookloreClient:
             int(os.getenv("BOOKLORE_LOGIN_MAX_ATTEMPTS", "2"))
         )
         self.session = requests.Session()
+
+        # Size the connection pool above the detail-fetch worker count so a
+        # full library refresh doesn't exhaust it. Left at urllib3's default of
+        # 10 the pool exactly matches the fan-out, and every scan logs a burst
+        # of "Connection pool is full, discarding connection" warnings while
+        # needlessly reopening sockets.
+        _pool_size = DETAIL_FETCH_WORKERS * 2
+        _adapter = requests.adapters.HTTPAdapter(
+            pool_connections=_pool_size, pool_maxsize=_pool_size
+        )
+        self.session.mount("http://", _adapter)
+        self.session.mount("https://", _adapter)
 
         # Request timeouts. Quick endpoints (login, single book detail) use a
         # short per-call timeout. The full library scan returns the whole library
@@ -1052,7 +1069,7 @@ class BookloreClient:
                     def fetch_one(book_id):
                         return book_id, self._fetch_book_detail(book_id, token)
 
-                    with ThreadPoolExecutor(max_workers=10) as executor:
+                    with ThreadPoolExecutor(max_workers=DETAIL_FETCH_WORKERS) as executor:
                         futures = {executor.submit(fetch_one, bid): bid for bid in new_book_ids}
                         for future in as_completed(futures):
                             try:
@@ -1112,7 +1129,7 @@ class BookloreClient:
                     def fetch_stale_one(book_id):
                         return book_id, self._fetch_book_detail(book_id, token)
 
-                    with ThreadPoolExecutor(max_workers=10) as executor:
+                    with ThreadPoolExecutor(max_workers=DETAIL_FETCH_WORKERS) as executor:
                         futures = {executor.submit(fetch_stale_one, bid): bid for bid in stale_ids}
                         for future in as_completed(futures):
                             try:

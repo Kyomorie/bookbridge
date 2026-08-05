@@ -7,6 +7,7 @@ import os
 import logging
 import requests
 
+from src.utils.logging_utils import get_persistent_condition_logger
 from src.utils.user_config import resolve_setting
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,11 @@ class CWASyncApi:
             url = f"{self._base_url}/initialization"
             r = self._session.get(url, timeout=5)
             if r.status_code == 200:
+                get_persistent_condition_logger().resolve(
+                    logger,
+                    f"cwa_sync_connection:{self._base_url}",
+                    f"✅ CWA Sync connection recovered at {self._server}",
+                )
                 logger.info(f"✅ Connected to CWA sync at {self._server}")
                 return True
             elif r.status_code in [401, 403]:
@@ -57,7 +63,16 @@ class CWASyncApi:
                 logger.error(f"❌ CWA Sync connection failed: {r.status_code}")
                 return False
         except Exception as e:
-            logger.error(f"❌ CWA Sync connection error: {e}", exc_info=True)
+            # An unreachable CWA host fails this check on every cycle, so the
+            # same ERROR repeated forever. Suppress repeats but keep the
+            # pre-existing ERROR severity, matching CWAClient.check_connection.
+            get_persistent_condition_logger().warn(
+                logger,
+                f"cwa_sync_connection:{self._base_url}",
+                f"❌ CWA Sync connection error: {e}",
+                exc_info=True,
+                level=logging.ERROR,
+            )
             return False
 
     def get_reading_state(self, book_uuid: str) -> dict | None:
