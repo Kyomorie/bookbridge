@@ -91,6 +91,38 @@ class TestScrubDiagnosticText(unittest.TestCase):
         # Only one '/' in '/data', not a path replacement
         self.assertIn("/data", result)
 
+    def test_koreader_xpath_not_scrubbed(self):
+        """A KOReader xpointer survives scrubbing verbatim — it is the payload."""
+        text = (
+            "Could not resolve XPath in Some Book (2017).epub: "
+            "/body/DocFragment[5]/body/div/p[42]/text().0"
+        )
+        result = scrub_diagnostic_text(text)
+        self.assertIn("/body/DocFragment[5]/body/div/p[42]/text().0", result)
+        self.assertNotIn("path:", result)
+
+    def test_xpath_with_id_predicate_not_scrubbed(self):
+        """An @id= xpointer is exempt from the filesystem-path rule."""
+        text = "resolve //*[@id='chapter-3']/p[2] failed"
+        result = scrub_diagnostic_text(text)
+        self.assertIn("//*[@id='chapter-3']/p[2]", result)
+        self.assertNotIn("path:", result)
+
+    def test_posix_path_with_index_bracket_still_scrubbed(self):
+        """A real path with a [N] segment is NOT mistaken for an xpointer."""
+        text = "Failed to open /data/books/file[1].epub"
+        result = scrub_diagnostic_text(text)
+        self.assertIn("path:", result)
+        self.assertIn(".epub", result)
+        self.assertNotIn("/data/books", result)
+
+    def test_xpath_like_token_without_marker_still_scrubbed(self):
+        """The detector is conservative: no text()/DocFragment/@id= means hash it."""
+        text = "walk /body/div/p failed"
+        result = scrub_diagnostic_text(text)
+        self.assertIn("path:", result)
+        self.assertNotIn("/body/div/p", result)
+
     def test_quoted_span_replaced(self):
         text = 'Sync failed for "The Great Gatsby Chapter One Title"'
         result = scrub_diagnostic_text(text)
@@ -272,6 +304,23 @@ class TestMakeTemplate(unittest.TestCase):
         self.assertEqual(tpl1, tpl2)
         # Path extension preserved after collapse
         self.assertIn("path:#.epub", tpl1)
+
+    def test_xpath_positions_collapse_to_one_template(self):
+        """Preserved xpointers still collapse per document shape, not per position.
+
+        This is what keeps the XPath scrub exemption from re-inflating template
+        cardinality: ``_make_template``'s digit collapse turns ``p[42]/text().0``
+        into ``p[#]/text().#``, so two positions in the same document share one
+        template.
+        """
+        msg1 = "Could not resolve XPath: /body/DocFragment[5]/body/div/p[42]/text().0"
+        msg2 = "Could not resolve XPath: /body/DocFragment[5]/body/div/p[97]/text().12"
+
+        tpl1 = _make_template(scrub_diagnostic_text(msg1))
+        tpl2 = _make_template(scrub_diagnostic_text(msg2))
+
+        self.assertEqual(tpl1, tpl2)
+        self.assertIn("/body/DocFragment[#]/body/div/p[#]/text().#", tpl1)
 
     def test_url_collapse_same_template(self):
         """Two messages differing only in URL produce same template."""

@@ -52,6 +52,14 @@ _HARDCOVER_NO_MATCH_RE = re.compile(
 # Captures the prefix (t|path|url|ip|email) so we can collapse the hash to
 # a single #.
 _SCRUB_TOKEN_RE = re.compile(r'\b(t|path|url|ip|email):[0-9a-f]{8}')
+# KOReader/DOM xpointers, exempted from the filesystem-path rule below.  Both
+# halves are required: the leading-slash test alone would exempt ordinary POSIX
+# paths, and the marker (text(), DocFragment, @id=) is what no filesystem path
+# ever carries.  A bare "[<digits>]" predicate is deliberately NOT a marker --
+# "/data/books/file[1].epub" is a real path and must still be hashed.
+_XPATH_TOKEN_RE = re.compile(
+    r'^\.{0,1}/{1,2}(?=.*(?:text\(\)|DocFragment|@id=))'
+)
 _SHORT_QUOTED_RE = re.compile(
     r'''(?:"(?!\b(?:t|path|url|ip|email):#)[^"]{0,11}"|'''
     r'''(?<!\w)'(?!\b(?:t|path|url|ip|email):#)[^']{0,11}'(?!\w))'''
@@ -135,12 +143,22 @@ def scrub_diagnostic_text(text: str) -> str:
         h = _sha1_prefix(token)
         return f"path:{h}{ext}"
 
-    # Match tokens containing at least two '/' or '\'
-    result = re.sub(
-        r'[^\s"\'<>]+',
-        lambda m: _replace_path(m) if m.group(0).count('/') + m.group(0).count('\\') >= 2 else m.group(0),
-        result,
-    )
+    # Match tokens containing at least two '/' or '\', except xpointers.
+    # An XPath carries no user data -- the element names in an EPUB are
+    # structural (body, div, p, section, DocFragment) -- and it IS the whole
+    # diagnostic payload for an XPath-resolution failure, so hashing it left
+    # fleet findings unactionable.  Cardinality still holds: _make_template's
+    # digit collapse turns "p[42]/text().0" into "p[#]/text().#", so distinct
+    # templates track distinct document shapes, not distinct positions.
+    def _replace_path_token(m: re.Match) -> str:
+        token = m.group(0)
+        if _XPATH_TOKEN_RE.match(token):
+            return token
+        if token.count('/') + token.count('\\') >= 2:
+            return _replace_path(m)
+        return token
+
+    result = re.sub(r'[^\s"\'<>]+', _replace_path_token, result)
 
     # 5. Quoted spans (>= 12 inner chars)
     def _replace_quoted_inner(m: re.Match, quote_char: str) -> str:
