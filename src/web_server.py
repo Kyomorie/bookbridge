@@ -7487,6 +7487,34 @@ def cleanup_mapping_resources(book, defer_audio_cache: bool = False):
         return
     clients = uc()
 
+    try:
+        remaining_books = database_service.get_all_books()
+    except Exception as e:
+        logger.warning(
+            "Failed to check remaining mappings during resource cleanup; "
+            "preserving shared Storyteller resources: %s",
+            e,
+            exc_info=True,
+        )
+        remaining_books = None
+
+    remaining_storyteller_uuids = set()
+    remaining_cache_filenames = set()
+    if remaining_books is not None:
+        for remaining_book in remaining_books:
+            remaining_filename = getattr(remaining_book, 'ebook_filename', None)
+            if remaining_filename:
+                remaining_cache_filenames.add(remaining_filename)
+
+            remaining_uuid = getattr(remaining_book, 'storyteller_uuid', None)
+            if not remaining_uuid and remaining_filename:
+                match = re.match(r"^storyteller_([0-9a-fA-F-]+)\.epub$", remaining_filename)
+                if match:
+                    remaining_uuid = match.group(1)
+            if remaining_uuid:
+                remaining_storyteller_uuids.add(remaining_uuid)
+                remaining_cache_filenames.add(f"storyteller_{remaining_uuid}.epub")
+
     if book.transcript_file:
         try:
             Path(book.transcript_file).unlink()
@@ -7511,7 +7539,11 @@ def cleanup_mapping_resources(book, defer_audio_cache: bool = False):
         except Exception as e:
             logger.warning(f"⚠️ Failed to delete transcript directory: {e}", exc_info=True)
 
-    if book.ebook_filename:
+    preserve_cached_ebook = (
+        remaining_books is None
+        or book.ebook_filename in remaining_cache_filenames
+    )
+    if book.ebook_filename and not preserve_cached_ebook:
         cache_dirs = []
         try:
             cache_dirs.append(container.epub_cache_dir())
@@ -7562,7 +7594,11 @@ def cleanup_mapping_resources(book, defer_audio_cache: bool = False):
             storyteller_uuid = match.group(1)
             logger.info(f"Inferred Storyteller UUID for cleanup: '{storyteller_uuid[:8]}...'")
 
-    if storyteller_uuid:
+    preserve_storyteller_link = (
+        remaining_books is None
+        or storyteller_uuid in remaining_storyteller_uuids
+    )
+    if storyteller_uuid and not preserve_storyteller_link:
         storyteller_collection_name = os.environ.get('STORYTELLER_COLLECTION_NAME', 'Synced with KOReader')
         try:
             st_client = clients.storyteller_client
@@ -7574,6 +7610,11 @@ def cleanup_mapping_resources(book, defer_audio_cache: bool = False):
                 logger.warning("Storyteller client has no remove_from_collection_by_uuid method")
         except Exception as e:
             logger.warning(f"Failed to remove from Storyteller collection: {e}", exc_info=True)
+    elif storyteller_uuid:
+        logger.info(
+            f"Preserving shared Storyteller resources for '{storyteller_uuid[:8]}...': "
+            "another mapping still references them"
+        )
 
     if book.ebook_filename:
         shelf_filename = book.original_ebook_filename or book.ebook_filename

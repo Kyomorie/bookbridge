@@ -8,6 +8,11 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Changed
 
+- **Deleting one user's mapping no longer breaks another user's Storyteller sync.**
+  When two mappings reference the same Storyteller book, removing either mapping now
+  preserves the shared slim EPUB and Storyteller collection membership until the last
+  reference is gone.
+
 - **Opt-in diagnostics are more private and easier to act on.** Email addresses
   and bare IP addresses are now anonymized the same way URLs and file paths
   already were. Warning reports that only differed by a random id — a book

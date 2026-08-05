@@ -829,6 +829,48 @@ class CleanFlaskIntegrationTest(unittest.TestCase):
         )
         self.mock_database_service.delete_book.assert_called_once_with('delete-st-1')
 
+    def test_delete_mapping_preserves_storyteller_resources_used_by_another_mapping(self):
+        """Deleting one user's duplicate mapping must not break the survivor."""
+        from src.db.models import Book
+
+        storyteller_uuid = 'c14604a6-ffc9-4c98-8adf-260855a436cb'
+        artifact_filename = f'storyteller_{storyteller_uuid}.epub'
+        deleted_book = Book(
+            abs_id='34eab7bb-de4a-4cca-9f47-e21bd83b5fe9',
+            abs_title='Someone You Can Build a Nest In',
+            ebook_filename=artifact_filename,
+            storyteller_uuid=storyteller_uuid,
+            status='active',
+        )
+        surviving_book = Book(
+            abs_id='e63146d7-a485-4a80-bec9-e15448c89b46',
+            abs_title='Someone You Can Build a Nest In',
+            ebook_filename='e63146d7-a485-4a80-bec9-e15448c89b46_cwa.epub',
+            storyteller_uuid=storyteller_uuid,
+            status='active',
+        )
+        cache_dir = Path(self.temp_dir) / 'epub_cache'
+        cache_dir.mkdir(exist_ok=True)
+        artifact_path = cache_dir / artifact_filename
+        artifact_path.write_bytes(b'shared Storyteller artifact')
+
+        self.mock_database_service.get_book.return_value = deleted_book
+        self.mock_database_service.get_all_books.return_value = [surviving_book]
+        self.mock_booklore_client.is_configured.return_value = False
+        self.mock_manager.epub_cache_dir = None
+
+        with patch.object(self.mock_container, 'epub_cache_dir', return_value=cache_dir), \
+                self.assertLogs('src.web_server', level='INFO') as captured:
+            response = self.client.post(f'/delete/{deleted_book.abs_id}')
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(artifact_path.exists())
+        self.mock_storyteller_client.remove_from_collection_by_uuid.assert_not_called()
+        self.assertTrue(any(
+            "Preserving shared Storyteller resources for 'c14604a6...'" in line
+            for line in captured.output
+        ))
+
     def test_delete_mapping_defers_audio_cleanup_for_active_worker(self):
         """Issue #313: delete the row first and let the cancelled worker clean its cache."""
         from src.db.models import Book
