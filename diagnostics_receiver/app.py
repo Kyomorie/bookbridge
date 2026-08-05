@@ -566,14 +566,17 @@ def _upsert_finding(
     ).fetchone()
 
     if existing is None:
-        # Cardinality guard: cap distinct templates per logger
+        # Cardinality guard: cap distinct templates per logger.
+        # Findings are never purged, so only count actionable statuses
+        # ('open','triaged') — otherwise the cap becomes a one-way ratchet
+        # that permanently blinds a busy logger.
         try:
             cap = int(os.environ.get("DIAG_MAX_TEMPLATES_PER_LOGGER", "100"))
         except ValueError:
             cap = 100
         if cap > 0:
             tpl_count = db.execute(
-                "SELECT COUNT(*) FROM findings WHERE logger = ?",
+                "SELECT COUNT(*) FROM findings WHERE logger = ? AND status IN ('open','triaged')",
                 (logger_name,),
             ).fetchone()[0]
             if tpl_count >= cap:

@@ -1309,6 +1309,87 @@ class TestHygiene(unittest.TestCase):
             ).fetchone()
             self.assertEqual(overflow["total_count"], 3)
 
+    def test_cardinality_cap_ignores_resolved_findings(self) -> None:
+        """Resolved findings (fixed/ignored) do not count toward the cardinality cap."""
+        os.environ["DIAG_MAX_TEMPLATES_PER_LOGGER"] = "3"
+        self.addCleanup(
+            lambda: os.environ.pop("DIAG_MAX_TEMPLATES_PER_LOGGER", None)
+        )
+        instance = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        # Ingest 3 distinct templates — cap exactly reached
+        for i in range(3):
+            self._post(_valid_payload(
+                instance_id=instance,
+                warnings=[{"template": f"resolved-tpl-{i} #", "logger": "src.sync_manager",
+                           "level": "WARNING", "count": 2,
+                           "first_seen": "2026-07-15T00:00:00Z",
+                           "last_seen": "2026-07-15T00:00:00Z"}],
+            ))
+        # Mark all 3 as resolved: two fixed, one ignored
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                "UPDATE findings SET status = 'fixed' WHERE logger = 'src.sync_manager' AND template IN ('resolved-tpl-0 #', 'resolved-tpl-1 #')"
+            )
+            conn.execute(
+                "UPDATE findings SET status = 'ignored' WHERE logger = 'src.sync_manager' AND template = 'resolved-tpl-2 #'"
+            )
+            conn.commit()
+        # Ingest a 4th distinct template — should create its own finding row
+        self._post(_valid_payload(
+            instance_id=instance,
+            warnings=[{"template": "new-active-tpl #", "logger": "src.sync_manager",
+                       "level": "WARNING", "count": 5,
+                       "first_seen": "2026-07-15T00:00:00Z",
+                       "last_seen": "2026-07-15T00:00:00Z"}],
+        ))
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            new_finding = conn.execute(
+                "SELECT * FROM findings WHERE template = 'new-active-tpl #' AND logger = 'src.sync_manager'"
+            ).fetchone()
+            self.assertIsNotNone(new_finding)
+            self.assertEqual(new_finding["total_count"], 5)
+            overflow = conn.execute(
+                "SELECT * FROM findings WHERE template = '[cardinality-overflow]' AND logger = 'src.sync_manager'"
+            ).fetchone()
+            self.assertIsNone(overflow)
+
+    def test_cardinality_cap_still_collapses_active_findings(self) -> None:
+        """Active findings (open/triaged) still count toward the cardinality cap."""
+        os.environ["DIAG_MAX_TEMPLATES_PER_LOGGER"] = "3"
+        self.addCleanup(
+            lambda: os.environ.pop("DIAG_MAX_TEMPLATES_PER_LOGGER", None)
+        )
+        instance = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        # Ingest 3 distinct templates — cap exactly reached, all stay 'open'
+        for i in range(3):
+            self._post(_valid_payload(
+                instance_id=instance,
+                warnings=[{"template": f"active-tpl-{i} #", "logger": "src.sync_manager",
+                           "level": "WARNING", "count": 2,
+                           "first_seen": "2026-07-15T00:00:00Z",
+                           "last_seen": "2026-07-15T00:00:00Z"}],
+            ))
+        # Ingest a 4th distinct template — should collapse into overflow
+        self._post(_valid_payload(
+            instance_id=instance,
+            warnings=[{"template": "excess-active-tpl #", "logger": "src.sync_manager",
+                       "level": "WARNING", "count": 7,
+                       "first_seen": "2026-07-15T00:00:00Z",
+                       "last_seen": "2026-07-15T00:00:00Z"}],
+        ))
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            excess_finding = conn.execute(
+                "SELECT * FROM findings WHERE template = 'excess-active-tpl #' AND logger = 'src.sync_manager'"
+            ).fetchone()
+            self.assertIsNone(excess_finding)
+            overflow = conn.execute(
+                "SELECT * FROM findings WHERE template = '[cardinality-overflow]' AND logger = 'src.sync_manager'"
+            ).fetchone()
+            self.assertIsNotNone(overflow)
+            self.assertEqual(overflow["total_count"], 7)
+
     def test_cardinality_disabled_allows_unlimited(self) -> None:
         """DIAG_MAX_TEMPLATES_PER_LOGGER=0 creates all findings."""
         os.environ["DIAG_MAX_TEMPLATES_PER_LOGGER"] = "0"
