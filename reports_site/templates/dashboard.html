@@ -424,6 +424,9 @@
             </article>
             {% endfor %}
         </div>
+        {% if listing_truncated %}
+        <p class="empty">Showing the first {{ page_limit }} per status — this list is capped, not complete.</p>
+        {% endif %}
         {% else %}
         <div class="empty">{% if focus == 'reviewed' %}Nothing is ready for review yet. Bugscout will fill this view as it works through the queue.{% elif focus == 'category' %}No reviewed findings are in this category yet.{% else %}Nothing matches this view.{% endif %}</div>
         {% endif %}

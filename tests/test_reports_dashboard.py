@@ -84,6 +84,23 @@ class ReportsDashboardTestCase(unittest.TestCase):
     def tearDown(self):
         self.tempdir.cleanup()
 
+    def _add_findings(self, findings, *, statuses=("open", "triaged", "fixed", "ignored")):
+        """Stub the dashboard's per-status findings fetches.
+
+        The dashboard fetches one capped page per status rather than slicing
+        ``status=all``, so a test's findings are routed to the page matching
+        each row's own status and the remaining pages come back empty.
+        """
+        for status in statuses:
+            self.receiver.add(
+                "GET",
+                f"/api/v1/findings?status={status}&limit=200",
+                {"findings": [
+                    item for item in findings
+                    if (item.get("status") or "open") == status
+                ]},
+            )
+
     def _add_dashboard_responses(self):
         self.receiver.add("GET", "/api/v1/summary?days=7", {
             "totals": {"instances": 1, "batches": 2, "warnings": 204},
@@ -93,28 +110,26 @@ class ReportsDashboardTestCase(unittest.TestCase):
                 "awaiting_response_all_time": 3,
             },
         })
-        self.receiver.add("GET", "/api/v1/findings?status=all&limit=200", {
-            "findings": [{
-                "id": 4,
-                "template": "Storyteller download failed with #",
-                "status": "triaged",
-                "severity": "medium",
-                "analysis_md": (
-                    "### Finding triage — finding 4\n\n"
-                    "**Category:** code-bug\n"
-                    "**Severity:** medium\n"
-                    "**Pattern:** Storyteller can lead even when its EPUB returns 404.\n"
-                    "**Trace:** src/sync_manager.py:1 -> src/api/storyteller.py:2\n"
-                    "**Hypothesis:** The unavailable EPUB is not removed from candidates.\n"
-                    "**Suggested next step:** Skip Storyteller when its EPUB cannot be loaded."
-                ),
-                "feedback_count": 1,
-                "unanswered_feedback_count": 1,
-                "total_count": 31,
-                "instance_count": 1,
-                "last_seen": "2026-07-16T12:00:00Z",
-            }]
-        })
+        self._add_findings([{
+            "id": 4,
+            "template": "Storyteller download failed with #",
+            "status": "triaged",
+            "severity": "medium",
+            "analysis_md": (
+                "### Finding triage — finding 4\n\n"
+                "**Category:** code-bug\n"
+                "**Severity:** medium\n"
+                "**Pattern:** Storyteller can lead even when its EPUB returns 404.\n"
+                "**Trace:** src/sync_manager.py:1 -> src/api/storyteller.py:2\n"
+                "**Hypothesis:** The unavailable EPUB is not removed from candidates.\n"
+                "**Suggested next step:** Skip Storyteller when its EPUB cannot be loaded."
+            ),
+            "feedback_count": 1,
+            "unanswered_feedback_count": 1,
+            "total_count": 31,
+            "instance_count": 1,
+            "last_seen": "2026-07-16T12:00:00Z",
+        }])
         self.receiver.add("GET", "/api/v1/submissions?limit=5", {
             "submissions": [{
                 "id": 77,
@@ -147,7 +162,8 @@ class ReportsDashboardTestCase(unittest.TestCase):
         self.assertEqual(response.headers["X-Frame-Options"], "DENY")
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertIn("frame-ancestors 'none'", response.headers["Content-Security-Policy"])
-        self.assertEqual(len(self.receiver.calls), 3)
+        # summary + one findings page per status + submissions
+        self.assertEqual(len(self.receiver.calls), 6)
         for call in self.receiver.calls:
             self.assertEqual(call["authorization"], "Bearer server-secret-token")
             self.assertEqual(call["timeout"], 15)
@@ -168,19 +184,17 @@ class ReportsDashboardTestCase(unittest.TestCase):
             "totals": {"instances": 2, "batches": 4, "warnings": 1283},
             "submissions": {"awaiting_response_all_time": 1},
         })
-        self.receiver.add("GET", "/api/v1/findings?status=all&limit=200", {
-            "findings": [{
-                "id": 1,
-                "template": "Reviewed anomaly",
-                "status": "triaged",
-                "severity": "medium",
-                "category": "code-bug",
-                "analysis_md": (
-                    "**Pattern:** Reviewed anomaly\n"
-                    "**Suggested next step:** Ask Codex to inspect the choke point."
-                ),
-            }, *pending],
-        })
+        self._add_findings([{
+            "id": 1,
+            "template": "Reviewed anomaly",
+            "status": "triaged",
+            "severity": "medium",
+            "category": "code-bug",
+            "analysis_md": (
+                "**Pattern:** Reviewed anomaly\n"
+                "**Suggested next step:** Ask Codex to inspect the choke point."
+            ),
+        }, *pending])
         self.receiver.add("GET", "/api/v1/submissions?limit=5", {
             "submissions": [{
                 "id": 91,
@@ -324,7 +338,8 @@ class ReportsDashboardTestCase(unittest.TestCase):
         response = self.client.get("/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(self.receiver.calls), 3)
+        # summary + one findings page per status + submissions
+        self.assertEqual(len(self.receiver.calls), 6)
 
     def test_local_env_style_token_file_is_supported(self):
         self.token_path.write_text(
@@ -346,24 +361,22 @@ class ReportsDashboardTestCase(unittest.TestCase):
             "findings": {"needs_triage": 99},
             "submissions": {"awaiting_response_all_time": 0},
         })
-        self.receiver.add("GET", "/api/v1/findings?status=all&limit=200", {
-            "findings": [
-                {
-                    "id": 1,
-                    "template": "Reopened active finding",
-                    "status": "triaged",
-                    "analysis_md": "**Pattern:** Reopened active finding",
-                    "analysis_at": "2026-07-15T12:00:00+00:00",
-                    "reopened_at": "2026-07-16T12:00:00+00:00",
-                },
-                {
-                    "id": 2,
-                    "template": "Fixed unreviewed finding",
-                    "status": "fixed",
-                    "analysis_md": None,
-                },
-            ],
-        })
+        self._add_findings([
+            {
+                "id": 1,
+                "template": "Reopened active finding",
+                "status": "triaged",
+                "analysis_md": "**Pattern:** Reopened active finding",
+                "analysis_at": "2026-07-15T12:00:00+00:00",
+                "reopened_at": "2026-07-16T12:00:00+00:00",
+            },
+            {
+                "id": 2,
+                "template": "Fixed unreviewed finding",
+                "status": "fixed",
+                "analysis_md": None,
+            },
+        ])
         self.receiver.add("GET", "/api/v1/submissions?limit=5", {"submissions": []})
 
         response = self.client.get("/?focus=triage")
@@ -379,28 +392,26 @@ class ReportsDashboardTestCase(unittest.TestCase):
             "totals": {"instances": 1, "batches": 1, "warnings": 3},
             "submissions": {"awaiting_response_all_time": 0},
         })
-        self.receiver.add("GET", "/api/v1/findings?status=all&limit=200", {
-            "findings": [
-                {
-                    "id": 1,
-                    "template": "Still active",
-                    "status": "triaged",
-                    "analysis_md": "**Pattern:** Still active",
-                },
-                {
-                    "id": 2,
-                    "template": "Expected environment noise",
-                    "status": "ignored",
-                    "analysis_md": "**Pattern:** Expected environment noise",
-                },
-                {
-                    "id": 3,
-                    "template": "Resolved defect",
-                    "status": "fixed",
-                    "analysis_md": "**Pattern:** Resolved defect",
-                },
-            ],
-        })
+        self._add_findings([
+            {
+                "id": 1,
+                "template": "Still active",
+                "status": "triaged",
+                "analysis_md": "**Pattern:** Still active",
+            },
+            {
+                "id": 2,
+                "template": "Expected environment noise",
+                "status": "ignored",
+                "analysis_md": "**Pattern:** Expected environment noise",
+            },
+            {
+                "id": 3,
+                "template": "Resolved defect",
+                "status": "fixed",
+                "analysis_md": "**Pattern:** Resolved defect",
+            },
+        ])
         self.receiver.add("GET", "/api/v1/submissions?limit=5", {"submissions": []})
 
         response = self.client.get("/?focus=archived")
@@ -418,54 +429,52 @@ class ReportsDashboardTestCase(unittest.TestCase):
             "totals": {"instances": 2, "batches": 3, "warnings": 30},
             "submissions": {"awaiting_response_all_time": 0},
         })
-        self.receiver.add("GET", "/api/v1/findings?status=all&limit=200", {
-            "findings": [
-                {
-                    "id": 1,
-                    "template": "Active code defect",
-                    "status": "triaged",
-                    "category": "code-bug",
-                    "analysis_md": "**Pattern:** Active code defect",
-                    "total_count": 4,
-                },
-                {
-                    "id": 2,
-                    "template": "Resolved frequent defect",
-                    "status": "fixed",
-                    "category": "code-bug",
-                    "analysis_md": "**Pattern:** Resolved frequent defect",
-                    "total_count": 18,
-                },
-                {
-                    "id": 3,
-                    "template": "Configuration help",
-                    "status": "ignored",
-                    "category": "config-issue",
-                    "analysis_md": "**Pattern:** Configuration help",
-                },
-                {
-                    "id": 4,
-                    "template": "Documentation clarification",
-                    "status": "triaged",
-                    "category": "docs-gap",
-                    "analysis_md": "**Pattern:** Documentation clarification",
-                },
-                {
-                    "id": 5,
-                    "template": "Reviewed environment issue",
-                    "status": "ignored",
-                    "category": "environment",
-                    "analysis_md": "**Pattern:** Reviewed environment issue",
-                },
-                {
-                    "id": 6,
-                    "template": "Waiting environment warning",
-                    "status": "open",
-                    "category": "environment",
-                    "analysis_md": None,
-                },
-            ],
-        })
+        self._add_findings([
+            {
+                "id": 1,
+                "template": "Active code defect",
+                "status": "triaged",
+                "category": "code-bug",
+                "analysis_md": "**Pattern:** Active code defect",
+                "total_count": 4,
+            },
+            {
+                "id": 2,
+                "template": "Resolved frequent defect",
+                "status": "fixed",
+                "category": "code-bug",
+                "analysis_md": "**Pattern:** Resolved frequent defect",
+                "total_count": 18,
+            },
+            {
+                "id": 3,
+                "template": "Configuration help",
+                "status": "ignored",
+                "category": "config-issue",
+                "analysis_md": "**Pattern:** Configuration help",
+            },
+            {
+                "id": 4,
+                "template": "Documentation clarification",
+                "status": "triaged",
+                "category": "docs-gap",
+                "analysis_md": "**Pattern:** Documentation clarification",
+            },
+            {
+                "id": 5,
+                "template": "Reviewed environment issue",
+                "status": "ignored",
+                "category": "environment",
+                "analysis_md": "**Pattern:** Reviewed environment issue",
+            },
+            {
+                "id": 6,
+                "template": "Waiting environment warning",
+                "status": "open",
+                "category": "environment",
+                "analysis_md": None,
+            },
+        ])
         self.receiver.add("GET", "/api/v1/submissions?limit=5", {"submissions": []})
 
         response = self.client.get("/?category=code-bug")
@@ -736,7 +745,8 @@ class ReportsDashboardTestCase(unittest.TestCase):
         response = self.client.get("/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(self.receiver.calls), 3)
+        # summary + one findings page per status + submissions
+        self.assertEqual(len(self.receiver.calls), 6)
 
     def test_receiver_redirect_is_not_followed_with_admin_token(self):
         redirected_requests: list[str] = []
@@ -809,6 +819,85 @@ class ReportsDashboardTestCase(unittest.TestCase):
         self.assertIn("receiver is unavailable", html)
         self.assertNotIn("server-secret-token", html)
         self.assertNotIn("receiver.example.test", html)
+
+    def _summary(self):
+        return {
+            "totals": {"instances": 100, "batches": 492, "warnings": 896394},
+            "findings": {
+                "by_status": {"open": 0, "triaged": 30, "fixed": 214, "ignored": 1040},
+            },
+            "submissions": {"awaiting_response_all_time": 0},
+        }
+
+    def test_review_queue_is_not_crowded_out_by_archived_findings(self):
+        """A large archive must not shrink the "Ready to review" count.
+
+        The dashboard used to fetch a single ``status=all`` page capped at 200
+        and ordered by fleet volume. With ~1,400 findings — the great majority
+        ignored/fixed — nearly every slot went to archived rows, so the card
+        silently undercounted the queue (it showed 4 of 30 on the live fleet).
+        """
+        archived = [
+            {
+                "id": 1000 + index,
+                "template": f"Archived high-volume anomaly {index}",
+                "status": "ignored",
+                "analysis_md": "**Pattern:** Archived high-volume anomaly",
+                "instance_count": 90,
+                "total_count": 90000,
+            }
+            for index in range(200)
+        ]
+        queue = [
+            {
+                "id": index,
+                "template": f"Quiet reviewed anomaly {index}",
+                "status": "triaged",
+                "analysis_md": "**Pattern:** Quiet reviewed anomaly",
+                "instance_count": 1,
+                "total_count": 1,
+            }
+            for index in range(1, 31)
+        ]
+        self.receiver.add("GET", "/api/v1/summary?days=7", self._summary())
+        self._add_findings(archived + queue)
+        self.receiver.add("GET", "/api/v1/submissions?limit=5", {"submissions": []})
+
+        response = self.client.get("/")
+        html = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        # All 30 reviewed findings counted, not just those out-ranking the archive.
+        self.assertIn('<span class="metric-number">30</span>', html)
+        # The archived count comes from receiver totals, so a capped page of 200
+        # does not misreport 1,254 archived findings as 200.
+        self.assertIn("Archived (1254)", html)
+        # The queue is never fetched through the shared status=all page.
+        requested = [call["path"] for call in self.receiver.calls]
+        self.assertNotIn("/api/v1/findings?status=all&limit=200", requested)
+        for status in ("open", "triaged", "fixed", "ignored"):
+            self.assertIn(f"/api/v1/findings?status={status}&limit=200", requested)
+
+    def test_capped_listing_says_so(self):
+        """A page that hit the cap is labelled, not passed off as complete."""
+        archived = [
+            {
+                "id": 1000 + index,
+                "template": f"Archived anomaly {index}",
+                "status": "ignored",
+                "analysis_md": "**Pattern:** Archived anomaly",
+            }
+            for index in range(200)
+        ]
+        self.receiver.add("GET", "/api/v1/summary?days=7", self._summary())
+        self._add_findings(archived)
+        self.receiver.add("GET", "/api/v1/submissions?limit=5", {"submissions": []})
+
+        response = self.client.get("/?focus=archived")
+        html = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("this list is capped, not complete", html)
 
 
 if __name__ == "__main__":

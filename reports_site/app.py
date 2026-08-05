@@ -250,6 +250,23 @@ def _format_date(value: Any) -> str:
         return text
 
 
+_ACTIVE_STATUSES = ("open", "triaged")
+_ARCHIVED_STATUSES = ("fixed", "ignored")
+# The receiver caps ``limit`` at 200 and has no offset parameter, so every
+# findings fetch is a single capped page.
+_FINDINGS_PAGE_LIMIT = 200
+
+
+def _finding_sort_key(item: dict[str, Any]) -> tuple:
+    """Rank findings by severity, then fleet reach, then recency."""
+    return (
+        {"high": 3, "medium": 2, "low": 1}.get(str(item.get("severity")), 0),
+        _integer(item.get("instance_count")),
+        _integer(item.get("total_count")),
+        str(item.get("last_seen") or ""),
+    )
+
+
 def _render_feedback(
     submission: dict[str, Any],
     *,
@@ -317,7 +334,18 @@ def create_app(
     def dashboard():
         try:
             summary = _receiver_json("/api/v1/summary?days=7")
-            result = _receiver_json("/api/v1/findings?status=all&limit=200")
+            # Fetch one page per status instead of slicing status=all. The
+            # receiver caps limit at 200 and orders by fleet volume, and
+            # archived rows outnumber the active queue several times over --
+            # so a single status=all page spent nearly every slot on
+            # fixed/ignored rows and pushed most of the review queue off the
+            # end, making the cards silently undercount it.
+            status_pages = {
+                status: _receiver_json(
+                    f"/api/v1/findings?status={status}&limit={_FINDINGS_PAGE_LIMIT}"
+                )
+                for status in _ACTIVE_STATUSES + _ARCHIVED_STATUSES
+            }
             submission_result = _receiver_json("/api/v1/submissions?limit=5")
         except ReceiverError:
             return render_template(
@@ -332,22 +360,25 @@ def create_app(
                 focus="reviewed",
             ), 502
 
-        all_findings = [
-            _prepare_finding(item)
-            for item in result.get("findings", [])
-            if isinstance(item, dict)
-        ]
-        all_findings.sort(
-            key=lambda item: (
-                {"high": 3, "medium": 2, "low": 1}.get(str(item.get("severity")), 0),
-                _integer(item.get("instance_count")),
-                _integer(item.get("total_count")),
-                str(item.get("last_seen") or ""),
-            ),
-            reverse=True,
-        )
-        active = [item for item in all_findings if item.get("status") in {"open", "triaged"}]
-        archived = [item for item in all_findings if item.get("status") in {"fixed", "ignored"}]
+        def _page_rows(statuses: tuple[str, ...]) -> list[dict[str, Any]]:
+            rows = [
+                _prepare_finding(item)
+                for status in statuses
+                for item in status_pages[status].get("findings", [])
+                if isinstance(item, dict)
+            ]
+            rows.sort(key=_finding_sort_key, reverse=True)
+            return rows
+
+        def _page_is_capped(statuses: tuple[str, ...]) -> bool:
+            return any(
+                len(status_pages[status].get("findings", [])) >= _FINDINGS_PAGE_LIMIT
+                for status in statuses
+            )
+
+        active = _page_rows(_ACTIVE_STATUSES)
+        archived = _page_rows(_ARCHIVED_STATUSES)
+        all_findings = sorted(active + archived, key=_finding_sort_key, reverse=True)
         reviewed = [item for item in active if not item["needs_triage"]]
         reviewed_all = [item for item in all_findings if not item["needs_triage"]]
         category_filters = [
@@ -368,6 +399,8 @@ def create_app(
         reports.sort(key=lambda item: item["awaiting_response"], reverse=True)
 
         summary_submissions = summary.get("submissions") or {}
+        summary_findings = summary.get("findings") or {}
+        by_status = summary_findings.get("by_status") or {}
         totals = summary.get("totals") or {}
         awaiting = _integer(
             summary_submissions.get(
@@ -375,9 +408,19 @@ def create_app(
                 summary_submissions.get("awaiting_response"),
             )
         )
+        # fixed+ignored run into the thousands, so the archived list is a capped
+        # sample by design. Count it from the receiver's own totals so the number
+        # stays truthful even when the list is only one page deep.
+        archived_total = sum(
+            _integer(by_status.get(status)) for status in _ARCHIVED_STATUSES
+        ) or len(archived)
+        archived_truncated = _page_is_capped(_ARCHIVED_STATUSES)
+        # The active queue fits in one page today. If it ever stops fitting, say
+        # so rather than repeating the undercount this fetch was split to fix.
+        active_truncated = _page_is_capped(_ACTIVE_STATUSES)
         cards = {
             "active": len(active),
-            "archived": len(archived),
+            "archived": archived_total,
             "reviewed": len(reviewed),
             "needs_triage": sum(item["needs_triage"] for item in active),
             "awaiting_response": awaiting,
@@ -433,6 +476,12 @@ def create_app(
             category_filters=category_filters,
             selected_category=selected_category,
             focus=focus,
+            listing_truncated=(
+                active_truncated
+                if focus in {"reviewed", "triage", "all", "feedback"}
+                else archived_truncated
+            ),
+            page_limit=_FINDINGS_PAGE_LIMIT,
         )
 
     @app.get("/findings/<int:finding_id>")
