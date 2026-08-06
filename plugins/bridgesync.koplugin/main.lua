@@ -22,6 +22,7 @@ local BridgeSweep = require("bridge_sweep")
 local BridgeSyncCoordinator = require("bridge_sync_coordinator")
 local BridgeStatsBatches = require("bridge_stats_batches")
 local BridgeVersion = require("bridge_version")
+local ManifestRules = require("bridge_manifest_rules")
 local BridgeSqliteState = require("bridge_sqlite_state")
 local BridgeSessions = require("bridge_sessions")
 local SQ3
@@ -154,6 +155,7 @@ function BridgeSync:init()
         self.auto_sync_on_close = auto_sync_on_close
     end
     self.delete_removed_books = get_setting("delete_removed_books") or false
+    self.max_downloads_per_sync = tonumber(get_setting("max_downloads_per_sync")) or 0
     self.manual_only = get_setting("manual_only") or false
     local do_not_sync_while_book_open = get_setting("do_not_sync_while_book_open")
     if do_not_sync_while_book_open == nil then
@@ -454,6 +456,7 @@ function BridgeSync:_saveSettings()
     self:_saveSetting("auto_sync_on_network", self.auto_sync_on_network)
     self:_saveSetting("auto_sync_on_close", self.auto_sync_on_close)
     self:_saveSetting("delete_removed_books", self.delete_removed_books)
+    self:_saveSetting("max_downloads_per_sync", self.max_downloads_per_sync)
     self:_saveSetting("manual_only", self.manual_only)
     self:_saveSetting("do_not_sync_while_book_open", self.do_not_sync_while_book_open)
     self:_saveSetting("wake_sync_delay_seconds", self.wake_sync_delay_seconds)
@@ -1512,6 +1515,7 @@ function BridgeSync:_runSync()
             deleted = 0,
             deferred = 0,
             errors = 0,
+            remaining = 0,
             revision = remote_revision,
             unchanged = true,
         }
@@ -1528,6 +1532,7 @@ function BridgeSync:_runSync()
         return hash_index
     end
     local downloaded, skipped, renamed, deleted, deferred, errors = 0, 0, 0, 0, 0, 0
+    local remaining, download_attempts = 0, 0
 
     for _, book in ipairs(remote_books) do
         remote_by_abs[book.abs_id] = true
@@ -1582,42 +1587,47 @@ function BridgeSync:_runSync()
                 if hash_index then hash_index[book.content_hash] = target_path end
             end
         else
-            local temp_path = target_path .. ".part"
-            self:_safeRemove(temp_path)
-            local dl_ok, dl_err = self.api:downloadBook(book.download_path, temp_path)
-            if not dl_ok then
-                self:logWarn("Download failed for", book.abs_id, dl_err or "")
-                errors = errors + 1
-                self:_safeRemove(temp_path)
+            if not ManifestRules.downloadAllowed(download_attempts, self.max_downloads_per_sync) then
+                remaining = remaining + 1
             else
-                local downloaded_hash = self:_calculateBookHash(temp_path)
-                if downloaded_hash and downloaded_hash ~= book.content_hash then
-                    self:logWarn("Hash mismatch for", book.abs_id, downloaded_hash, book.content_hash)
+                download_attempts = download_attempts + 1
+                local temp_path = target_path .. ".part"
+                self:_safeRemove(temp_path)
+                local dl_ok, dl_err = self.api:downloadBook(book.download_path, temp_path)
+                if not dl_ok then
+                    self:logWarn("Download failed for", book.abs_id, dl_err or "")
                     errors = errors + 1
                     self:_safeRemove(temp_path)
                 else
-                    self:_safeRemove(target_path)
-                    local move_ok, move_err = os.rename(temp_path, target_path)
-                    if not move_ok then
-                        self:logWarn("Rename failed for", book.abs_id, move_err or "")
+                    local downloaded_hash = self:_calculateBookHash(temp_path)
+                    if downloaded_hash and downloaded_hash ~= book.content_hash then
+                        self:logWarn("Hash mismatch for", book.abs_id, downloaded_hash, book.content_hash)
                         errors = errors + 1
                         self:_safeRemove(temp_path)
                     else
-                        downloaded = downloaded + 1
-                        if previous_entry
-                            and self:_managedPathsEqual(previous_entry.local_path, target_path)
-                            and previous_entry.content_hash
-                            and previous_entry.content_hash ~= book.content_hash
-                        then
-                            self:_removeTree(target_path .. ".sdr")
+                        self:_safeRemove(target_path)
+                        local move_ok, move_err = os.rename(temp_path, target_path)
+                        if not move_ok then
+                            self:logWarn("Rename failed for", book.abs_id, move_err or "")
+                            errors = errors + 1
+                            self:_safeRemove(temp_path)
+                        else
+                            downloaded = downloaded + 1
+                            if previous_entry
+                                and self:_managedPathsEqual(previous_entry.local_path, target_path)
+                                and previous_entry.content_hash
+                                and previous_entry.content_hash ~= book.content_hash
+                            then
+                                self:_removeTree(target_path .. ".sdr")
+                            end
+                            items[book.abs_id] = {
+                                local_path = target_path,
+                                filename = book.filename,
+                                content_hash = book.content_hash,
+                                shelves = book.shelves,
+                            }
+                            if hash_index then hash_index[book.content_hash] = target_path end
                         end
-                        items[book.abs_id] = {
-                            local_path = target_path,
-                            filename = book.filename,
-                            content_hash = book.content_hash,
-                            shelves = book.shelves,
-                        }
-                        if hash_index then hash_index[book.content_hash] = target_path end
                     end
                 end
             end
@@ -1649,8 +1659,14 @@ function BridgeSync:_runSync()
         end
     end
 
+    if remaining > 0 then
+        self:logInfo("Download cap reached:", remaining, "book(s) deferred to next sync")
+    end
+
     self:_updateCollections(items)
-    self:_saveState(items, manifest.revision or "")
+    -- A dirty sweep (errors or capped downloads) must not persist the server
+    -- revision, or the next sync's revision-match short-circuit would never retry.
+    self:_saveState(items, ManifestRules.revisionToPersist(manifest.revision, errors, remaining))
     return {
         downloaded = downloaded,
         skipped = skipped,
@@ -1658,6 +1674,7 @@ function BridgeSync:_runSync()
         deleted = deleted,
         deferred = deferred,
         errors = errors,
+        remaining = remaining,
         revision = remote_revision,
         unchanged = false,
     }
@@ -1823,6 +1840,12 @@ function BridgeSync:syncFromBridge(silent)
             result.deferred,
             result.errors
         )
+        if (result.remaining or 0) > 0 then
+            message = message .. "\n" .. T(_("Remaining: %1 (will continue next sync)"), result.remaining)
+        end
+        if (result.errors or 0) > 0 then
+            message = message .. "\n" .. _("Failed downloads will be retried on the next sync.")
+        end
     end
     self:logInfo(message)
     if not silent then
@@ -1841,7 +1864,7 @@ function BridgeSync:syncFromBridge(silent)
 
     self:_maybeAutoSyncStats("manifest sync")
 
-    local sync_status = (tonumber(result.errors) or 0) > 0 and "partial" or "success"
+    local sync_status = ((tonumber(result.errors) or 0) > 0 or (tonumber(result.remaining) or 0) > 0) and "partial" or "success"
     self:_uploadDeviceLogTail("book_sync", sync_status)
 
     return true
@@ -3190,6 +3213,32 @@ function BridgeSync:addToMainMenu(menu_items)
                     self.delete_removed_books = not self.delete_removed_books
                     self:_saveSettings()
                     self:_refreshMenu(touchmenu_instance)
+                end,
+            },
+            {
+                text_func = function()
+                    return T(_("Max Downloads per Sync: %1"), self.max_downloads_per_sync == 0 and _("Unlimited") or self.max_downloads_per_sync)
+                end,
+                keep_menu_open = true,
+                callback = function(touchmenu_instance)
+                    self:_promptForSetting(
+                        _("Max Downloads per Sync"),
+                        tostring(self.max_downloads_per_sync),
+                        _("Enter max downloads (0 = unlimited)"),
+                        function(value)
+                            local n = tonumber(value)
+                            if not n or n <= 0 then
+                                self.max_downloads_per_sync = 0
+                            else
+                                self.max_downloads_per_sync = math.floor(n)
+                            end
+                            self:_saveSettings()
+                        end,
+                        nil,
+                        function()
+                            self:_refreshMenu(touchmenu_instance)
+                        end
+                    )
                 end,
             },
             {

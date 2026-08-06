@@ -255,7 +255,7 @@ assert(#uploaded_log_payloads == 3,
 assert(uploaded_log_payloads[2].operation == "session_upload")
 assert(uploaded_log_payloads[2].status == "failure")
 assert(uploaded_log_payloads[3].status == "success")
-assert(uploaded_log_payloads[3].plugin_version == "0.5.4")
+assert(uploaded_log_payloads[3].plugin_version == "0.5.5")
 assert(type(sqlite_values.device_log_upload_offset) == "number",
     "successful telemetry must persist the acknowledged log byte offset")
 

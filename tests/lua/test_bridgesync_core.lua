@@ -198,6 +198,30 @@ assert(version.isNewer("0.4.0", "0.3.6"), "newer semantic version was not detect
 assert(not version.isNewer("0.3.5", "0.3.6"), "older server version would trigger a downgrade")
 assert(not version.isNewer("0.3.6", "0.3.6"), "equal version was treated as newer")
 
+-- ── ManifestRules (bridge_manifest_rules.lua) ──
+local manifest_rules = require("bridge_manifest_rules")
+
+assert(manifest_rules.revisionToPersist("abc123", 0, 0) == "abc123",
+    "revisionToPersist clean sweep persists revision")
+assert(manifest_rules.revisionToPersist("abc123", 1, 0) == "",
+    "revisionToPersist with errors returns empty string")
+assert(manifest_rules.revisionToPersist("abc123", 0, 2) == "",
+    "revisionToPersist with remaining downloads returns empty string")
+assert(manifest_rules.revisionToPersist("abc123", "3", nil) == "",
+    "revisionToPersist coerces string errors to number")
+assert(manifest_rules.revisionToPersist(nil, 0, 0) == "",
+    "revisionToPersist with nil revision returns empty string")
+assert(manifest_rules.revisionToPersist("abc123", nil, nil) == "abc123",
+    "revisionToPersist treats nil errors/remaining as zero")
+
+assert(manifest_rules.downloadAllowed(0, 0) == true, "downloadAllowed 0 cap is unlimited")
+assert(manifest_rules.downloadAllowed(999, 0) == true, "downloadAllowed 0 cap unlimited even at high attempts")
+assert(manifest_rules.downloadAllowed(0, nil) == true, "downloadAllowed nil cap is unlimited")
+assert(manifest_rules.downloadAllowed(4, 5) == true, "downloadAllowed attempts under cap allowed")
+assert(manifest_rules.downloadAllowed(5, 5) == false, "downloadAllowed attempts at cap denied")
+assert(manifest_rules.downloadAllowed(nil, 5) == true, "downloadAllowed nil attempts treated as zero")
+assert(manifest_rules.downloadAllowed(3, -1) == true, "downloadAllowed negative cap is unlimited")
+
 -- ── Session collapsing (bridge_sessions.lua, the real module) ──
 
 -- Adjacent sessions for the same book merge, and reading duration
