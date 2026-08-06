@@ -6,6 +6,17 @@ All notable changes to BookBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Normal startup no longer reports a KoSync progress-read error.** The sync
+  daemon can begin its first pass just before the integrated KoSync port is ready;
+  that expected local connection refusal is now treated like the existing startup
+  health-check race and retried naturally on the next cycle.
+
+- **Missing CWA book identifiers no longer produce bogus downloads.** CWA lookups
+  now reject empty and legacy `None` identifiers instead of requesting
+  `/opds/download/None/epub/` and repeating a 404.
+
 ### Changed
 
 - **A book whose Audiobookshelf item has disappeared is now flagged instead of

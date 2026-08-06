@@ -913,9 +913,16 @@ class KoSyncClient:
                 # Grab the raw progress string (XPath)
                 xpath = data.get('progress')
                 return pct, xpath, data
+        except requests.exceptions.ConnectionError as e:
+            if self._is_local_server():
+                logger.debug(
+                    "KoSync (Internal): Progress read skipped while server starts: %s",
+                    e,
+                )
+                return None, None, {}
+            logger.error(f"❌ Error fetching KoSync progress for doc '{doc_id}': {e}", exc_info=True)
         except Exception as e:
             logger.error(f"❌ Error fetching KoSync progress for doc '{doc_id}': {e}", exc_info=True)
-            pass
         return None, None, {}
 
     def update_progress(self, doc_id, percentage, xpath=None):

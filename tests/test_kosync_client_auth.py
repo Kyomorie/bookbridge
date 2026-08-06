@@ -3,6 +3,9 @@ import json
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import patch
+
+import requests
 
 from src.api.api_clients import KoSyncClient
 
@@ -107,6 +110,17 @@ class TestKoSyncClientBasicAuth(unittest.TestCase):
         self.assertIsNone(percentage)
         self.assertIsNone(progress)
         self.assertEqual(metadata["document"], "doc-null")
+
+    def test_local_startup_connection_refusal_is_not_an_error(self) -> None:
+        self.client._creds["KOSYNC_SERVER"] = "http://127.0.0.1:5758"
+        with patch.object(
+            self.client.session,
+            "get",
+            side_effect=requests.exceptions.ConnectionError("connection refused"),
+        ), self.assertNoLogs("src.api.api_clients", level="ERROR"):
+            result = self.client.get_progress_with_metadata("startup-doc")
+
+        self.assertEqual(result, (None, None, {}))
 
 
 if __name__ == "__main__":

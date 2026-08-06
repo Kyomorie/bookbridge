@@ -336,7 +336,8 @@ class CWAClient:
         Includes a fallback to direct download link construction if the server crashes (metadata page error).
         """
         if not self.is_configured(): return None
-        
+        if str(cwa_id or "").strip().lower() in {"", "none"}:
+            return None
         # 1. Try standard OPDS lookup
         endpoints = [f"/opds/book/{cwa_id}", f"/opds/books/{cwa_id}"]
         

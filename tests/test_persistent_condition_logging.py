@@ -527,7 +527,7 @@ class TestCWAConnectionPersistentCondition(unittest.TestCase):
 
 # ---------------------------------------------------------------------------
 # Site 4: CWAClient.get_book_by_id() repeated lookup-failed warning
-#   warn() only, single global key (caller-bug site) -> no resolve()
+#   warn() only, single global key -> no resolve()
 # ---------------------------------------------------------------------------
 
 
@@ -551,29 +551,29 @@ class TestCWAGetBookByIdPersistentCondition(unittest.TestCase):
         self.addCleanup(get_persistent_condition_logger().reset)
 
     @patch("requests.Session.get")
-    def test_repeated_none_id_lookup_warns_once_then_debug(self, mock_get):
+    def test_repeated_bad_id_lookup_warns_once_then_debug(self, mock_get):
         not_found = MagicMock(status_code=404, text="not found")
         mock_get.return_value = not_found
 
         with self.assertLogs("src.api.cwa_client", level="DEBUG") as logs:
-            self.client.get_book_by_id(None)
-            self.client.get_book_by_id(None)
+            self.client.get_book_by_id("missing-book")
+            self.client.get_book_by_id("missing-book")
 
         warnings = [l for l in logs.output if l.startswith("WARNING") and "CWA metadata lookup failed" in l]
         debugs = [l for l in logs.output if l.startswith("DEBUG") and "CWA metadata lookup failed" in l]
         self.assertEqual(len(warnings), 1)
-        self.assertIn("ID 'None'", warnings[0])
+        self.assertIn("ID 'missing-book'", warnings[0])
         self.assertEqual(len(debugs), 1)
 
     @patch("requests.Session.get")
     def test_unrelated_bad_ids_share_the_single_global_key(self, mock_get):
-        """Documented deviation: this caller-bug site uses one global key, so a
+        """Documented deviation: this site uses one global key, so a
         second failure for a DIFFERENT bad id is still suppressed to DEBUG."""
         not_found = MagicMock(status_code=404, text="not found")
         mock_get.return_value = not_found
 
         with self.assertLogs("src.api.cwa_client", level="DEBUG") as logs:
-            self.client.get_book_by_id(None)
+            self.client.get_book_by_id("first-bad-id")
             self.client.get_book_by_id("some-other-bad-id")
 
         warnings = [l for l in logs.output if l.startswith("WARNING") and "CWA metadata lookup failed" in l]
