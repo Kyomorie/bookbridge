@@ -1616,22 +1616,71 @@ class SyncManager:
         if self._job_thread and self._job_thread.is_alive():
             return
 
-        # 2. Find ONE pending book/job to start using database service
-        target_book = None
-        retry_job = None
-        eligible_books = []
         max_retries = int(os.getenv("JOB_MAX_RETRIES", 5))
         retry_delay_mins = int(os.getenv("JOB_RETRY_DELAY_MINS", 15))
 
         # Get books with pending status
         pending_books = self.database_service.get_books_by_status('pending')
+        had_pending = bool(pending_books)
+
+        # Audio-only mappings have no EPUB/transcript work to prepare. They are
+        # normally saved active, but this also repairs legacy/pending rows without
+        # sending them through the text-processing worker. Drain ALL of them in
+        # this invocation instead of activating one at a time.
+        remaining_pending = []
         for book in pending_books:
-            eligible_books.append(book)
+            if getattr(book, "sync_mode", "audiobook") == "audiobook_only":
+                book.status = "active"
+                self.database_service.save_book(book)
+                self.database_service.save_job(
+                    Job(
+                        abs_id=book.abs_id,
+                        last_attempt=time.time(),
+                        retry_count=0,
+                        last_error=None,
+                        progress=1.0,
+                    )
+                )
+                logger.info(
+                    "✅ Activated audio-only mapping without text processing: %s",
+                    sanitize_log_data(book.abs_title),
+                )
+            else:
+                remaining_pending.append(book)
+        pending_books = remaining_pending
+
+        # Ebook-only pending books have no transcription work either; drain all
+        # of them in a single background batch instead of one-per-tick.
+        ebook_only_books = [
+            book for book in pending_books
+            if getattr(book, "sync_mode", "audiobook") == "ebook_only"
+        ]
+        full_pipeline_books = [book for book in pending_books if book not in ebook_only_books]
+
+        if ebook_only_books:
+            abs_ids = [book.abs_id for book in ebook_only_books]
+            logger.info(f"⚡ Draining {len(abs_ids)} ebook-only pending book(s) in one background batch")
+            self._job_thread = threading.Thread(
+                target=self._run_ebook_only_batch,
+                args=(abs_ids,),
+                daemon=True
+            )
+            self._job_thread.start()
+            return
+
+        # 2. Find ONE pending book/job to start using database service
+        target_book = None
+        retry_job = None
+        eligible_books = list(full_pipeline_books)
+        for book in full_pipeline_books:
             if not target_book:
                 target_book = book
 
-        # Get books that failed but are eligible for retry
-        if not target_book:
+        # Get books that failed but are eligible for retry. Only consulted when
+        # there were no pending books at all this tick (matches today's gate:
+        # any pending book, even one drained above as audio/ebook-only, means
+        # the retry queue is not consulted this cycle).
+        if not target_book and not had_pending:
             failed_books = self.database_service.get_books_by_status('failed_retry_later')
             for book in failed_books:
                 # Check if this book has a job record and if it's eligible for retry
@@ -1656,7 +1705,8 @@ class SyncManager:
 
         # Audio-only mappings have no EPUB/transcript work to prepare. They are
         # normally saved active, but this also repairs legacy/pending rows without
-        # sending them through the text-processing worker.
+        # sending them through the text-processing worker. (Only reachable here
+        # for a retry-selected book from failed_retry_later.)
         if getattr(target_book, "sync_mode", "audiobook") == "audiobook_only":
             target_book.status = "active"
             self.database_service.save_book(target_book)
@@ -1723,6 +1773,53 @@ class SyncManager:
     def cancel_background_job(self, abs_id: str) -> bool:
         """Request cancellation only when this manager has an active worker."""
         return request_cancel(abs_id)
+
+    def _run_ebook_only_batch(self, abs_ids: list[str]) -> None:
+        """
+        Drain a batch of ebook-only pending books on the single background
+        worker thread, one after another, instead of one per scheduler tick.
+        """
+        total = len(abs_ids)
+        for idx, abs_id in enumerate(abs_ids, start=1):
+            try:
+                book = self.database_service.get_book(abs_id)
+                if book is None:
+                    logger.debug(f"Skipping ebook-only batch entry '{abs_id}': book no longer exists")
+                    continue
+                if getattr(book, "status", None) != "pending":
+                    logger.debug(
+                        f"Skipping ebook-only batch entry '{abs_id}': status is now '{getattr(book, 'status', None)}'"
+                    )
+                    continue
+                if getattr(book, "sync_mode", "audiobook") != "ebook_only":
+                    logger.debug(f"Skipping ebook-only batch entry '{abs_id}': sync_mode changed")
+                    continue
+
+                book.status = 'processing'
+                self.database_service.save_book(book)
+
+                self.database_service.save_job(
+                    Job(
+                        abs_id=book.abs_id,
+                        last_attempt=time.time(),
+                        retry_count=0,
+                        last_error=None,
+                        progress=0.0,
+                    )
+                )
+
+                client_bundle = self._client_bundle_for_book_claimant(book)
+                library_service = (
+                    getattr(client_bundle, "library_service", None)
+                    if client_bundle is not None
+                    else self.active_library_service
+                )
+                self._run_background_job(book, idx, total, library_service, client_bundle)
+            except Exception as e:
+                logger.error(
+                    f"❌ Unexpected error processing ebook-only batch entry '{abs_id}': {e}",
+                    exc_info=True,
+                )
 
     def _run_background_job(
         self,

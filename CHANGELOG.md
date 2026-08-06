@@ -6,7 +6,34 @@ All notable changes to BookBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **BridgeSync plugin: "Max Downloads per Sync" setting (plugin v0.5.5).** When
+  the managed folder has many new books to fetch — say you just matched a few
+  hundred — the plugin used to download every one of them in a single marathon
+  sync. You can now cap how many books download per sync (0 = unlimited, the
+  default). Anything over the cap is reported as *Remaining* and continues
+  automatically on the next sync, so a big bulk match trickles onto the device
+  in comfortable chunks instead of needing to be hand-matched in small batches.
+  Update the plugin on your device to get the new setting.
+
 ### Fixed
+
+- **BridgeSync plugin: a failed book download is now retried on the next sync
+  (plugin v0.5.5).** Previously, if one download failed mid-sync (network blip,
+  server hiccup), the plugin still recorded the sync as up to date — so every
+  following sync said "no changes" and the missing book quietly never arrived
+  until something else changed in your library. A sync with any failed or
+  deferred downloads now stays marked incomplete, so the next sync (including a
+  manual Sync Now) re-checks and retries just the missing books.
+
+- **Bulk matches no longer crawl through the activation queue.** Audio-only and
+  ebook-only matches need no transcription work, but they still waited in the
+  same one-per-minute background queue as full audiobook matches — matching a
+  large batch could leave books "pending" for hours. All pending audio-only
+  matches now activate immediately, and ebook-only matches are processed as one
+  continuous background batch. Audiobook+ebook matches that need transcript
+  alignment still process one at a time, as before.
 
 - **Normal startup no longer reports a KoSync progress-read error.** The sync
   daemon can begin its first pass just before the integrated KoSync port is ready;
