@@ -34,7 +34,7 @@ import json
 from src.api.storyteller_api import StorytellerAPIClient
 from src.db.models import Job
 from src.db.models import State, Book, PendingSuggestion
-from src.sync_clients.sync_client_interface import UpdateProgressRequest, LocatorResult, ServiceState, SyncResult, SyncClient
+from src.sync_clients.sync_client_interface import UpdateProgressRequest, LocatorResult, ServiceState, SyncResult, SyncClient, ABS_ITEM_NOT_FOUND
 from src.utils.user_context import (
     get_current_user_id,
     set_current_user_id, reset_current_user_id,
@@ -3377,6 +3377,23 @@ class SyncManager:
                     except Exception as e:
                         logger.warning(f"⚠️ Failed to update '{client_name}': {e}", exc_info=True)
                         results[client_name] = SyncResult(None, False)
+
+                # A write that failed because the Audiobookshelf library item no
+                # longer exists means the mapping itself is stale (ABS re-ingested a
+                # moved/renamed file as a new item). Retrying every cycle can never
+                # succeed, so surface it on the dashboard instead of failing silently.
+                stale_abs_clients = [
+                    name for name, result in results.items()
+                    if getattr(result, 'error_code', None) == ABS_ITEM_NOT_FOUND
+                ]
+                if stale_abs_clients:
+                    self.database_service.set_book_status(abs_id, 'error')
+                    logger.error(
+                        f"🛑 '{abs_id}' '{title_snip}' Audiobookshelf library item no longer exists "
+                        f"(reported by {', '.join(sorted(stale_abs_clients))}) — marking book as 'error'. "
+                        f"Re-match it in the dashboard to resume syncing"
+                    )
+                    continue
 
                 # Save states directly to database service using State models
                 current_time = time.time()

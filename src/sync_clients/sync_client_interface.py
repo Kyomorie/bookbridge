@@ -3,6 +3,10 @@ from typing import Optional, Callable, Tuple
 
 from src.db.models import Book, State
 
+# SyncResult.error_code value meaning the target Audiobookshelf library item no
+# longer exists (the mapping is stale).
+ABS_ITEM_NOT_FOUND = "abs_item_not_found"
+
 @dataclass
 class ServiceState:
     # can contain xpath, ts, pct, href, frag
@@ -45,6 +49,8 @@ class SyncResult:
     location: Optional[float] = None
     success: bool = False
     updated_state: dict = field(default_factory=dict)
+    # Optional machine-readable reason for failure; None for ordinary/unknown failures, ABS_ITEM_NOT_FOUND when the target ABS library item no longer exists
+    error_code: Optional[str] = None
 
 class SyncClient:
     """

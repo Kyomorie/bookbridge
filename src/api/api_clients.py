@@ -2,6 +2,7 @@ import os
 import requests
 import logging
 import time
+from typing import Optional
 
 from src.utils.kosync_headers import (
     hash_kosync_key,
@@ -470,6 +471,34 @@ class ABSClient:
     def get_progress(self, item_id: str) -> dict | None:
         response, _status = self.get_progress_with_status(item_id)
         return response
+
+    def item_exists(self, item_id: str) -> Optional[bool]:
+        """
+        Check if an Audiobookshelf library item exists.
+
+        Returns:
+            True if the item exists (HTTP 200).
+            False only on a definitive 404 (item is gone).
+            None when existence could not be determined (not configured,
+            transport error, or any non-200/404 status).
+        Callers treat False as proof the mapping is stale.
+        """
+        if not self.is_configured():
+            return None
+        self._update_session_headers()
+        url = f"{self.base_url}/api/items/{item_id}"
+        try:
+            r = self.session.get(url, timeout=self.timeout)
+            if r.status_code == 200:
+                return True
+            if r.status_code == 404:
+                logger.debug("ABS library item not found: %s", item_id)
+                return False
+            logger.debug("ABS item_exists unexpected status %s for item %s", r.status_code, item_id)
+            return None
+        except Exception as e:
+            logger.debug("ABS item_exists error for item %s: %s", item_id, e, exc_info=True)
+            return None
 
     def mark_finished(self, abs_id):
         """Mark an ABS item as finished."""

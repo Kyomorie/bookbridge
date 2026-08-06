@@ -8,6 +8,15 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Changed
 
+- **A book whose Audiobookshelf item has disappeared is now flagged instead of
+  failing quietly.** If you reorganize your library and Audiobookshelf re-adds the
+  moved files as brand new items, the books BookBridge had matched to the old
+  items can never sync again. Previously that showed up only as a repeating error
+  buried in the logs. BookBridge now confirms with Audiobookshelf that the item is
+  really gone and marks the book **error** on the dashboard, so you know to
+  re-match it. A temporary Audiobookshelf outage will not flag anything — only a
+  confirmed missing item does.
+
 - **Deleting one user's mapping no longer breaks another user's Storyteller sync.**
   When two mappings reference the same Storyteller book, removing either mapping now
   preserves the shared slim EPUB and Storyteller collection membership until the last

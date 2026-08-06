@@ -4,7 +4,7 @@ from typing import Optional
 
 from src.api.api_clients import ABSClient
 from src.db.models import Book, State
-from src.sync_clients.sync_client_interface import SyncClient, SyncResult, UpdateProgressRequest, ServiceState
+from src.sync_clients.sync_client_interface import SyncClient, SyncResult, UpdateProgressRequest, ServiceState, ABS_ITEM_NOT_FOUND
 from src.utils.ebook_utils import EbookParser
 
 logger = logging.getLogger(__name__)
@@ -105,19 +105,48 @@ class ABSEbookSyncClient(SyncClient):
             return self.ebook_parser.get_text_at_percentage(epub, pct)
         return None
 
+    def _stale_item_error_code(self, target_id: str, success) -> Optional[str]:
+        """Classify a failed ABS ebook write as a stale mapping, when that is provable.
+
+        Returns ABS_ITEM_NOT_FOUND only when the write failed AND a direct probe
+        confirms the library item is gone (HTTP 404). The probe targets the item
+        actually written to, which may be a separate ABS ebook item rather than
+        the book's audiobook id.
+        """
+        if success:
+            return None
+
+        try:
+            exists = self.abs_client.item_exists(target_id)
+        except Exception as e:
+            logger.debug(f"ABS ebook stale-item probe failed for '{target_id}': {e}", exc_info=True)
+            return None
+
+        if exists is False:
+            logger.warning(
+                f"⚠️ ABS ebook library item not found for '{target_id}' — the mapping looks stale "
+                f"(the library item was renamed, moved, or removed in Audiobookshelf)"
+            )
+            return ABS_ITEM_NOT_FOUND
+        return None
+
     def update_progress(self, book: Book, request: UpdateProgressRequest) -> SyncResult:
         locator = request.locator_result
         if locator.percentage == 0:
-            success = self.abs_client.update_ebook_progress(
-                self._resolve_target_id(book), 0, ""
-            )
+            reset_target_id = self._resolve_target_id(book)
+            success = self.abs_client.update_ebook_progress(reset_target_id, 0, "")
             if success:
                 try:
                     from src.services.write_tracker import record_write
                     record_write('ABS_Ebook', book.abs_id)
                 except ImportError:
                     pass
-            return SyncResult(0, success, {'pct': 0, 'cfi': ""})
+            return SyncResult(
+                0,
+                success,
+                {'pct': 0, 'cfi': ""},
+                error_code=self._stale_item_error_code(reset_target_id, success),
+            )
         if locator.cfi is None:
             logger.warning("⚠️ Cannot update ABS eBook progress - cfi is not set")
             return SyncResult(0, False)
@@ -136,4 +165,9 @@ class ABSEbookSyncClient(SyncClient):
             'pct': pct,
             'cfi': cfi
         }
-        return SyncResult(pct, success, updated_state)
+        return SyncResult(
+            pct,
+            success,
+            updated_state,
+            error_code=self._stale_item_error_code(target_id, success),
+        )

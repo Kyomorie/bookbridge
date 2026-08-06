@@ -5,7 +5,7 @@ from typing import Optional
 
 from src.api.api_clients import ABSClient
 from src.db.models import Book, State
-from src.sync_clients.sync_client_interface import SyncClient, SyncResult, UpdateProgressRequest, ServiceState
+from src.sync_clients.sync_client_interface import SyncClient, SyncResult, UpdateProgressRequest, ServiceState, ABS_ITEM_NOT_FOUND
 from src.utils.ebook_utils import EbookParser
 from src.utils.progress_metadata import parse_service_timestamp
 from src.utils.transcriber import AudioTranscriber
@@ -188,7 +188,12 @@ class ABSSyncClient(SyncClient):
                 'ts': final_ts,
                 'pct': 0.0
             }
-            return SyncResult(final_ts, result.get("success", False), updated_state)
+            return SyncResult(
+                final_ts,
+                result.get("success", False),
+                updated_state,
+                error_code=self._stale_item_error_code(book.abs_id, result),
+            )
 
         # Route database-managed books to AlignmentService and legacy books to Transcriber.
         ts_for_text = None
@@ -235,7 +240,12 @@ class ABSSyncClient(SyncClient):
                 'ts': final_ts,
                 'pct': pct or 0
             }
-            return SyncResult(final_ts, result.get("success", False), updated_state)
+            return SyncResult(
+                final_ts,
+                result.get("success", False),
+                updated_state,
+                error_code=self._stale_item_error_code(book.abs_id, result),
+            )
         logger.warning(f"⚠️ '{book_title}' Not updating ABS progress — could not find timestamp for provided text")
         return SyncResult(None, False)
 
@@ -273,3 +283,29 @@ class ABSSyncClient(SyncClient):
             except ImportError:
                 pass
         return abs_ok, adjusted_ts
+
+    def _stale_item_error_code(self, abs_id: str, write_result) -> Optional[str]:
+        """Classify a failed ABS write as a stale mapping, when that is provable.
+
+        Returns ABS_ITEM_NOT_FOUND only when the write failed AND a direct probe
+        confirms the library item is gone (HTTP 404). A probe that reports the
+        item present, cannot determine it, or raises is never treated as proof —
+        the caller acts on this code by marking the user's book unusable.
+        """
+        succeeded = write_result.get("success") if isinstance(write_result, dict) else bool(write_result)
+        if succeeded:
+            return None
+
+        try:
+            exists = self.abs_client.item_exists(abs_id)
+        except Exception as e:
+            logger.debug(f"ABS stale-item probe failed for '{abs_id}': {e}", exc_info=True)
+            return None
+
+        if exists is False:
+            logger.warning(
+                f"⚠️ ABS library item not found for '{abs_id}' — the mapping looks stale "
+                f"(the library item was renamed, moved, or removed in Audiobookshelf)"
+            )
+            return ABS_ITEM_NOT_FOUND
+        return None
