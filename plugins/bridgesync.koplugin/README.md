@@ -14,8 +14,11 @@ This plugin is **not required** for normal bridge syncing — it is an optional 
 - Skips auto-sync while you are reading to avoid interruptions
 - Tracks reading sessions (time, pages, progress) and uploads them to the bridge
 - Serializes book, statistics, session, and highlight jobs so lifecycle syncs are queued instead of dropped
-- Uploads large statistics and highlight backlogs in bounded, acknowledgment-gated batches
-- Relays a bounded unread tail of its diagnostic log after book/session syncs so device failures appear in the bridge Docker logs
+- Keeps network requests off the KOReader UI thread and retries persisted close-time highlight snapshots after reconnect/restart
+- Uploads large statistics and highlight backlogs in byte-bounded, acknowledgment-gated batches without repeatedly rebuilding unchanged key sets
+- Uses manifest file sizes to give large downloads enough time while enforcing byte ceilings, atomic `.part` files, and hash checks
+- Verifies self-update archive size, SHA-256, plugin identity, and offered version before atomically replacing the installed plugin
+- Relays a bounded unread tail of its diagnostic log after book/session syncs; the local log rotates at 512 KiB
 
 ## Install
 
@@ -90,8 +93,8 @@ The plugin stores its data in the KOReader settings directory:
 | File                    | Purpose                              |
 |-------------------------|--------------------------------------|
 | `bridge_sync.lua`       | Plugin settings (server URL, toggles)|
-| `bridge_sync_state.lua` | Sync state (manifest items, pending sessions) |
-| `bridge_sync.log`       | Debug log for troubleshooting; new lines are relayed to the authenticated bridge after book/session syncs |
+| `bridge_sync_state.lua` | Sync state (manifest items and pending lifecycle work; SQLite-backed on supported builds) |
+| `bridge_sync.log`       | Rotating debug log; new lines are relayed to the authenticated bridge after book/session syncs |
 
 ## Notes
 

@@ -79,6 +79,7 @@ class TestKOReaderDeviceSyncService(unittest.TestCase):
         self.assertEqual(item["abs_id"], "abs-1")
         self.assertEqual(item["content_hash"], "hash-kavita_187")
         self.assertEqual(item["download_path"], "/koreader/device-sync/books/abs-1/download")
+        self.assertEqual(item["size"], 4)
         self.assertEqual(item["filename"], "Dragon's Justice.epub")
 
     def test_manifest_uses_storyteller_artifact_for_ebook_only_mode(self):

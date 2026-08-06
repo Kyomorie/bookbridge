@@ -8,6 +8,22 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **BridgeSync performance and resilience upgrade (plugin v0.6.1).** Highlight
+  exchanges now normalize and sort each book once, use indexed identity lookups,
+  omit unchanged complete key lists, and fit every batch to the real JSON byte
+  ceiling. Network requests run outside KOReader's UI thread, close-time
+  highlight snapshots survive offline periods and restarts, full-library sweeps
+  build in time-budgeted chunks and cancel safely on suspend, and device logs
+  rotate at 512 KiB. Book manifests now include actual artifact sizes so device
+  downloads can use stall detection, size-scaled total timeouts, byte ceilings,
+  exact-size checks, existing atomic `.part` publishing, and final hash
+  verification. The self-updater now supports KOReader's current
+  `ffi/archiver` API while retaining older extraction fallbacks; update archives
+  also have a 16 MiB ceiling, exact response-length validation, a server-provided
+  SHA-256 check, and strict staged plugin identity/version validation before the
+  live install is replaced. Re-download the plugin on each KOReader device to
+  receive these changes.
+
 - **BridgeSync plugin: "Max Downloads per Sync" setting (plugin v0.5.5).** When
   the managed folder has many new books to fetch — say you just matched a few
   hundred — the plugin used to download every one of them in a single marathon

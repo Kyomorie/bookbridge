@@ -79,7 +79,7 @@ class KOReaderDeviceSyncService:
                 "title": str(getattr(book, "abs_title", "") or ""),
                 "content_hash": resolved["content_hash"],
                 "download_path": f"/koreader/device-sync/books/{quote(str(book.abs_id), safe='')}/download",
-                "size": None,
+                "size": Path(resolved["path"]).stat().st_size,
                 "filename": filename,
             })
 

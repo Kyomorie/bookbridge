@@ -4,9 +4,11 @@ local ltn12 = require("ltn12")
 local json = require("json")
 local logger = require("logger")
 local socketutil = require("socketutil")
+local TransferPolicy = require("bridge_transfer_policy")
 
 local KOSYNC_ACCEPT = "application/vnd.koreader.v1+json"
 local MAX_JSON_BODY_BYTES = 900 * 1024
+local MAX_PLUGIN_ZIP_BYTES = 16 * 1024 * 1024
 
 -- A JSON null decodes to a non-nil sentinel (a function/userdata in KOReader's
 -- json lib), which is truthy and, if it reaches a KOReader annotation field,
@@ -31,7 +33,9 @@ local APIClient = {
     username = "",
     key = "",
     timeout = 30,
+    max_json_body_bytes = MAX_JSON_BODY_BYTES,
     log_callback = nil,
+    request_runner = nil,
 }
 
 function APIClient:new(o)
@@ -41,11 +45,29 @@ function APIClient:new(o)
     return o
 end
 
-function APIClient:init(server_url, username, key, log_callback)
+function APIClient:init(server_url, username, key, log_callback, request_runner)
     self.server_url = tostring(server_url or ""):gsub("/+$", "")
     self.username = tostring(username or "")
     self.key = tostring(key or "")
     self.log_callback = log_callback
+    self.request_runner = request_runner
+end
+
+function APIClient:_performRequest(request_builder, block_timeout, total_timeout, background)
+    local task = function()
+        socketutil:set_timeout(block_timeout, total_timeout)
+        local request, response_body = request_builder()
+        local code, response_headers, status = socket.skip(1, http.request(request))
+        socketutil:reset_timeout()
+        return code, response_headers, status,
+            response_body and table.concat(response_body) or nil
+    end
+    if background and type(self.request_runner) == "function" then
+        local runner_ok, code, response_headers, status, body = self.request_runner(task)
+        if not runner_ok then return nil, nil, tostring(code or "subprocess failed"), nil end
+        return code, response_headers, status, body
+    end
+    return task()
 end
 
 function APIClient:_log(level, ...)
@@ -89,18 +111,15 @@ function APIClient:_request(method, path, sink, extra_headers, timeout_opts)
     local attempts = opts.attempts or 1
 
     for attempt = 1, attempts do
-        socketutil:set_timeout(block_timeout, total_timeout)
-
-        local response_body = sink and nil or {}
-        local request_sink = sink or socketutil.table_sink(response_body)
-        local request = {
-            url = url,
-            method = method,
-            headers = self:_build_headers(extra_headers),
-            sink = request_sink,
-        }
-        local code, response_headers, status = socket.skip(1, http.request(request))
-        socketutil:reset_timeout()
+        local code, response_headers, status, body = self:_performRequest(function()
+            local response_body = sink and nil or {}
+            return {
+                url = url,
+                method = method,
+                headers = self:_build_headers(extra_headers),
+                sink = sink or socketutil.table_sink(response_body),
+            }, response_body
+        end, block_timeout, total_timeout, sink == nil)
 
         local is_timeout = code == socketutil.TIMEOUT_CODE or
             code == socketutil.SSL_HANDSHAKE_CODE or
@@ -124,7 +143,6 @@ function APIClient:_request(method, path, sink, extra_headers, timeout_opts)
                 return false, nil, tostring(code)
             end
 
-            local body = response_body and table.concat(response_body) or nil
             if code >= 200 and code < 300 then
                 return true, code, body, response_headers, status
             end
@@ -166,22 +184,47 @@ function APIClient:getManifest()
     return true, result
 end
 
-function APIClient:downloadBook(download_path, save_path)
+function APIClient:downloadBook(download_path, save_path, expected_bytes)
     local attempts = 3
+    local block_timeout, total_timeout = TransferPolicy.timeouts(expected_bytes)
+    local max_bytes = TransferPolicy.maxBytes(expected_bytes)
     for attempt = 1, attempts do
         local handle, open_err = io.open(save_path, "wb")
         if not handle then
             return false, open_err or "Failed to open output file"
         end
 
-        local ok, code, body = self:_request("GET", download_path, socketutil.file_sink(handle), nil, {
-            block_timeout = 60,
-            total_timeout = 300,
+        local received = 0
+        local too_large = false
+        local file_sink = socketutil.file_sink(handle)
+        local bounded_sink = function(chunk, err)
+            if chunk and chunk ~= "" then
+                received = received + #chunk
+                if received > max_bytes then
+                    too_large = true
+                    return nil, "response_too_large"
+                end
+            end
+            return file_sink(chunk, err)
+        end
+        local ok, code, body, response_headers = self:_request("GET", download_path, bounded_sink, {
+            ["accept-encoding"] = "identity",
+        }, {
+            block_timeout = block_timeout,
+            total_timeout = total_timeout,
             attempts = 1,
         })
-        if ok then
+        pcall(function() handle:close() end)
+
+        local content_length = response_headers and tonumber(
+            response_headers["content-length"] or response_headers["Content-Length"])
+        if content_length and content_length > max_bytes then too_large = true end
+        local expected = tonumber(expected_bytes)
+        if ok and not too_large and (not expected or expected <= 0 or received == expected) then
             return true
         end
+        if too_large then body = "response_too_large" end
+        if ok then body = "download_size_mismatch" end
 
         os.remove(save_path)
         if body ~= socketutil.TIMEOUT_CODE and
@@ -221,22 +264,19 @@ function APIClient:_requestJSON(method, path, json_body, timeout_opts)
     local attempts = opts.attempts or 1
 
     for attempt = 1, attempts do
-        socketutil:set_timeout(block_timeout, total_timeout)
-
-        local response_body = {}
-        local headers = self:_build_headers({
-            ["content-type"] = "application/json",
-            ["content-length"] = tostring(#json_body),
-        })
-        local request = {
-            url = url,
-            method = method,
-            headers = headers,
-            source = ltn12.source.string(json_body),
-            sink = socketutil.table_sink(response_body),
-        }
-        local code, response_headers, status = socket.skip(1, http.request(request))
-        socketutil:reset_timeout()
+        local code, response_headers, status, body = self:_performRequest(function()
+            local response_body = {}
+            return {
+                url = url,
+                method = method,
+                headers = self:_build_headers({
+                    ["content-type"] = "application/json",
+                    ["content-length"] = tostring(#json_body),
+                }),
+                source = ltn12.source.string(json_body),
+                sink = socketutil.table_sink(response_body),
+            }, response_body
+        end, block_timeout, total_timeout, true)
 
         local is_timeout = code == socketutil.TIMEOUT_CODE or
             code == socketutil.SSL_HANDSHAKE_CODE or
@@ -260,7 +300,6 @@ function APIClient:_requestJSON(method, path, json_body, timeout_opts)
                 return false, nil, tostring(code)
             end
 
-            local body = table.concat(response_body)
             if code >= 200 and code < 300 then
                 return true, code, body, response_headers, status
             end
@@ -270,6 +309,14 @@ function APIClient:_requestJSON(method, path, json_body, timeout_opts)
     end
 
     return false, nil, "Request failed"
+end
+
+function APIClient:jsonBodySize(payload)
+    local ok, encoded = pcall(json.encode, payload)
+    if not ok or type(encoded) ~= "string" then
+        return nil, tostring(encoded or "JSON encoding failed")
+    end
+    return #encoded
 end
 
 function APIClient:getPluginVersion()
@@ -297,14 +344,38 @@ function APIClient:downloadPluginZip(save_path)
             return false, open_err or "Failed to open output file"
         end
 
-        local ok, code, body = self:_request("GET", "/koreader/device-sync/plugin/download", socketutil.file_sink(handle), nil, {
+        local received = 0
+        local too_large = false
+        local file_sink = socketutil.file_sink(handle)
+        local bounded_sink = function(chunk, err)
+            if chunk and chunk ~= "" then
+                received = received + #chunk
+                if received > MAX_PLUGIN_ZIP_BYTES then
+                    too_large = true
+                    return nil, "response_too_large"
+                end
+            end
+            return file_sink(chunk, err)
+        end
+        local ok, code, body, response_headers = self:_request(
+            "GET", "/koreader/device-sync/plugin/download", bounded_sink,
+            { ["accept-encoding"] = "identity" }, {
             block_timeout = 60,
             total_timeout = 300,
             attempts = 1,
         })
-        if ok then
-            return true
+        pcall(function() handle:close() end)
+
+        local content_length = response_headers and tonumber(
+            response_headers["content-length"] or response_headers["Content-Length"])
+        if content_length and content_length > MAX_PLUGIN_ZIP_BYTES then too_large = true end
+        if ok and not too_large and (not content_length or received == content_length) then
+            local digest = response_headers and (
+                response_headers["x-content-sha256"] or response_headers["X-Content-SHA256"])
+            return true, digest
         end
+        if too_large then body = "response_too_large" end
+        if ok then body = "download_size_mismatch" end
 
         os.remove(save_path)
         if body ~= socketutil.TIMEOUT_CODE and

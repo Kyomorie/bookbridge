@@ -2347,12 +2347,14 @@ def koreader_plugin_download():
         zip_bytes = _plugin_zip_cache[0]
 
     filename = f"bridgesync-{version}.zip"
-    return send_file(
+    response = send_file(
         io.BytesIO(zip_bytes),
         mimetype="application/zip",
         as_attachment=True,
         download_name=filename,
     )
+    response.headers["X-Content-SHA256"] = hashlib.sha256(zip_bytes).hexdigest()
+    return response
 
 
 @kosync_admin_bp.route('/api/kosync-plugin/version', methods=['GET'])
@@ -2394,12 +2396,14 @@ def admin_plugin_download():
             _plugin_zip_cache = (zip_bytes, current_mtime)
         zip_bytes = _plugin_zip_cache[0]
 
-    return send_file(
+    response = send_file(
         io.BytesIO(zip_bytes),
         mimetype="application/zip",
         as_attachment=True,
         download_name=f"bridgesync-{version}.zip",
     )
+    response.headers["X-Content-SHA256"] = hashlib.sha256(zip_bytes).hexdigest()
+    return response
 
 
 # ---------------- Helper Functions ----------------

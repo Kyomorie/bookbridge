@@ -34,9 +34,12 @@ preload("dispatcher", function()
     }
 end)
 
+local init_scheduled = {}
+local init_unscheduled = {}
 preload("ui/uimanager", function()
     return {
-        scheduleIn = function() end,
+        scheduleIn = function(_, _, callback) init_scheduled[#init_scheduled + 1] = callback end,
+        unschedule = function(_, callback) init_unscheduled[#init_unscheduled + 1] = callback end,
     }
 end)
 
@@ -66,13 +69,24 @@ preload("libs/libkoreader-lfs", function()
             if path == "/mnt/onboard" and attribute == "mode" then
                 return "directory"
             end
+            if attribute == "size" then
+                local handle = io.open(path, "rb")
+                if handle then
+                    local size = handle:seek("end")
+                    handle:close()
+                    return size
+                end
+            end
             return nil
         end,
     }
 end)
 
 preload("ffi/sha2", function()
-    return { md5 = function(value) return value end }
+    return {
+        md5 = function(value) return value end,
+        sha256 = function() return string.rep("a", 64) end,
+    }
 end)
 
 preload("ffi/util", function()
@@ -196,13 +210,83 @@ preload("bridge_sync_coordinator", function()
     return Coordinator
 end)
 
-preload("bridge_annotations", empty_module)
+local annotation_exchange_ok = true
+preload("bridge_annotations", function()
+    return {
+        resolveBookHash = function() return string.rep("a", 32) end,
+        collectBookByFile = function() return nil end,
+        exchangeBooks = function()
+            if annotation_exchange_ok then
+                return { uploaded = 1, applied = 0, deleted = 0 }
+            end
+            return nil, "offline"
+        end,
+    }
+end)
 preload("bridge_sweep", empty_module)
 preload("bridge_stats_batches", empty_module)
 preload("bridge_version", empty_module)
 preload("bridge_sessions", empty_module)
 
 local BridgeSync = require("main")
+local extracted_paths = {}
+local fake_archiver = {
+    Reader = {
+        new = function()
+            local entries = {
+                { path = "bridgesync.koplugin/_meta.lua" },
+                { path = "bridgesync.koplugin/main.lua" },
+            }
+            return {
+                open = function() return true end,
+                close = function() end,
+                iterate = function()
+                    local index = 0
+                    return function()
+                        index = index + 1
+                        return entries[index]
+                    end
+                end,
+                extractToPath = function(_, _, target)
+                    extracted_paths[#extracted_paths + 1] = target
+                    return true
+                end,
+            }
+        end,
+    },
+}
+assert(BridgeSync._extractWithArchiver(fake_archiver, "update.zip", "/stage"))
+assert(extracted_paths[1] == "/stage/bridgesync.koplugin/_meta.lua",
+    "current KOReader archiver must extract entries into staging")
+
+local archive_path = settings_dir .. "/bridgesync-update-test.zip"
+local archive = assert(io.open(archive_path, "wb"))
+archive:write("plugin archive")
+archive:close()
+assert(BridgeSync._verifyPluginArchive(archive_path, string.rep("a", 64)),
+    "matching update checksums must pass")
+local digest_ok, digest_err = BridgeSync._verifyPluginArchive(archive_path, string.rep("b", 64))
+assert(not digest_ok and digest_err:find("checksum mismatch", 1, true),
+    "mismatched update checksums must fail closed")
+os.remove(archive_path)
+
+local metadata_path = settings_dir .. "/bridgesync-update-meta.lua"
+local metadata = assert(io.open(metadata_path, "wb"))
+metadata:write('return { name = "bridgesync", version = "0.6.1" }')
+metadata:close()
+assert(BridgeSync._validatePluginMetadata(metadata_path, "0.6.1"),
+    "matching staged BridgeSync metadata must pass")
+local metadata_ok, metadata_err = BridgeSync._validatePluginMetadata(metadata_path, "0.6.2")
+assert(not metadata_ok and metadata_err:find("does not match", 1, true),
+    "a staged plugin with the wrong version must fail closed")
+metadata = assert(io.open(metadata_path, "wb"))
+metadata:write('return { fullname = "Bridge Sync", name = "other", version = "0.6.1" }')
+metadata:close()
+metadata_ok, metadata_err = BridgeSync._validatePluginMetadata(metadata_path, "0.6.1")
+assert(not metadata_ok and metadata_err:find("not BridgeSync", 1, true),
+    "a staged package with the wrong identity must fail closed")
+os.remove(metadata_path)
+
 local bridge = BridgeSync:new({
     path = plugin_dir,
     ui = {
@@ -223,6 +307,49 @@ local log_contents = handle:read("*a")
 handle:close()
 assert(log_contents:find("SQLite state manager initialized", 1, true),
     "BridgeSync startup did not persist its first SQLite log message")
+
+bridge.pending_annotation_closes = {}
+bridge:_enqueuePendingAnnotationClose("/books/one.epub", {
+    hash = string.rep("1", 32),
+    annotations = { { datetime = "now" } },
+})
+bridge:_enqueuePendingAnnotationClose("/books/one.epub", {
+    hash = string.rep("1", 32),
+    annotations = { { datetime = "later" } },
+})
+assert(#bridge.pending_annotation_closes == 1,
+    "close annotation snapshots must be deduplicated by book")
+assert(sqlite_values.pending_annotation_closes ~= nil,
+    "close annotation snapshots must be persisted")
+
+annotation_exchange_ok = false
+assert(bridge:_uploadPendingAnnotationCloses() == false)
+assert(#bridge.pending_annotation_closes == 1,
+    "failed close annotation snapshots must remain queued")
+annotation_exchange_ok = true
+assert(bridge:_uploadPendingAnnotationCloses() == true)
+assert(#bridge.pending_annotation_closes == 0,
+    "successful close annotation snapshots must leave the queue")
+
+bridge.close_book_sync_scheduled = true
+bridge:_scheduleTask("book_sync", 5, function() end)
+bridge:_cancelAutomaticTasks()
+assert(#init_unscheduled > 0 and bridge.scheduled_tasks.book_sync == nil,
+    "suspend cancellation must unschedule named automatic work")
+assert(bridge.needs_wake_sync == true,
+    "cancelled book sync must remain eligible after resume")
+
+local oversized_log = assert(io.open(bridge.log_path, "wb"))
+oversized_log:write(string.rep("x", 512 * 1024))
+oversized_log:close()
+bridge:_appendLog("info", "rotated")
+local rotated = io.open(bridge.log_path .. ".1", "rb")
+assert(rotated, "oversized device logs must rotate to a bounded backup")
+rotated:close()
+local active_log = assert(io.open(bridge.log_path, "rb"))
+assert((active_log:seek("end") or 0) < 1024,
+    "active device log must restart small after rotation")
+active_log:close()
 
 bridge:logWarn("Book sync completed with one deferred download")
 assert(bridge:_uploadDeviceLogTail("book_sync", "partial") == true)
@@ -255,7 +382,7 @@ assert(#uploaded_log_payloads == 3,
 assert(uploaded_log_payloads[2].operation == "session_upload")
 assert(uploaded_log_payloads[2].status == "failure")
 assert(uploaded_log_payloads[3].status == "success")
-assert(uploaded_log_payloads[3].plugin_version == "0.5.5")
+assert(uploaded_log_payloads[3].plugin_version == "0.6.1")
 assert(type(sqlite_values.device_log_upload_offset) == "number",
     "successful telemetry must persist the acknowledged log byte offset")
 
