@@ -46,6 +46,18 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Changed
 
+- **A book can no longer be wrongly marked finished everywhere, and progress
+  resets now stick.** If the audio-to-ebook alignment for a book was off, a
+  position in the middle of the audiobook could resolve to the very end of the
+  ebook. BookBridge would then push 100% to KOReader, Grimmory, Hardcover and
+  StoryGraph — and re-push it on the next sync after you reset progress, so the
+  book looked permanently finished no matter how many times you cleared it.
+  BookBridge already refused to write a bogus 0%; it now refuses a bogus 100% the
+  same way. Genuinely finishing a book still syncs as before. Note that a book
+  already affected needs to be re-matched afterwards to rebuild its alignment —
+  clearing progress deliberately skips re-transcription when an alignment already
+  exists, so a reset alone will not repair one that is wrong.
+
 - **A book whose Audiobookshelf item has disappeared is now flagged instead of
   failing quietly.** If you reorganize your library and Audiobookshelf re-adds the
   moved files as brand new items, the books BookBridge had matched to the old

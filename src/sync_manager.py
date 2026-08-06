@@ -2744,6 +2744,25 @@ class SyncManager:
             return False
         return pct <= epsilon < leader_pct
 
+    @staticmethod
+    def _locator_collapsed_to_end(locator, leader_pct, epsilon: float = 0.005,
+                                  min_gap: float = 0.05) -> bool:
+        """True when a resolved locator points at the very end of the book (100%)
+        even though the leader is materially behind — the mirror of
+        ``_locator_collapsed_to_start``. An alignment map that runs off the end of
+        the text, or a text match that lands in the trailing matter, resolves to
+        ~100% and silently marks every other client finished (issue #358).
+
+        ``min_gap`` keeps a genuine finish working: a leader at/near completion is
+        expected to resolve to ~100%, and ABS's own ``isFinished`` flag reports
+        leader_pct 1.0, so only a materially-behind leader trips the guard."""
+        if locator is None or leader_pct is None:
+            return False
+        pct = locator.percentage
+        if pct is None:
+            return False
+        return pct >= 1.0 - epsilon and leader_pct < pct - min_gap
+
     def _persist_state_snapshot(self, book, client_name: str, state_current: dict, current_time: float) -> None:
         """Save a single client's current position to the DB without running a
         cross-client sync. Used to record a leader's own (unchanged) value so a
@@ -3433,6 +3452,23 @@ class SyncManager:
                     # Record the leader's own (static) value so this unchanged
                     # position is not re-detected as a fresh change every cycle —
                     # a stale sibling-hash resolution must not perpetually re-trigger.
+                    self._persist_state_snapshot(book, leader, leader_state.current, time.time())
+                    continue
+
+                # Guard: never write an end-of-book (100%) completion that came from
+                # a FAILED locator resolution. The mirror of the 0% guard above — an
+                # alignment map that runs off the end of the text resolves a
+                # mid-book leader to ~100%, which marks KoSync/Grimmory/the trackers
+                # finished and re-asserts itself after every progress reset (#358).
+                # A genuine finish keeps leader_pct near 100% and is unaffected.
+                if self._locator_collapsed_to_end(locator, leader_pct):
+                    logger.warning(
+                        f"⚠️ '{abs_id}' '{title_snip}' Resolved locator collapsed to "
+                        f"end-of-book (100%) while leader '{leader}' is at "
+                        f"{leader_formatter(leader_pct)} (source={locator_source or 'unknown'}) "
+                        f"— treating as a failed locator resolution; skipping cross-client "
+                        f"write to avoid marking the book finished"
+                    )
                     self._persist_state_snapshot(book, leader, leader_state.current, time.time())
                     continue
 
