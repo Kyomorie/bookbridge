@@ -7570,9 +7570,20 @@ def cleanup_mapping_resources(book, defer_audio_cache: bool = False):
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to delete cached ebook {book.ebook_filename}: {e}", exc_info=True)
 
-    if getattr(book, 'sync_mode', 'audiobook') == 'ebook_only' and book.kosync_doc_id:
-        logger.info(f"🗑️ Deleting KOSync document record for ebook-only mapping: '{book.kosync_doc_id}'")
-        database_service.delete_kosync_document(book.kosync_doc_id)
+    # KoSync progress must not outlive the mapping. The document hash comes from
+    # the EPUB's content, so re-matching the same file re-links the identical hash
+    # and the furthest-wins gate serves the pre-delete position back against the
+    # fresh book's empty state (#358). This applies to every sync mode — it was
+    # previously done for ebook-only mappings alone.
+    try:
+        docs_deleted, progress_deleted = database_service.delete_kosync_data_for_book(book.abs_id)
+        if docs_deleted or progress_deleted:
+            logger.info(
+                f"🗑️ Deleted KOSync data for mapping '{book.abs_id}': "
+                f"{docs_deleted} document(s), {progress_deleted} progress row(s)"
+            )
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to delete KOSync data for '{book.abs_id}': {e}", exc_info=True)
 
     is_abs_backed = (
         getattr(book, 'sync_mode', 'audiobook') != 'ebook_only'

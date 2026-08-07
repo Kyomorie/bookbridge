@@ -62,17 +62,20 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Changed
 
-- **A book can no longer be wrongly marked finished everywhere, and progress
-  resets now stick.** If the audio-to-ebook alignment for a book was off, a
-  position in the middle of the audiobook could resolve to the very end of the
-  ebook. BookBridge would then push 100% to KOReader, Grimmory, Hardcover and
-  StoryGraph — and re-push it on the next sync after you reset progress, so the
-  book looked permanently finished no matter how many times you cleared it.
-  BookBridge already refused to write a bogus 0%; it now refuses a bogus 100% the
-  same way. Genuinely finishing a book still syncs as before. Note that a book
-  already affected needs to be re-matched afterwards to rebuild its alignment —
-  clearing progress deliberately skips re-transcription when an alignment already
-  exists, so a reset alone will not repair one that is wrong.
+- **Deleting a mapping now clears its KOReader progress, so re-matching a book
+  starts clean.** Removing a mapping only cleared the stored KOReader position for
+  ebook-only mappings. For everything else the position was left behind — and
+  because the KOReader document id is derived from the ebook file itself,
+  re-matching the same file picked the old position straight back up. A book stuck
+  at 100% would come back at 100% no matter how many times you deleted and
+  re-added it. All mappings now clear their KOReader progress on delete.
+
+- **A book can no longer be wrongly marked finished everywhere.** If the
+  audio-to-ebook alignment for a book was off, a position in the middle of the
+  audiobook could resolve to the very end of the ebook. BookBridge would then push
+  100% to KOReader, Grimmory, Hardcover and StoryGraph. BookBridge already refused
+  to write a bogus 0%; it now refuses a bogus 100% the same way. Genuinely
+  finishing a book still syncs as before.
 
 - **A book whose Audiobookshelf item has disappeared is now flagged instead of
   failing quietly.** If you reorganize your library and Audiobookshelf re-adds the

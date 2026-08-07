@@ -1745,6 +1745,46 @@ class DatabaseService:
                 session.expunge(row)
             return rows
 
+    def delete_kosync_data_for_book(self, abs_id: str) -> tuple[int, int]:
+        """Delete every KoSync document and per-user progress row for a book.
+
+        Called when a mapping is removed. KoSync progress must not outlive the
+        mapping: the document hash is derived from the EPUB's content, so
+        re-matching the same file re-links the identical hash, and the
+        furthest-wins gate in ``_respond_from_book_states`` then serves the
+        pre-delete position back against the fresh book's empty state (#358).
+
+        Returns ``(documents_deleted, progress_rows_deleted)``.
+        """
+        if not abs_id:
+            return 0, 0
+
+        with self.get_session() as session:
+            hashes = {
+                row[0]
+                for row in session.query(KosyncDocument.document_hash)
+                .filter(KosyncDocument.linked_abs_id == abs_id)
+                .all()
+                if row[0]
+            }
+            book = session.query(Book).filter(Book.abs_id == abs_id).first()
+            if book and book.kosync_doc_id:
+                hashes.add(book.kosync_doc_id)
+            if not hashes:
+                return 0, 0
+
+            progress_deleted = (
+                session.query(KosyncUserProgress)
+                .filter(KosyncUserProgress.document_hash.in_(hashes))
+                .delete(synchronize_session=False)
+            )
+            documents_deleted = (
+                session.query(KosyncDocument)
+                .filter(KosyncDocument.document_hash.in_(hashes))
+                .delete(synchronize_session=False)
+            )
+            return int(documents_deleted or 0), int(progress_deleted or 0)
+
     def reset_user_kosync_progress_for_book(self, abs_id: str, user_id: int = None) -> int:
         """Set this user's KoSync device-progress rows for a linked book to 0%.
 
