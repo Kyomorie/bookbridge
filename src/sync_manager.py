@@ -40,6 +40,7 @@ from src.utils.user_context import (
     set_current_user_id, reset_current_user_id,
     set_current_user_credentials, reset_current_user_credentials,
 )
+from src.utils.config_loader import env_truthy
 from src.utils.storyteller_transcript import StorytellerTranscript
 # Logging utilities (placed at top to ensure availability during sync)
 from src.utils.cache_paths import safe_cache_path
@@ -244,6 +245,28 @@ class SyncManager:
                         return candidate
 
         return current
+
+    def _completion_propagation_enabled(self):
+        return env_truthy('SYNC_COMPLETION_PROPAGATION')
+
+    def _completion_threshold(self):
+        try:
+            value = float(os.environ.get('SYNC_COMPLETION_THRESHOLD', '99'))
+        except (TypeError, ValueError):
+            value = 99.0
+        return max(0.0, min(value, 100.0)) / 100.0
+
+    def _propagate_completion(self, book, active_clients, leader, abs_id, title_snip):
+        request = UpdateProgressRequest(LocatorResult(percentage=1.0), "Book finished", previous_location=None)
+        for client_name, client in self._iter_update_targets(active_clients, leader):
+            try:
+                if client_name.lower() == 'abs':
+                    client.abs_client.mark_finished(abs_id)
+                else:
+                    client.update_progress(book, request)
+                logger.info(f"🏁 '{abs_id}' '{title_snip}' completion propagated to '{client_name}'")
+            except Exception as e:
+                logger.warning(f"⚠️ Completion propagation failed for '{client_name}': {e}")
 
     def _iter_update_targets(self, active_clients: dict, leader_name: str | None):
         """Yield non-leader clients with KoSync updated last."""
@@ -3605,6 +3628,16 @@ class SyncManager:
                         f"Re-match it in the dashboard to resume syncing"
                     )
                     continue
+
+                threshold = self._completion_threshold()
+                previous_leader_pct = getattr(leader_state, 'previous_pct', None)
+                if (
+                    self._completion_propagation_enabled()
+                    and leader_pct is not None
+                    and leader_pct >= threshold
+                    and (previous_leader_pct is None or previous_leader_pct < threshold)
+                ):
+                    self._propagate_completion(book, active_clients, leader, abs_id, title_snip)
 
                 # Save states directly to database service using State models
                 current_time = time.time()

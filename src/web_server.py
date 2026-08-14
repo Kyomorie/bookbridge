@@ -3584,6 +3584,7 @@ def settings():
             'KOSYNC_HASH_RECONCILE_ENABLED',
             'KOREADER_ANNOTATION_SYNC',
             'SYNC_FRESHNESS_GUARDS',
+            'SYNC_COMPLETION_PROPAGATION',
             'SYNC_ABS_EBOOK',
             'XPATH_FALLBACK_TO_PREVIOUS_SEGMENT',
             'KOSYNC_ENABLED',
