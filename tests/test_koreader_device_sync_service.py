@@ -305,7 +305,13 @@ class TestKOReaderDeviceSyncService(unittest.TestCase):
 
         resolved = self.service.resolve_download("abs-1")
         self.assertIsNotNone(resolved)
-        self.assertEqual(Path(resolved["path"]), self.cache_dir / "remote.epub")
+        # Compare resolved: a hosted copy now comes back from safe_cache_path, which
+        # resolves for traversal safety. Identical on POSIX; on Windows an unresolved
+        # "/tmp/..." expectation picks up a drive letter and only looks different.
+        self.assertEqual(
+            Path(resolved["path"]).resolve(),
+            (self.cache_dir / "remote.epub").resolve(),
+        )
         self.assertEqual(resolved["content_hash"], "hash-remote")
 
     def test_manifest_downloads_bookorbit_source_into_epub_cache(self):

@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import mimetypes
+import os
 import re
 import threading
 import time
@@ -307,10 +308,55 @@ class KOReaderDeviceSyncService:
                 return cached_path
         return None
 
+    def _is_within_cache_dir(self, candidate: Path) -> bool:
+        """Return True when ``candidate`` lives inside the managed epub cache dir.
+
+        ``EbookParser.resolve_book_path`` falls back to the epub cache directory for
+        ordinary filenames, so a "resolved" path is not proof of a real library file.
+        A cached copy must go through the TTL check instead of short-circuiting it.
+        """
+        try:
+            candidate.resolve().relative_to(self.epub_cache_dir.resolve())
+            return True
+        except (ValueError, OSError):
+            return False
+
+    def _discard_refresh_file(self, target: Path) -> None:
+        """Remove a leftover revalidation temp file, best effort."""
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            return
+        except OSError as e:
+            logger.debug("KOReader device-sync could not remove refresh temp file: %s", e)
+
+    def _hosted_cache_expired(self, cache_path: Path) -> bool:
+        """Return True if the cached copy is expired based on TTL setting."""
+        if not cache_path.exists() or cache_path.stat().st_size == 0:
+            return False
+
+        try:
+            ttl_str = os.environ.get("DEVICE_SYNC_EBOOK_CACHE_TTL_MINUTES", "360")
+            ttl_minutes = int(float(ttl_str))
+        except (TypeError, ValueError):
+            ttl_minutes = 360
+
+        if ttl_minutes <= 0:
+            return False
+
+        try:
+            age_seconds = time.time() - cache_path.stat().st_mtime
+            return age_seconds > ttl_minutes * 60
+        except OSError:
+            return False
+
     def _resolve_source_path(self, book, source_filename: str) -> Optional[Path]:
-        source_path = self._try_local_path(source_filename)
-        if source_path:
-            return source_path
+        try:
+            candidate = Path(self.ebook_parser.resolve_book_path(source_filename))
+            if candidate.exists() and not self._is_within_cache_dir(candidate):
+                return candidate
+        except Exception:
+            pass
 
         self.epub_cache_dir.mkdir(parents=True, exist_ok=True)
         cache_path = safe_cache_path(self.epub_cache_dir, source_filename)
@@ -318,15 +364,59 @@ class KOReaderDeviceSyncService:
             logger.warning("KOReader device-sync refused unsafe cache filename '%s'", sanitize_log_data(source_filename))
             return None
 
-        if self._download_from_bookorbit(book, source_filename, cache_path):
+        has_usable_cache = cache_path.exists() and cache_path.stat().st_size > 0
+        if has_usable_cache and not self._hosted_cache_expired(cache_path):
+            logger.debug(
+                "KOReader device-sync served cached copy for '%s' (TTL not expired)",
+                sanitize_log_data(source_filename),
+            )
             return cache_path
-        if self._download_from_booklore(book, source_filename, cache_path):
+
+        # Revalidation downloads into a temp sibling and swaps only on success. The
+        # download helpers write straight to the path they are given and a failing
+        # one can leave it truncated or removed, so handing them the live cached copy
+        # would let a failed refresh destroy the only good copy we have.
+        if has_usable_cache:
+            logger.info(
+                "KOReader device-sync cached copy expired for '%s', revalidating",
+                sanitize_log_data(source_filename),
+            )
+            target = cache_path.with_name(cache_path.name + ".refresh")
+            self._discard_refresh_file(target)
+        else:
+            target = cache_path
+
+        downloaded = (
+            self._download_from_bookorbit(book, source_filename, target)
+            or self._download_from_booklore(book, source_filename, target)
+            or self._download_from_abs(book, source_filename, target)
+            or self._download_from_cwa(book, source_filename, target)
+            or self._download_from_kavita(book, source_filename, target)
+        )
+
+        if downloaded and target != cache_path:
+            try:
+                os.replace(target, cache_path)
+            except OSError as e:
+                logger.warning(
+                    "KOReader device-sync could not swap in the refreshed copy for '%s': %s",
+                    sanitize_log_data(source_filename),
+                    e,
+                    exc_info=True,
+                )
+                self._discard_refresh_file(target)
+                return cache_path
+        if downloaded:
             return cache_path
-        if self._download_from_abs(book, source_filename, cache_path):
-            return cache_path
-        if self._download_from_cwa(book, source_filename, cache_path):
-            return cache_path
-        if self._download_from_kavita(book, source_filename, cache_path):
+
+        if target != cache_path:
+            self._discard_refresh_file(target)
+
+        if has_usable_cache and cache_path.exists():
+            logger.warning(
+                "KOReader device-sync revalidation failed for '%s', reusing previous cached copy",
+                sanitize_log_data(source_filename),
+            )
             return cache_path
 
         return None

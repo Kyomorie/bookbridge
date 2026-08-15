@@ -1028,6 +1028,17 @@
                         </div>
                         <div class="help-text">Comma-separated list of Grimmory shelf names to skip when creating KOReader collections.</div>
                     </div>
+
+                    <!-- Separator -->
+                    <div class="full-width" style="margin: 10px 0; border-top: 1px solid rgba(255,255,255,0.1);"></div>
+                    <h4 class="full-width" style="font-size: 14px; color: #fff; margin-bottom: -10px;">Device Sync Delivery</h4>
+
+                    <div class="form-group">
+                        <label>Hosted Ebook Cache TTL (minutes)</label>
+                        <input type="number" name="DEVICE_SYNC_EBOOK_CACHE_TTL_MINUTES" min="0"
+                            value="{{ get_val('DEVICE_SYNC_EBOOK_CACHE_TTL_MINUTES', '360') }}">
+                        <div class="help-text">Ebooks that live in a library API (BookOrbit, Grimmory, ABS, CWA, Kavita) are cached here after the first download. Once a cached copy is this old it is fetched again, so metadata you edit in your library reaches BridgeSync and the book's sync hash stays current. Set to <code>0</code> to keep the first copy forever. Ebooks read straight from your books folder are always current and ignore this.</div>
+                    </div>
                 </div>
             </div>
 
