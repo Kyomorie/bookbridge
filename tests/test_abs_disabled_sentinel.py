@@ -128,6 +128,17 @@ class TestABSDisabledSentinel(unittest.TestCase):
             client.session.get.assert_not_called()
             mock_info.assert_called_once_with("Audiobookshelf intentionally disabled")
 
+    def test_abs_client_unauthorized_error_points_to_key_setting(self):
+        with patch.dict(os.environ, {"ABS_SERVER": "http://abs.local", "ABS_KEY": "bad"}, clear=False):
+            client = ABSClient()
+            client.session.get = MagicMock(
+                return_value=Mock(status_code=401, text="Unauthorized")
+            )
+            with patch("src.api.api_clients.logger.error") as mock_error:
+                self.assertFalse(client.check_connection())
+
+            self.assertIn("check ABS_KEY in Settings", mock_error.call_args.args[0])
+
     def test_abs_client_one_disabled_field_still_disables_configuration(self):
         with patch.dict(os.environ, {"ABS_SERVER": "http://abs.local", "ABS_KEY": "DISABLED"}, clear=False):
             client = ABSClient()
@@ -196,6 +207,41 @@ class TestABSDisabledSentinel(unittest.TestCase):
 
 
 class TestABSCollectionCleanup(unittest.TestCase):
+    def test_add_collection_refetches_when_create_response_has_no_id(self):
+        with patch.dict(
+            os.environ,
+            {"ABS_SERVER": "http://abs.example", "ABS_KEY": "token"},
+            clear=False,
+        ):
+            client = ABSClient()
+            no_collection = MagicMock(status_code=200)
+            no_collection.json.return_value = {"collections": []}
+            libraries = MagicMock(status_code=200)
+            libraries.json.return_value = {"libraries": [{"id": "library-1"}]}
+            created_without_id = MagicMock(status_code=201)
+            created_without_id.json.return_value = {"name": "Synced with KOReader"}
+            refreshed = MagicMock(status_code=200)
+            refreshed.json.return_value = {
+                "collections": [
+                    {"id": "collection-1", "name": "Synced with KOReader"}
+                ]
+            }
+            added = MagicMock(status_code=204)
+            client.session = MagicMock()
+            client.session.get.side_effect = [no_collection, libraries, refreshed]
+            client.session.post.side_effect = [created_without_id, added]
+
+            with patch.object(client, "get_item_details", return_value=None):
+                result = client.add_to_collection(
+                    "item-1", "Synced with KOReader"
+                )
+
+        self.assertTrue(result)
+        self.assertIn(
+            "/api/collections/collection-1/book",
+            client.session.post.call_args_list[1].args[0],
+        )
+
     def test_disabled_client_does_not_call_collection_api(self):
         with patch.dict(
             os.environ,

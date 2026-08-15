@@ -816,10 +816,10 @@ class BookOrbitClient:
         if locator and locator.cfi:
             payload["cfi"] = locator.cfi
         resp = self._make_request("POST", f"/api/v1/books/files/{file_id}/progress", payload)
-        if resp and resp.status_code in (200, 201, 204):
+        if resp is not None and resp.status_code in (200, 201, 204):
             logger.info("BookOrbit: %s → %.1f%%", book_info.get("title") or book_id, percentage * 100)
             return True
-        status = resp.status_code if resp else "no response"
+        status = resp.status_code if resp is not None else "no response"
         logger.error("BookOrbit ebook update failed: %s", status)
         return False
 

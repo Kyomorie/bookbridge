@@ -2060,6 +2060,57 @@ class TestKosyncEndpoints(unittest.TestCase):
             "\n".join(captured.output),
         )
 
+    def test_plugin_session_upload_resolves_linked_document_without_abs_id(self):
+        """Hash-only plugin sessions use the document's linked book."""
+        from src import web_server
+        from src.api import kosync_server
+
+        book = Book(
+            abs_id='linked-session-book',
+            abs_title='Inferno',
+            ebook_filename='inferno.epub',
+            kosync_doc_id='p' * 32,
+            status='active',
+            sync_mode='ebook_only',
+        )
+        web_server.database_service.save_book(book)
+        upload_hash = 'u' * 32
+        web_server.database_service.save_kosync_document(
+            KosyncDocument(
+                document_hash=upload_hash,
+                filename='inferno.epub',
+                linked_abs_id=book.abs_id,
+            )
+        )
+        payload = [{
+            'session_id': 'hash-only-session',
+            'document_hash': upload_hash,
+            'session_type': 'EPUB',
+            'start_time': 1_742_930_000,
+            'end_time': 1_742_930_120,
+            'duration_seconds': 120,
+            'start_progress': 20,
+            'end_progress': 25,
+        }]
+
+        with patch.object(kosync_server, '_manager', None):
+            response = self.client.post(
+                '/koreader/device-sync/sessions',
+                headers=self.auth_headers,
+                json=payload,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {
+            'accepted': 1,
+            'rejected': 0,
+            'results': [{
+                'accepted': True,
+                'index': 1,
+                'session_id': 'hash-only-session',
+            }],
+        })
+
     def test_plugin_log_upload_relays_bounded_severity_to_bridge_logs(self):
         """Device log telemetry is authenticated, sanitized, and severity-preserving."""
         from src.api import kosync_server

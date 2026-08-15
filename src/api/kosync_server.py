@@ -1999,15 +1999,20 @@ def kosync_upload_sessions():
         if abs_id and _database_service:
             book = _database_service.get_book(abs_id)
 
-        # Fallback: resolve via KOSync document hash
-        if not book and _database_service:
-            if doc_hash:
-                book = _database_service.get_book_by_kosync_id(doc_hash)
-                if book:
-                    abs_id = book.abs_id
-
         if _database_service and doc_hash:
             kosync_doc = _database_service.get_kosync_document(doc_hash)
+
+        # Fallback: resolve through the same linked/sibling KOSync document data
+        # used by the ordinary progress path. Plugin sessions may carry only a
+        # document hash when the device manifest has no abs_id.
+        if not book and _database_service and doc_hash:
+            book = _database_service.get_book_by_kosync_id(doc_hash)
+            if not book and kosync_doc and kosync_doc.linked_abs_id:
+                book = _database_service.get_book(kosync_doc.linked_abs_id)
+            if not book:
+                book = _resolve_book_by_sibling_hash(doc_hash, kosync_doc)
+            if book:
+                abs_id = book.abs_id
 
         if not book:
             logger.warning(f"Session upload: book not found for abs_id='{abs_id}' hash='{doc_hash}'")

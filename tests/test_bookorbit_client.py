@@ -175,6 +175,20 @@ def test_update_ebook_progress_uses_primary_file(client):
     assert captured["payload"]["percentage"] == pytest.approx(50.0)
 
 
+def test_update_ebook_progress_reports_http_error_status(client, caplog):
+    failed = MagicMock(status_code=503)
+    failed.__bool__.return_value = False
+
+    with patch.object(client, '_make_request', return_value=failed):
+        ok = client.update_ebook_progress(
+            {"id": 3, "primaryFileId": 12, "title": "X"}, 0.5
+        )
+
+    assert ok is False
+    assert "BookOrbit ebook update failed: 503" in caplog.text
+    assert "no response" not in caplog.text
+
+
 # ---- collections (shelves) ----
 
 def test_get_collection_id_case_insensitive(client):

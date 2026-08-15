@@ -100,7 +100,11 @@ class ABSClient:
                 return True
             else:
                 # Keep failure visible as warning
-                logger.error(f"❌ Audiobookshelf Connection Failed: {r.status_code} - {sanitize_log_data(r.text)}")
+                guidance = " — check ABS_KEY in Settings" if r.status_code == 401 else ""
+                logger.error(
+                    f"❌ Audiobookshelf Connection Failed: {r.status_code} - "
+                    f"{sanitize_log_data(r.text)}{guidance}"
+                )
                 return False
         except requests.exceptions.ConnectionError:
             logger.error(f"❌ Could not connect to Audiobookshelf at {self.base_url} — Check URL and Docker Network", exc_info=True)
@@ -760,16 +764,31 @@ class ABSClient:
                 r_lib = self.session.get(lib_url)
                 if r_lib.status_code == 200:
                     libraries = r_lib.json().get('libraries', [])
-                    if libraries:
+                    library_id = libraries[0].get('id') if libraries else None
+                    if library_id:
                         r_create = self.session.post(collections_url,
-                                                 json={"libraryId": libraries[0]['id'], "name": collection_name})
+                                                 json={"libraryId": library_id, "name": collection_name})
                         if r_create.status_code in [200, 201]:
                             target_collection = r_create.json()
 
-            if not target_collection:
+                            # Some ABS versions return a success envelope without
+                            # the created collection id. Re-fetch the collection
+                            # instead of crashing on target_collection['id'].
+                            if not isinstance(target_collection, dict) or not target_collection.get('id'):
+                                r_refresh = self.session.get(collections_url)
+                                if r_refresh.status_code == 200:
+                                    refreshed = r_refresh.json().get('collections', [])
+                                    target_collection = next(
+                                        (c for c in refreshed if c.get('name') == collection_name),
+                                        None,
+                                    )
+
+            collection_id = target_collection.get('id') if isinstance(target_collection, dict) else None
+            if not collection_id:
+                logger.warning("Failed to add item to ABS collection '%s': collection id unavailable", collection_name)
                 return False
 
-            add_url = f"{self.base_url}/api/collections/{target_collection['id']}/book"
+            add_url = f"{self.base_url}/api/collections/{collection_id}/book"
             r_add = self.session.post(add_url, json={"id": item_id})
             if r_add.status_code in [200, 201, 204]:
                 try:

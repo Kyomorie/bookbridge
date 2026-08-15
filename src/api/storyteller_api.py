@@ -778,6 +778,9 @@ class StorytellerAPIClient:
                 raise Exception("API download failed and could not fetch details for fallback.")
 
             book_data = r_details.json()
+            if not isinstance(book_data, dict):
+                logger.error("❌ Invalid book details response for fallback: expected an object")
+                return False
             # Check readaloud object first, then root filepath
             readaloud = book_data.get('readaloud', {})
             source_path = readaloud.get('filepath')

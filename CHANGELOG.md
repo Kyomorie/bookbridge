@@ -71,6 +71,16 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Several diagnostics-backed integration edge cases now fail cleanly or recover.**
+  Audiobookshelf 401 errors now point directly to the ABS key setting; BookOrbit
+  progress errors report the real HTTP status instead of calling every
+  4xx/5xx response "no response"; Audiobookshelf collection creation re-fetches
+  the new collection when a successful response omits its id; BridgeSync reading
+  sessions carrying only a linked KoSync document hash resolve to the correct
+  book instead of remaining in the device retry queue; and a JSON `null` response
+  from Storyteller's fallback details endpoint is rejected cleanly instead of
+  raising a `NoneType.get` error.
+
 - **Long audiobooks could be transcribed from only part of the audio, throwing
   every synced position off.** If BookBridge only received part of an audiobook,
   it transcribed and aligned what it got without complaining — the result looked
