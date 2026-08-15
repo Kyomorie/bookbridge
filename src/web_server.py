@@ -1350,8 +1350,25 @@ def _apply_user_admin_action(form):
             elif database_service.get_user_by_username(username):
                 error = "That username already exists"
             else:
-                database_service.create_user(username, password, role=role)
+                new_user = database_service.create_user(username, password, role=role)
                 message = f"Created user '{username}'"
+                # Share-all-books is about the household seeing one library, so a
+                # new account starts with everything rather than only books matched
+                # from now on.
+                if env_truthy('SHARE_ALL_BOOKS_WITH_ALL_USERS'):
+                    try:
+                        linked = database_service.backfill_user_books_for_user(new_user.id)
+                        logger.info(
+                            "🔗 Shared %d existing book(s) with new user '%s' (share-all-books enabled)",
+                            linked, sanitize_log_data(username),
+                        )
+                        if linked:
+                            message = f"Created user '{username}' and shared {linked} book(s)"
+                    except Exception as share_err:
+                        logger.warning(
+                            "Could not backfill shared books for new user '%s': %s",
+                            sanitize_log_data(username), share_err, exc_info=True,
+                        )
         elif action == 'reset_password':
             uid = int(form.get('user_id'))
             new_pw = form.get('password') or ''
@@ -1964,6 +1981,75 @@ def _resolve_abs_chapters_for_storyteller_ingest(book):
     return item_details.get("media", {}).get("chapters", []) or []
 
 
+def _preserve_or_reset_mapping_status(
+    target_book,
+    *,
+    kosync_doc_id=None,
+    ebook_filename=None,
+    audio_source_id=None,
+) -> None:
+    """Queue a mapping for processing, unless its existing alignment still applies.
+
+    Re-matching used to reset every mapping to 'pending' unconditionally, which sent
+    an already-aligned book back through transcription and alignment. That is what a
+    second user hit when adopting a book someone else had already matched: the
+    catalog row and its alignment are shared, so the only thing they actually needed
+    was the per-user claim.
+
+    An alignment is only reusable when the pairing it was built from is unchanged, so
+    every identity value the caller is about to overwrite is compared first — a
+    genuine re-map (different ebook or different audio) still re-runs the pipeline.
+    Mirrors the same decision in SyncManager's clear-progress path.
+
+    MUST be called before the caller overwrites those attributes.
+    """
+    if target_book is None:
+        return
+
+    abs_id = getattr(target_book, "abs_id", None)
+    candidates = (
+        ("kosync_doc_id", kosync_doc_id),
+        ("ebook_filename", ebook_filename),
+        ("audio_source_id", audio_source_id),
+    )
+
+    changed = []
+    for attr, new_value in candidates:
+        if new_value is None:
+            continue
+        existing = getattr(target_book, attr, None)
+        if existing and str(existing) != str(new_value):
+            changed.append(attr)
+
+    reusable = False
+    if not changed and abs_id:
+        try:
+            reusable = database_service.has_alignment(abs_id)
+        except Exception as align_err:
+            logger.warning(
+                "Could not check for an existing alignment on '%s': %s",
+                sanitize_log_data(abs_id), align_err, exc_info=True,
+            )
+            reusable = False
+
+    if reusable:
+        if getattr(target_book, "status", None) != "active":
+            target_book.status = "active"
+        logger.info(
+            "♻️ '%s' Re-match reuses the existing alignment — keeping the mapping active "
+            "(no re-transcription)",
+            sanitize_log_data(abs_id),
+        )
+        return
+
+    if changed:
+        logger.info(
+            "🔄 '%s' Mapping identity changed (%s) — queuing for re-processing",
+            sanitize_log_data(abs_id), ", ".join(changed),
+        )
+    target_book.status = "pending"
+
+
 def _upsert_storyteller_mapping(
     *,
     mode_hint,
@@ -2141,10 +2227,14 @@ def _upsert_storyteller_mapping(
     if not target_book:
         return None, "Book not found", 404
 
+    _preserve_or_reset_mapping_status(
+        target_book,
+        kosync_doc_id=kosync_doc_id,
+        ebook_filename=resolved_ebook_filename,
+    )
     target_book.abs_title = abs_title or target_book.abs_title or Path(resolved_ebook_filename).stem
     target_book.ebook_filename = resolved_ebook_filename
     target_book.kosync_doc_id = kosync_doc_id
-    target_book.status = "pending"
     if selected_ebook_source:
         target_book.ebook_source = selected_ebook_source
     if selected_ebook_source_id:
@@ -2952,6 +3042,12 @@ def _create_or_update_library_audio_mapping(
     target_book = existing_book or Book(abs_id=bridge_key, sync_mode="audiobook")
     target_book.abs_id = bridge_key
     target_book.abs_title = audio_title or target_book.abs_title or bridge_key
+    _preserve_or_reset_mapping_status(
+        target_book,
+        kosync_doc_id=kosync_doc_id,
+        ebook_filename=resolved_ebook_filename,
+        audio_source_id=str(audio_source_id),
+    )
     target_book.audio_source = audio_source
     target_book.audio_source_id = str(audio_source_id)
     target_book.audio_title = audio_title or target_book.audio_title or target_book.abs_title
@@ -2964,7 +3060,6 @@ def _create_or_update_library_audio_mapping(
     target_book.ebook_source = ebook_source or target_book.ebook_source
     target_book.ebook_source_id = ebook_source_id or target_book.ebook_source_id
     target_book.kosync_doc_id = kosync_doc_id
-    target_book.status = "pending"
     target_book.sync_mode = "audiobook"
     target_book.duration = audio_duration if audio_duration is not None else target_book.duration
     target_book.storyteller_uuid = storyteller_uuid or target_book.storyteller_uuid
@@ -3228,6 +3323,7 @@ def _create_or_update_bookfusion_progress_mapping(
         resolved_title = audio_title or bookfusion_title or abs_id
 
     target_book = existing_book or Book(abs_id=abs_id, sync_mode="audiobook")
+    _preserve_or_reset_mapping_status(target_book, audio_source_id=str(audio_source_id))
     target_book.abs_id = abs_id
     target_book.abs_title = resolved_title or target_book.abs_title or abs_id
     target_book.audio_source = audio_source
@@ -3239,7 +3335,6 @@ def _create_or_update_bookfusion_progress_mapping(
     target_book.audio_provider_file_id = str(audio_provider_file_id) if audio_provider_file_id else target_book.audio_provider_file_id
     target_book.duration = audio_duration if audio_duration is not None else target_book.duration
     target_book.sync_mode = "audiobook"
-    target_book.status = "pending"
 
     # Acquire the EPUB locally so BookFusion behaves like every other ebook source
     # (cached file + KOSync hash → progress text-anchoring and annotation offsets).
@@ -3407,6 +3502,7 @@ def settings():
             'OLLAMA_EBOOK_TEXT_FALLBACK',
             'DIAGNOSTICS_OPT_IN',
             'WHISPER_CPP_SEND_ORIGINAL',
+            'SHARE_ALL_BOOKS_WITH_ALL_USERS',
         ]
 
         # Current settings in DB
@@ -4588,6 +4684,16 @@ def _claim_book_for_user_id(user_id, abs_id):
     if not abs_id or user_id is None:
         return
     try:
+        # Opt-in household mode: everyone sees every matched book. Only visibility
+        # fans out — progress, KoSync docs and stats stay per-user as always.
+        if env_truthy('SHARE_ALL_BOOKS_WITH_ALL_USERS'):
+            created = database_service.link_book_to_all_active_users(abs_id)
+            if created:
+                logger.info(
+                    "🔗 Shared book '%s' with %d additional user(s) (share-all-books enabled)",
+                    sanitize_log_data(abs_id), created,
+                )
+            return
         database_service.link_user_book(user_id, abs_id)
     except Exception as e:
         logger.debug("Could not link book '%s' to user %s: %s", abs_id, user_id, e)
