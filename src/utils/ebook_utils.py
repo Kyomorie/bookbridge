@@ -9,6 +9,7 @@ from ebooklib import epub
 from bs4 import BeautifulSoup, Tag
 from lxml import html
 import hashlib
+import json
 import logging
 import os
 import re
@@ -2084,6 +2085,9 @@ class EbookParser:
 
         Example supported CFI: epubcfi(/6/16[chapter_6]!/4/2[book-columns]/2[book-inner]/268/4/2[kobo.134.3]/1:11)
         """
+        if not is_epub_cfi(cfi):
+            logger.debug("Skipping CFI text lookup for non-CFI locator: %.120s", str(cfi))
+            return None
         try:
             spine_step, element_steps, char_offset = self._parse_cfi_components(cfi)
 
@@ -2205,6 +2209,11 @@ class EbookParser:
         Resolve CFI to canonical global character offset using the same parsing
         approach as get_text_around_cfi().
         """
+        if not is_epub_cfi(cfi):
+            # A reader that stores a Readium JSON locator (or anything else) in the
+            # same field used to reach the CFI parser and log an ERROR every cycle.
+            logger.debug("Skipping CFI->index for non-CFI locator: %.120s", str(cfi))
+            return None
         try:
             spine_step, element_steps, char_offset = self._parse_cfi_components(cfi)
             if not spine_step:
@@ -2282,6 +2291,76 @@ class EbookParser:
         except Exception as e:
             logger.error(f"Error resolving CFI->index '{cfi}': {e}", exc_info=True)
             return None
+
+
+def is_epub_cfi(value) -> bool:
+    """Whether a stored position string is an EPUB CFI rather than some other locator."""
+    return str(value or "").strip().startswith("epubcfi(")
+
+
+def parse_readium_locator(raw) -> Optional[dict]:
+    """Parse a Readium locator into the fields the sync pipeline understands.
+
+    Readium-based readers (the Audiobookshelf mobile apps among them) store a JSON
+    locator where CFI-based readers store an ``epubcfi(...)`` string — the same
+    field carries either shape. Feeding the JSON to the CFI parser produced a
+    per-cycle ``Error resolving CFI->index`` and dropped position resolution to a
+    plain percentage.
+
+    Returns ``{'href', 'chapter_progress', 'position', 'cfi', 'total_progression'}``
+    with absent fields omitted, or ``None`` when *raw* is not a JSON locator (a
+    plain CFI, empty, or anything else).
+    """
+    if isinstance(raw, dict):
+        payload = raw
+    else:
+        text = str(raw or "").strip()
+        if not text.startswith("{"):
+            return None
+        try:
+            payload = json.loads(text)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+    locations = payload.get("locations")
+    if not isinstance(locations, dict):
+        locations = {}
+
+    def _as_float(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _as_int(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    href = str(payload.get("href") or "").strip()
+    # Readium calls the in-chapter fraction "progression" and the whole-book one
+    # "totalProgression"; the bridge's normalization reads chapter_progress.
+    chapter_progress = _as_float(locations.get("progression"))
+    total_progression = _as_float(locations.get("totalProgression"))
+    position = _as_int(locations.get("position"))
+    cfi = str(locations.get("partialCfi") or locations.get("cfi") or "").strip()
+
+    locator = {}
+    if href:
+        locator["href"] = href
+    if chapter_progress is not None:
+        locator["chapter_progress"] = chapter_progress
+    if total_progression is not None:
+        locator["total_progression"] = total_progression
+    if position is not None:
+        locator["position"] = position
+    if is_epub_cfi(cfi):
+        locator["cfi"] = cfi
+
+    return locator or None
 
 
 def resolve_ebook_identifiers(ebook_parser, book, booklore_client=None, bookorbit_client=None) -> dict:

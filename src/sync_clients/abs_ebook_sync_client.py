@@ -5,7 +5,7 @@ from typing import Optional
 from src.api.api_clients import ABSClient
 from src.db.models import Book, State
 from src.sync_clients.sync_client_interface import SyncClient, SyncResult, UpdateProgressRequest, ServiceState, ABS_ITEM_NOT_FOUND
-from src.utils.ebook_utils import EbookParser
+from src.utils.ebook_utils import EbookParser, parse_readium_locator
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,30 @@ class ABSEbookSyncClient(SyncClient):
             )
         )
 
+    @staticmethod
+    def _build_position_state(pct: float, location) -> dict:
+        """Shape ABS's `ebookLocation` into the keys the sync pipeline reads.
+
+        ABS stores whatever its reader produced: the web reader (epub.js) writes an
+        `epubcfi(...)` string, the mobile apps (Readium) write a JSON locator. Only
+        the CFI shape belongs in `cfi` — pushing the JSON there sent it to the CFI
+        parser, which failed every cycle and left the position resolvable only as a
+        percentage. `href`/`chapter_progress` are what the normalization loop in
+        sync_manager already consumes for Readium-style clients.
+        """
+        state = {"pct": pct, "cfi": location if location else ""}
+
+        locator = parse_readium_locator(location)
+        if not locator:
+            return state
+
+        # A JSON locator is not a CFI; keep `cfi` empty unless it carries a real one.
+        state["cfi"] = locator.get("cfi", "")
+        for key in ("href", "chapter_progress", "position"):
+            if key in locator:
+                state[key] = locator[key]
+        return state
+
     def get_service_state(self, book: Book, prev_state: Optional[State], title_snip: str = "", bulk_context: dict = None) -> Optional[ServiceState]:
         target_id = self._resolve_target_id(book)
         response, status = self.abs_client.get_progress_with_status(target_id)
@@ -84,7 +108,7 @@ class ABSEbookSyncClient(SyncClient):
         delta = abs(abs_pct - prev_abs_pct)
 
         return ServiceState(
-            current={"pct": abs_pct, "cfi": abs_cfi},
+            current=self._build_position_state(abs_pct, abs_cfi),
             previous_pct=prev_abs_pct,
             delta=delta,
             threshold=self.delta_abs_thresh,
@@ -95,10 +119,17 @@ class ABSEbookSyncClient(SyncClient):
 
     def get_text_from_current_state(self, book: Book, state: ServiceState) -> Optional[str]:
         cfi = state.current.get('cfi')
+        href = state.current.get('href')
         pct = state.current.get('pct')
         epub = getattr(book, "original_ebook_filename", None) or book.ebook_filename
         if cfi and epub:
             txt = self.ebook_parser.get_text_around_cfi(epub, cfi)
+            if txt:
+                return txt
+        # Readium locators carry an href instead of a CFI; resolving it beats
+        # falling back to a whole-book percentage.
+        if href and epub:
+            txt = self.ebook_parser.resolve_locator_id(epub, href, state.current.get('frag'))
             if txt:
                 return txt
         if pct is not None and epub:

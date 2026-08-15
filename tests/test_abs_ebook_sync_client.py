@@ -174,3 +174,101 @@ class TestABSEbookSyncClient(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestABSReadiumLocator(unittest.TestCase):
+    """Issue #359 — ABS stores whatever its reader produced in `ebookLocation`.
+
+    The web reader (epub.js) writes an `epubcfi(...)` string; the mobile apps
+    (Readium) write a JSON locator. Treating the JSON as a CFI logged
+    `Error resolving CFI->index ... Unsupported parsed CFI type: tuple` every sync
+    cycle and left the position resolvable only as a percentage.
+    """
+
+    # Verbatim from the issue #359 report.
+    REPORTED_LOCATION = (
+        '{"href":"OEBPS/Text/part0014.xhtml",'
+        '"locations":{"position":78,"progression":0},'
+        '"title":"Chapter 10","type":"application/xhtml+xml"}'
+    )
+
+    def setUp(self):
+        self.mock_abs_client = MagicMock()
+        self.mock_ebook_parser = MagicMock()
+        self.client = ABSEbookSyncClient(self.mock_abs_client, self.mock_ebook_parser)
+        self.book = Book(abs_id="dcc", ebook_filename="dcc.epub")
+
+    def _state_for(self, location):
+        self.mock_abs_client.get_progress_with_status.return_value = (
+            {"ebookProgress": 0.201571, "ebookLocation": location}, 200,
+        )
+        return self.client.get_service_state(self.book, None)
+
+    def test_readium_locator_is_not_stored_as_a_cfi(self):
+        state = self._state_for(self.REPORTED_LOCATION)
+        self.assertEqual(state.current["cfi"], "")
+        self.assertNotIn("{", str(state.current.get("cfi")))
+
+    def test_readium_locator_exposes_href_and_chapter_progress(self):
+        """These are the keys sync_manager normalization resolves positions from."""
+        state = self._state_for(self.REPORTED_LOCATION)
+        self.assertEqual(state.current["href"], "OEBPS/Text/part0014.xhtml")
+        self.assertEqual(state.current["chapter_progress"], 0.0)
+        self.assertEqual(state.current["position"], 78)
+        self.assertAlmostEqual(state.current["pct"], 0.201571)
+
+    def test_readium_locator_carrying_a_partial_cfi_keeps_it(self):
+        state = self._state_for(
+            '{"href":"OEBPS/Text/ch1.xhtml",'
+            '"locations":{"progression":0.5,"partialCfi":"epubcfi(/4/2/1:7)"}}'
+        )
+        self.assertEqual(state.current["cfi"], "epubcfi(/4/2/1:7)")
+        self.assertEqual(state.current["href"], "OEBPS/Text/ch1.xhtml")
+
+    def test_plain_cfi_behaviour_is_unchanged(self):
+        state = self._state_for("epubcfi(/6/14!/4/2/1:0)")
+        self.assertEqual(state.current["cfi"], "epubcfi(/6/14!/4/2/1:0)")
+        self.assertNotIn("href", state.current)
+        self.assertNotIn("chapter_progress", state.current)
+
+    def test_empty_location_behaviour_is_unchanged(self):
+        state = self._state_for("")
+        self.assertEqual(state.current["cfi"], "")
+        self.assertNotIn("href", state.current)
+
+    def test_text_extraction_falls_back_to_href_not_percentage(self):
+        state = self._state_for(self.REPORTED_LOCATION)
+        self.mock_ebook_parser.resolve_locator_id.return_value = "chapter ten text"
+
+        text = self.client.get_text_from_current_state(self.book, state)
+
+        self.assertEqual(text, "chapter ten text")
+        self.mock_ebook_parser.resolve_locator_id.assert_called_once_with(
+            "dcc.epub", "OEBPS/Text/part0014.xhtml", None,
+        )
+        self.mock_ebook_parser.get_text_at_percentage.assert_not_called()
+
+    def test_text_extraction_still_falls_back_to_percentage_when_href_fails(self):
+        state = self._state_for(self.REPORTED_LOCATION)
+        self.mock_ebook_parser.resolve_locator_id.return_value = None
+        self.mock_ebook_parser.get_text_at_percentage.return_value = "pct text"
+
+        self.assertEqual(self.client.get_text_from_current_state(self.book, state), "pct text")
+
+
+class TestCfiGuards(unittest.TestCase):
+    """A non-CFI locator must not reach the CFI parser (issue #359 log spam)."""
+
+    def setUp(self):
+        from src.utils.ebook_utils import EbookParser
+        self.parser = EbookParser.__new__(EbookParser)
+
+    def test_resolve_cfi_to_index_skips_json_locators(self):
+        self.assertIsNone(
+            self.parser.resolve_cfi_to_index("book.epub", TestABSReadiumLocator.REPORTED_LOCATION)
+        )
+
+    def test_get_text_around_cfi_skips_json_locators(self):
+        self.assertIsNone(
+            self.parser.get_text_around_cfi("book.epub", TestABSReadiumLocator.REPORTED_LOCATION)
+        )
