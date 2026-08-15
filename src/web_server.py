@@ -4399,6 +4399,18 @@ def _sanitize_cover_urls(entries: list) -> list:
     return sanitized
 
 
+def _public_link_base(web_url_key: str, server_fallback: str) -> str:
+    """Browser-facing base URL for a service, falling back to its server URL.
+
+    A service's server URL is what BookBridge calls, and on a Docker network that
+    is routinely a name the browser cannot resolve (`audiobookshelf:80`). The
+    optional `*_WEB_URL` setting is the address to send a browser to instead.
+    Every link rendered for a user goes through here so a public URL can't be
+    honoured on one link and silently ignored on another.
+    """
+    return (os.environ.get(web_url_key, '') or '').strip().rstrip('/') or (server_fallback or '').rstrip('/')
+
+
 def _build_dashboard_mapping(
     book,
     states_by_book,
@@ -4568,25 +4580,26 @@ def _build_dashboard_mapping(
         mapping["audio_url"] = None
     elif mapping["audio_source"] == "BookLore":
         mapping["abs_url"] = None
-        mapping["audio_url"] = f"{manager.booklore_client.base_url}/book/{mapping['audio_source_id']}?tab=view"
+        _bl_audio_base = _public_link_base('BOOKLORE_WEB_URL', manager.booklore_client.base_url)
+        mapping["audio_url"] = f"{_bl_audio_base}/book/{mapping['audio_source_id']}?tab=view"
     elif mapping["audio_source"] == "BookOrbit":
         mapping["abs_url"] = None
-        _bo_audio_base = (os.environ.get("BOOKORBIT_SERVER") or "").rstrip("/")
+        _bo_audio_base = _public_link_base('BOOKORBIT_WEB_URL', os.environ.get("BOOKORBIT_SERVER") or "")
         mapping["audio_url"] = f"{_bo_audio_base}/book/{mapping['audio_source_id']}" if _bo_audio_base else None
     else:
-        abs_display_base = os.environ.get('ABS_WEB_URL', '').strip() or manager.abs_client.base_url
+        abs_display_base = _public_link_base('ABS_WEB_URL', manager.abs_client.base_url)
         mapping["abs_url"] = f"{abs_display_base}/item/{book.abs_id}"
         mapping["audio_url"] = mapping["abs_url"]
 
     mapping["booklore_id"] = _get_cached_booklore_id(book, cached_booklore_by_filename=cached_booklore_by_filename)
     if manager.booklore_client.is_configured() and mapping["booklore_id"]:
-        booklore_display_base = os.environ.get('BOOKLORE_WEB_URL', '').strip() or manager.booklore_client.base_url
+        booklore_display_base = _public_link_base('BOOKLORE_WEB_URL', manager.booklore_client.base_url)
         mapping["booklore_url"] = f"{booklore_display_base}/book/{mapping['booklore_id']}?tab=view"
     else:
         mapping["booklore_url"] = None
 
     # BookOrbit deep links — frontend book route is /book/:bookId.
-    _bo_base = (os.environ.get("BOOKORBIT_SERVER") or "").rstrip("/")
+    _bo_base = _public_link_base('BOOKORBIT_WEB_URL', os.environ.get("BOOKORBIT_SERVER") or "")
     if _bo_base and mapping.get("ebook_source") == "BookOrbit" and mapping.get("ebook_source_id"):
         mapping["bookorbit_url"] = f"{_bo_base}/book/{mapping['ebook_source_id']}"
     else:

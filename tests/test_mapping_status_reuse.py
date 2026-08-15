@@ -265,3 +265,81 @@ class TestSharedCatalogDatabaseHelpers(unittest.TestCase):
         self.assertEqual(created, 1)  # only ab-2 was missing
         self.assertTrue(self.db.is_user_linked(self.bob.id, "ab-2"))
         self.assertEqual(self.db.backfill_user_books_for_user(self.bob.id), 0)
+
+
+class TestPublicLinkBase(unittest.TestCase):
+    """PR #366 added *_WEB_URL, but only some rendered links honoured it.
+
+    A public URL that works for the header button and not for the book links is
+    worse than not having one, so this pins every service's fallback behaviour.
+    """
+
+    KEYS = ('ABS_WEB_URL', 'BOOKLORE_WEB_URL', 'BOOKORBIT_WEB_URL', 'CWA_WEB_URL')
+
+    def setUp(self):
+        self._saved = {key: os.environ.get(key) for key in self.KEYS}
+        for key in self.KEYS:
+            os.environ.pop(key, None)
+
+    def tearDown(self):
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def test_falls_back_to_the_server_url_when_unset(self):
+        self.assertEqual(
+            web_server._public_link_base('ABS_WEB_URL', 'http://audiobookshelf:80'),
+            'http://audiobookshelf:80',
+        )
+
+    def test_public_url_wins_when_set(self):
+        os.environ['ABS_WEB_URL'] = 'https://abs.example.com'
+        self.assertEqual(
+            web_server._public_link_base('ABS_WEB_URL', 'http://audiobookshelf:80'),
+            'https://abs.example.com',
+        )
+
+    def test_blank_and_whitespace_fall_back(self):
+        for blank in ('', '   '):
+            with self.subTest(value=blank):
+                os.environ['ABS_WEB_URL'] = blank
+                self.assertEqual(
+                    web_server._public_link_base('ABS_WEB_URL', 'http://audiobookshelf:80'),
+                    'http://audiobookshelf:80',
+                )
+
+    def test_trailing_slashes_are_stripped_from_both_sides(self):
+        os.environ['ABS_WEB_URL'] = 'https://abs.example.com/'
+        self.assertEqual(
+            web_server._public_link_base('ABS_WEB_URL', 'http://x/'), 'https://abs.example.com')
+        os.environ.pop('ABS_WEB_URL')
+        self.assertEqual(
+            web_server._public_link_base('ABS_WEB_URL', 'http://audiobookshelf:80/'),
+            'http://audiobookshelf:80',
+        )
+
+    def test_missing_server_fallback_is_tolerated(self):
+        self.assertEqual(web_server._public_link_base('ABS_WEB_URL', ''), '')
+        self.assertEqual(web_server._public_link_base('ABS_WEB_URL', None), '')
+
+    def test_every_book_link_base_routes_through_the_helper(self):
+        """The actual regression: a link base reading its server URL directly.
+
+        That is how BOOKORBIT_WEB_URL and the Grimmory audio link ended up
+        honoured on the header button but ignored on the book page.
+        """
+        import inspect
+        source = inspect.getsource(web_server._build_dashboard_mapping)
+
+        base_assignments = [
+            line.strip() for line in source.splitlines()
+            if '_base = ' in line and not line.strip().startswith('#')
+        ]
+        self.assertTrue(base_assignments, "expected the link-base assignments to be found")
+        for line in base_assignments:
+            self.assertIn(
+                '_public_link_base', line,
+                f"browser-facing link base bypasses _public_link_base: {line}",
+            )
