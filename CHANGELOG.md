@@ -8,6 +8,24 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **Public URL per integration.** Audiobookshelf, Grimmory, BookOrbit and CWA
+  each get an optional *Public URL* field next to their Server URL. The server
+  URL can stay on an internal address (a Docker hostname behind a reverse proxy
+  or tunnel) while the header library buttons and book-page links send your
+  browser somewhere it can actually reach. Leave it blank to keep using the
+  server URL, exactly as before. Contributed by
+  [@benjitobz](https://github.com/benjitobz). (#366)
+
+- **Reverse proxy auto-login.** If a trusted reverse proxy already
+  authenticates you — Authelia, Authentik, Cloudflare Access, PocketID and
+  friends — BookBridge can accept the username it sets in a header instead of
+  showing you a second login form. Off by default; enable it under
+  *Settings → System → Reverse Proxy Auto-Login* and set the header name
+  (default `Remote-User`). Only existing accounts match — unknown or disabled
+  usernames fall through to the normal login and nothing is auto-created. Only
+  turn this on when a trusted proxy sets the header *and* strips any copy sent
+  by the client. Contributed by [@benjitobz](https://github.com/benjitobz). (#366)
+
 - **Shared library: one setting to give everyone every book.** New opt-in
   *Settings → Features → Shared Library*. With it on, every book anyone matches
   becomes visible to every user automatically, and a newly created account starts
