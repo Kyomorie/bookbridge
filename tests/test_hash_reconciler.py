@@ -66,7 +66,7 @@ class TestReconcileHashes(unittest.TestCase):
             "a": {"path": Path("a"), "content_hash": "hash-a"},
             "b": {"path": Path("b"), "content_hash": "hash-b"},
         }
-        self.service._resolve_download_artifact = lambda book, link_hashes=True: results[book.abs_id]
+        self.service._resolve_download_artifact = lambda book, link_hashes=True, allow_revalidation=False: results[book.abs_id]
         self.service.database_service.ensure_linked_kosync_document.side_effect = [True, False]
 
         summary = self.service.reconcile_hashes()
@@ -79,7 +79,7 @@ class TestReconcileHashes(unittest.TestCase):
     def test_failing_book_does_not_abort_the_pass(self):
         seen = []
 
-        def resolve(book, link_hashes=True):
+        def resolve(book, link_hashes=True, allow_revalidation=False):
             seen.append(book.abs_id)
             if book.abs_id == "a":
                 raise RuntimeError("boom")
@@ -96,7 +96,7 @@ class TestReconcileHashes(unittest.TestCase):
         self.assertEqual(summary["checked"], 2)
 
     def test_unresolvable_book_counts_as_skipped(self):
-        self.service._resolve_download_artifact = lambda book, link_hashes=True: None
+        self.service._resolve_download_artifact = lambda book, link_hashes=True, allow_revalidation=False: None
 
         summary = self.service.reconcile_hashes()
 
@@ -111,7 +111,7 @@ class TestReconcileHashes(unittest.TestCase):
         so each pass rebound the same hash to whichever book came last.
         """
         same = {"path": Path("shared"), "content_hash": "shared-hash"}
-        self.service._resolve_download_artifact = lambda book, link_hashes=True: dict(same)
+        self.service._resolve_download_artifact = lambda book, link_hashes=True, allow_revalidation=False: dict(same)
         self.service.database_service.ensure_linked_kosync_document.return_value = True
 
         summary = self.service.reconcile_hashes()
@@ -127,7 +127,7 @@ class TestReconcileHashes(unittest.TestCase):
         """reconcile must resolve with link_hashes=False so it can veto a conflict."""
         captured = {}
 
-        def resolve(book, link_hashes=True):
+        def resolve(book, link_hashes=True, allow_revalidation=False):
             captured[book.abs_id] = link_hashes
             return {"path": Path("p"), "content_hash": f"hash-{book.abs_id}"}
 
@@ -209,6 +209,47 @@ class TestReconcilerSettings(unittest.TestCase):
                 hash_reconciler.run_hash_reconciler_daemon(service, initial_delay_sec=0)
 
         service.reconcile_hashes.assert_called_once()
+
+    def test_pass_defers_while_a_reader_is_syncing(self):
+        """A full pass mid-sync makes KOReader crawl, so it must yield."""
+        os.environ["KOSYNC_HASH_RECONCILE_ENABLED"] = "true"
+        service = MagicMock()
+
+        with patch.object(hash_reconciler, "_device_sync_busy", return_value=True):
+            with patch.object(hash_reconciler._wake_event, "wait", side_effect=[None, _Sentinel()]):
+                with self.assertRaises(_Sentinel):
+                    hash_reconciler.run_hash_reconciler_daemon(service, initial_delay_sec=0)
+
+        service.reconcile_hashes.assert_not_called()
+
+    def test_deferral_is_bounded(self):
+        """A device that polls forever must not starve reconciliation."""
+        os.environ["KOSYNC_HASH_RECONCILE_ENABLED"] = "true"
+        service = MagicMock()
+        service.reconcile_hashes.return_value = {}
+
+        waits = []
+
+        def fake_wait(timeout=None):
+            waits.append(timeout)
+            if len(waits) > hash_reconciler._MAX_DEFERRALS + 1:
+                raise _Sentinel()
+            return False
+
+        with patch.object(hash_reconciler, "_device_sync_busy", return_value=True):
+            with patch.object(hash_reconciler, "_reconcile_all_users") as run:
+                with patch.object(hash_reconciler._wake_event, "wait", side_effect=fake_wait):
+                    with self.assertRaises(_Sentinel):
+                        hash_reconciler.run_hash_reconciler_daemon(service, initial_delay_sec=0)
+
+        self.assertGreaterEqual(run.call_count, 1, "must run once the deferral cap is hit")
+
+    def test_busy_check_reads_device_sync_activity(self):
+        import src.api.kosync_server as ks
+        ks.note_device_sync_activity()
+        self.assertTrue(hash_reconciler._device_sync_busy())
+        ks._last_device_sync_activity = 0.0
+        self.assertFalse(hash_reconciler._device_sync_busy())
 
     def test_signal_wakes_the_daemon_early(self):
         """An unresolved hash must not wait a whole interval for the next pass."""

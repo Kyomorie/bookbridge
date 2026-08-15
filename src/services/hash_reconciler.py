@@ -27,6 +27,22 @@ _user_services: dict = {}
 _DEFAULT_INTERVAL_MINUTES = 360
 _MIN_INTERVAL_MINUTES = 5
 
+# A pass walks the whole catalogue, hashing files and sometimes re-downloading
+# them. Running that while a reader is mid-sync makes the reader crawl, so a pass
+# defers while device-sync traffic is recent and retries shortly after.
+_DEVICE_QUIET_SECONDS = 180
+_DEVICE_BUSY_RETRY_SECONDS = 120
+_MAX_DEFERRALS = 30
+
+
+def _device_sync_busy() -> bool:
+    """True when a reader has hit the device-sync endpoints very recently."""
+    try:
+        from src.api.kosync_server import seconds_since_device_sync_activity
+        return seconds_since_device_sync_activity() < _DEVICE_QUIET_SECONDS
+    except Exception:
+        return False
+
 # Set when something observes a hash we cannot resolve, so the next pass runs now
 # instead of up to a full interval later. Several signals coalesce into one pass.
 _wake_event = threading.Event()
@@ -130,21 +146,34 @@ def _reconcile_all_users(global_service, registry, database_service) -> None:
     global_service.reconcile_hashes()
 
 
-def run_hash_reconciler_daemon(device_sync_service, initial_delay_sec: float = 120.0,
+def run_hash_reconciler_daemon(device_sync_service, initial_delay_sec: float = 600.0,
                                user_client_registry=None, database_service=None) -> None:
     """Loop forever reconciling hashes. Intended as a daemon thread target."""
     if initial_delay_sec > 0:
         time.sleep(initial_delay_sec)
 
     logger.info("🔗 Hash reconciler thread started")
+    deferrals = 0
     while True:
-        if _reconcile_enabled():
+        if not _reconcile_enabled():
+            logger.debug("🔗 Hash reconcile disabled; skipping pass")
+        elif _device_sync_busy() and deferrals < _MAX_DEFERRALS:
+            # Yield to the reader. Bounded so a device that polls forever cannot
+            # starve reconciliation indefinitely.
+            deferrals += 1
+            logger.debug(
+                "🔗 Hash reconcile deferred (%d/%d) — device sync active",
+                deferrals, _MAX_DEFERRALS,
+            )
+            _wake_event.clear()
+            _wake_event.wait(timeout=_DEVICE_BUSY_RETRY_SECONDS)
+            continue
+        else:
+            deferrals = 0
             try:
                 _reconcile_all_users(device_sync_service, user_client_registry, database_service)
             except Exception as e:
                 logger.warning("🔗 Hash reconcile pass failed: %s", e, exc_info=True)
-        else:
-            logger.debug("🔗 Hash reconcile disabled; skipping pass")
 
         # Wait out the interval, but wake early when an unresolvable hash is seen.
         # Signals raised while a pass was running coalesce into this single wait.
@@ -153,7 +182,7 @@ def run_hash_reconciler_daemon(device_sync_service, initial_delay_sec: float = 1
             logger.info("🔗 Hash reconcile woken early by an unresolved document hash")
 
 
-def start_hash_reconciler_thread(device_sync_service, initial_delay_sec: float = 120.0,
+def start_hash_reconciler_thread(device_sync_service, initial_delay_sec: float = 600.0,
                                  user_client_registry=None,
                                  database_service=None) -> threading.Thread:
     """Launch the reconciler in a daemon thread and return it."""

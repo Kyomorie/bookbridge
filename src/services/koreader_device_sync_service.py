@@ -218,12 +218,15 @@ class KOReaderDeviceSyncService:
                 self._content_hash_cache[path_str] = (signature[0], signature[1], content_hash)
         return content_hash
 
-    def _resolve_download_artifact(self, book, link_hashes: bool = True) -> Optional[dict]:
+    def _resolve_download_artifact(self, book, link_hashes: bool = True,
+                                   allow_revalidation: bool = False) -> Optional[dict]:
         source_filename = self._select_source_filename(book)
         if not source_filename:
             return None
 
-        source_path = self._resolve_source_path(book, source_filename)
+        source_path = self._resolve_source_path(
+            book, source_filename, allow_revalidation=allow_revalidation
+        )
         if not source_path or not source_path.exists():
             logger.warning(
                 "KOReader device-sync could not resolve original ebook for '%s' (%s)",
@@ -308,8 +311,12 @@ class KOReaderDeviceSyncService:
             label = sanitize_log_data(getattr(book, "abs_title", None) or getattr(book, "abs_id", None))
             try:
                 # Resolve without linking so a hash claimed by an earlier book in this
-                # same pass can be detected before it is rebound.
-                resolved = self._resolve_download_artifact(book, link_hashes=False)
+                # same pass can be detected before it is rebound. This is the only
+                # path allowed to re-download an expired copy: it runs in the
+                # background, never inside a device request.
+                resolved = self._resolve_download_artifact(
+                    book, link_hashes=False, allow_revalidation=True
+                )
             except Exception as e:
                 summary["errors"] += 1
                 logger.warning("🔗 Hash reconcile failed for '%s': %s", label, e, exc_info=True)
@@ -428,7 +435,8 @@ class KOReaderDeviceSyncService:
         except OSError:
             return False
 
-    def _resolve_source_path(self, book, source_filename: str) -> Optional[Path]:
+    def _resolve_source_path(self, book, source_filename: str,
+                             allow_revalidation: bool = False) -> Optional[Path]:
         try:
             candidate = Path(self.ebook_parser.resolve_book_path(source_filename))
             if candidate.exists() and not self._is_within_cache_dir(candidate):
@@ -443,9 +451,14 @@ class KOReaderDeviceSyncService:
             return None
 
         has_usable_cache = cache_path.exists() and cache_path.stat().st_size > 0
-        if has_usable_cache and not self._hosted_cache_expired(cache_path):
+        # Refreshing a copy means a network download, so it only ever happens on the
+        # background reconcile path. Device-facing work (manifest builds, file
+        # serving) takes whatever is cached however stale — a reader waiting on the
+        # library to re-send hundreds of books is far worse than briefly stale bytes,
+        # and the reconciler brings them current shortly after.
+        if has_usable_cache and (not allow_revalidation or not self._hosted_cache_expired(cache_path)):
             logger.debug(
-                "KOReader device-sync served cached copy for '%s' (TTL not expired)",
+                "KOReader device-sync served cached copy for '%s'",
                 sanitize_log_data(source_filename),
             )
             return cache_path

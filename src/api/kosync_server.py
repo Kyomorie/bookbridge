@@ -159,6 +159,64 @@ def _recent_external_kosync_put_metadata(document_hash: str | None, percentage=N
         "_bridge_recent_external_put_device_id": entry.get("device_id") or "",
     }
 
+_last_device_sync_activity: float = 0.0
+_MANIFEST_CACHE_FILENAME = "device_sync_manifest.json"
+
+
+def _manifest_cache_file() -> Optional[Path]:
+    """On-disk home for the prebuilt manifest, or None if the data dir is unknown."""
+    try:
+        return Path(_container.data_dir()) / _MANIFEST_CACHE_FILENAME
+    except Exception:
+        return None
+
+
+def _persist_manifest_cache(manifest: dict) -> None:
+    """Save the built manifest so a restart does not start cold.
+
+    Building one walks the whole catalogue — minutes on a large library — and the
+    in-memory cache dies with the process, so a reader syncing just after a restart
+    would otherwise block on an inline rebuild.
+    """
+    path = _manifest_cache_file()
+    if path is None:
+        return
+    try:
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(manifest))
+        os.replace(tmp, path)
+    except Exception as e:
+        logger.debug("Could not persist the device-sync manifest cache: %s", e)
+
+
+def _load_persisted_manifest() -> Optional[dict]:
+    """Load the last manifest written to disk, or None."""
+    path = _manifest_cache_file()
+    if path is None or not path.exists():
+        return None
+    try:
+        manifest = json.loads(path.read_text())
+    except Exception as e:
+        logger.debug("Could not read the persisted device-sync manifest: %s", e)
+        return None
+    if not isinstance(manifest, dict) or "books" not in manifest:
+        return None
+    return manifest
+
+
+def note_device_sync_activity() -> None:
+    """Record that a reader is actively talking to the device-sync endpoints."""
+    global _last_device_sync_activity
+    _last_device_sync_activity = time.time()
+
+
+def seconds_since_device_sync_activity() -> float:
+    """Seconds since the last device-sync request, or a large number if never."""
+    if not _last_device_sync_activity:
+        return float("inf")
+    return max(0.0, time.time() - _last_device_sync_activity)
+
+
 def signal_manifest_rebuild() -> None:
     """Wake the manifest prebuilder thread so it rebuilds on the next cycle."""
     _manifest_rebuild_event.set()
@@ -470,6 +528,7 @@ def _manifest_prebuilder_loop() -> None:
             manifest = service.build_manifest()
             with _manifest_cache_lock:
                 _manifest_cache = manifest
+            _persist_manifest_cache(manifest)
             logger.debug(
                 "Manifest cache rebuilt (%d books, revision=%.8s)",
                 len(manifest.get("books", [])),
@@ -1679,6 +1738,7 @@ def koreader_device_sync_manifest():
     # Prebuilder is started lazily on first manifest request so idle installs
     # that don't use device-sync never hash the library (ref #342).
     _start_manifest_prebuilder()
+    note_device_sync_activity()
 
     user_id = getattr(g, "kosync_user_id", None)
 
@@ -1688,7 +1748,20 @@ def koreader_device_sync_manifest():
     if cached is not None:
         return jsonify(_scope_manifest_to_user(cached, user_id)), 200
 
-    # Cold start: cache not yet populated — build inline and prime the cache.
+    # Cold start after a restart: serve the last manifest written to disk rather
+    # than rebuilding inline. A rebuild walks the whole catalogue (minutes on a
+    # large library) and readers commonly sync straight after a restart. The
+    # prebuilder refreshes this within its next cycle, and the manifest's own
+    # revision lets the device notice when it changes.
+    persisted = _load_persisted_manifest()
+    if persisted is not None:
+        with _manifest_cache_lock:
+            _manifest_cache = persisted
+        signal_manifest_rebuild()
+        logger.info("📄 Served the persisted device-sync manifest while the cache rebuilds")
+        return jsonify(_scope_manifest_to_user(persisted, user_id)), 200
+
+    # Never built before (fresh install): no choice but to build inline.
     service = _get_koreader_device_sync_service()
     if not service:
         return jsonify({"error": "Device sync service unavailable"}), 503
@@ -1696,6 +1769,7 @@ def koreader_device_sync_manifest():
     manifest = service.build_manifest()
     with _manifest_cache_lock:
         _manifest_cache = manifest
+    _persist_manifest_cache(manifest)
 
     return jsonify(_scope_manifest_to_user(manifest, user_id)), 200
 
@@ -1705,6 +1779,7 @@ def koreader_device_sync_manifest():
 @kosync_auth_required
 def koreader_device_sync_download(abs_id):
     """Download the original ebook for a bridge-managed KOReader sync item."""
+    note_device_sync_activity()
     service = _get_koreader_device_sync_service()
     if not service:
         return jsonify({"error": "Device sync service unavailable"}), 503

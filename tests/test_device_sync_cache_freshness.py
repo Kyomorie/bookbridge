@@ -120,9 +120,39 @@ class TestDeviceSyncCacheFreshness(unittest.TestCase):
         cache_path = self._write_cache_file(source_filename)
         self._backdate_mtime(cache_path, 7200)  # 2 hours ago, > 60 min TTL
 
+        result = self.service._resolve_source_path(
+            self.book, source_filename, allow_revalidation=True
+        )
+
+        self.assertEqual(result, cache_path)
+        self.bookorbit_client.download_book.assert_called_once_with("42")
+
+    def test_device_facing_path_never_downloads_an_expired_copy(self):
+        """Refreshing costs a network round trip, so it must stay off the request path.
+
+        build_manifest runs inline on a cold cache, so allowing revalidation there
+        made a reader's first sync wait on the library re-sending up to a whole
+        catalogue of books (reported live as KOReader hanging on first sync).
+        """
+        os.environ["DEVICE_SYNC_EBOOK_CACHE_TTL_MINUTES"] = "60"
+        source_filename = "test-book.epub"
+
+        cache_path = self._write_cache_file(source_filename)
+        self._backdate_mtime(cache_path, 7200)
+
+        # Default (device-facing) call: stale bytes are fine, a stalled reader is not.
         result = self.service._resolve_source_path(self.book, source_filename)
 
         self.assertEqual(result, cache_path)
+        self.bookorbit_client.download_book.assert_not_called()
+
+    def test_first_acquisition_still_downloads_without_revalidation(self):
+        """No cached copy at all must still be fetched, or the book can never ship."""
+        os.environ["DEVICE_SYNC_EBOOK_CACHE_TTL_MINUTES"] = "60"
+
+        result = self.service._resolve_source_path(self.book, "never-seen.epub")
+
+        self.assertIsNotNone(result)
         self.bookorbit_client.download_book.assert_called_once_with("42")
 
     def test_zero_ttl_never_expires(self):
@@ -159,7 +189,9 @@ class TestDeviceSyncCacheFreshness(unittest.TestCase):
         self._backdate_mtime(cache_path, 7200)  # Expired
         self.bookorbit_client.download_book.return_value = None  # Download fails
 
-        result = self.service._resolve_source_path(self.book, source_filename)
+        result = self.service._resolve_source_path(
+            self.book, source_filename, allow_revalidation=True
+        )
 
         self.assertEqual(result, cache_path)
         self.assertEqual(cache_path.read_bytes(), b"OLD")
@@ -179,7 +211,9 @@ class TestDeviceSyncCacheFreshness(unittest.TestCase):
         self._backdate_mtime(cache_path, 7200)
         self.bookorbit_client.download_book.return_value = None
 
-        self.service._resolve_source_path(self.book, source_filename)
+        self.service._resolve_source_path(
+            self.book, source_filename, allow_revalidation=True
+        )
 
         self.assertFalse(
             self.service._hosted_cache_expired(cache_path),
@@ -188,7 +222,9 @@ class TestDeviceSyncCacheFreshness(unittest.TestCase):
 
         # A second immediate pass therefore attempts no further download.
         self.bookorbit_client.download_book.reset_mock()
-        self.service._resolve_source_path(self.book, source_filename)
+        self.service._resolve_source_path(
+            self.book, source_filename, allow_revalidation=True
+        )
         self.bookorbit_client.download_book.assert_not_called()
 
     def test_cwa_is_not_asked_for_another_providers_id(self):
@@ -270,7 +306,9 @@ class TestDeviceSyncCacheFreshness(unittest.TestCase):
 
         self.bookorbit_client.download_book.side_effect = destructive_download
 
-        result = self.service._resolve_source_path(self.book, source_filename)
+        result = self.service._resolve_source_path(
+            self.book, source_filename, allow_revalidation=True
+        )
 
         self.assertEqual(result, cache_path)
         self.assertTrue(cache_path.exists(), "cached copy must survive a failed refresh")
@@ -285,7 +323,9 @@ class TestDeviceSyncCacheFreshness(unittest.TestCase):
         self._backdate_mtime(cache_path, 7200)
         self.bookorbit_client.download_book.return_value = b"NEWBYTES"
 
-        result = self.service._resolve_source_path(self.book, source_filename)
+        result = self.service._resolve_source_path(
+            self.book, source_filename, allow_revalidation=True
+        )
 
         self.assertEqual(result, cache_path)
         self.assertEqual(cache_path.read_bytes(), b"NEWBYTES")
@@ -321,7 +361,9 @@ class TestDeviceSyncCacheFreshness(unittest.TestCase):
         self.ebook_parser.resolve_book_path.side_effect = None
         self.ebook_parser.resolve_book_path.return_value = str(cache_path)
 
-        result = self.service._resolve_source_path(self.book, source_filename)
+        result = self.service._resolve_source_path(
+            self.book, source_filename, allow_revalidation=True
+        )
 
         self.assertEqual(result, cache_path)
         self.bookorbit_client.download_book.assert_called_once_with("42")
