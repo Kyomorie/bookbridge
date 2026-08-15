@@ -1,3 +1,4 @@
+import json
 import unittest
 from unittest.mock import MagicMock, patch
 from src.sync_clients.abs_ebook_sync_client import ABSEbookSyncClient
@@ -272,3 +273,77 @@ class TestCfiGuards(unittest.TestCase):
         self.assertIsNone(
             self.parser.get_text_around_cfi("book.epub", TestABSReadiumLocator.REPORTED_LOCATION)
         )
+
+
+class TestABSWritesMatchingLocatorShape(unittest.TestCase):
+    """#359 follow-up: the reporter reads only in the ABS mobile app.
+
+    `ebookLocation` is opaque to ABS — whatever a reader writes is handed back.
+    Always writing a CFI leaves a Readium-based reader with nothing it can
+    resolve, so the write mirrors whatever shape is already stored.
+    """
+
+    READIUM = ('{"href":"OEBPS/Text/part0014.xhtml","locations":'
+               '{"position":78,"progression":0.336}}')
+
+    def setUp(self):
+        self.mock_abs_client = MagicMock()
+        self.mock_ebook_parser = MagicMock()
+        self.client = ABSEbookSyncClient(self.mock_abs_client, self.mock_ebook_parser)
+        self.book = Book(abs_id="dcc", ebook_filename="dcc.epub")
+        self.mock_abs_client.update_ebook_progress.return_value = True
+
+    def _push(self, existing_location, **locator_kwargs):
+        self.mock_abs_client.get_progress_with_status.return_value = (
+            {"ebookProgress": 0.2, "ebookLocation": existing_location}, 200,
+        )
+        kwargs = {
+            "percentage": 0.35,
+            "cfi": "epubcfi(/6/32!/4/2/4/46/6:0)",
+            "href": "OEBPS/Text/part0014.xhtml",
+            "chapter_progress": 0.336,
+        }
+        kwargs.update(locator_kwargs)
+        self.client.update_progress(self.book, UpdateProgressRequest(LocatorResult(**kwargs)))
+        return self.mock_abs_client.update_ebook_progress.call_args[0][2]
+
+    def test_readium_reader_gets_a_readium_locator(self):
+        written = self._push(self.READIUM)
+        payload = json.loads(written)
+        self.assertEqual(payload["href"], "OEBPS/Text/part0014.xhtml")
+        self.assertAlmostEqual(payload["locations"]["progression"], 0.336)
+        self.assertAlmostEqual(payload["locations"]["totalProgression"], 0.35)
+        # The CFI rides along so a CFI-capable reader can still resolve it.
+        self.assertEqual(payload["locations"]["partialCfi"], "epubcfi(/6/32!/4/2/4/46/6:0)")
+
+    def test_cfi_reader_still_gets_a_cfi(self):
+        self.assertEqual(self._push("epubcfi(/6/14!/4/2/1:0)"), "epubcfi(/6/32!/4/2/4/46/6:0)")
+
+    def test_unread_book_still_gets_a_cfi(self):
+        self.assertEqual(self._push(""), "epubcfi(/6/32!/4/2/4/46/6:0)")
+        self.assertEqual(self._push(None), "epubcfi(/6/32!/4/2/4/46/6:0)")
+
+    def test_readium_reader_without_an_href_falls_back_to_cfi(self):
+        self.assertEqual(
+            self._push(self.READIUM, href=None), "epubcfi(/6/32!/4/2/4/46/6:0)")
+
+    def test_probe_failure_falls_back_to_cfi(self):
+        self.mock_abs_client.get_progress_with_status.side_effect = RuntimeError("boom")
+        self.client.update_progress(self.book, UpdateProgressRequest(LocatorResult(
+            percentage=0.35, cfi="epubcfi(/6/32!/4/2/4/46/6:0)",
+            href="OEBPS/Text/part0014.xhtml", chapter_progress=0.336)))
+        self.assertEqual(
+            self.mock_abs_client.update_ebook_progress.call_args[0][2],
+            "epubcfi(/6/32!/4/2/4/46/6:0)")
+
+    def test_round_trips_through_the_parser(self):
+        """What we write must be what get_service_state can read back."""
+        from src.utils.ebook_utils import parse_readium_locator
+        parsed = parse_readium_locator(self._push(self.READIUM))
+        self.assertEqual(parsed["href"], "OEBPS/Text/part0014.xhtml")
+        self.assertAlmostEqual(parsed["chapter_progress"], 0.336)
+        self.assertEqual(parsed["cfi"], "epubcfi(/6/32!/4/2/4/46/6:0)")
+
+    def test_reset_to_zero_is_unchanged(self):
+        self.client.update_progress(self.book, UpdateProgressRequest(LocatorResult(percentage=0)))
+        self.mock_abs_client.update_ebook_progress.assert_called_with("dcc", 0, "")

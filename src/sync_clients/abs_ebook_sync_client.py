@@ -5,7 +5,7 @@ from typing import Optional
 from src.api.api_clients import ABSClient
 from src.db.models import Book, State
 from src.sync_clients.sync_client_interface import SyncClient, SyncResult, UpdateProgressRequest, ServiceState, ABS_ITEM_NOT_FOUND
-from src.utils.ebook_utils import EbookParser, parse_readium_locator
+from src.utils.ebook_utils import EbookParser, build_readium_locator, parse_readium_locator
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +161,44 @@ class ABSEbookSyncClient(SyncClient):
             return ABS_ITEM_NOT_FOUND
         return None
 
+    def _location_for_target(self, target_id: str, locator) -> str:
+        """Write the position back in the shape this book's ABS reader uses.
+
+        `ebookLocation` is opaque to Audiobookshelf — it stores whatever the
+        reader put there and hands the same string back. The web reader (epub.js)
+        speaks `epubcfi(...)`; the mobile apps (Readium) speak a JSON locator, and
+        a Readium reader cannot restore from a CFI. Writing one fixed shape
+        therefore strands whichever half of the userbase doesn't speak it.
+
+        So mirror what is already stored: the reader that wrote it is the reader
+        that will read it back. Falls back to the CFI when the field is empty or
+        already a CFI, which keeps web-reader installs behaving exactly as before.
+        """
+        cfi = locator.cfi
+        try:
+            response, _status = self.abs_client.get_progress_with_status(target_id)
+        except Exception as e:
+            logger.debug(f"ABS ebook locator-shape probe failed for '{target_id}': {e}", exc_info=True)
+            return cfi
+
+        existing = (response or {}).get('ebookLocation')
+        if not parse_readium_locator(existing):
+            return cfi
+
+        readium = build_readium_locator(locator)
+        if not readium:
+            logger.debug(
+                "ABS ebook '%s' uses Readium locators but this position has no href; "
+                "writing the CFI instead", target_id,
+            )
+            return cfi
+
+        logger.info(
+            "📍 ABS eBook '%s' reads Readium locators — writing position as a Readium locator",
+            target_id,
+        )
+        return readium
+
     def update_progress(self, book: Book, request: UpdateProgressRequest) -> SyncResult:
         locator = request.locator_result
         if locator.percentage == 0:
@@ -184,7 +222,7 @@ class ABSEbookSyncClient(SyncClient):
 
         pct = locator.percentage
         target_id = self._resolve_target_id(book)
-        cfi = locator.cfi
+        cfi = self._location_for_target(target_id, locator)
         success = self.abs_client.update_ebook_progress(target_id, pct, cfi)
         if success:
             try:

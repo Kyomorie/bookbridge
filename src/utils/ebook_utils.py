@@ -2363,6 +2363,57 @@ def parse_readium_locator(raw) -> Optional[dict]:
     return locator or None
 
 
+def build_readium_locator(locator, total_progression=None) -> Optional[str]:
+    """Render a locator as a Readium JSON string, or None when it can't be.
+
+    The inverse of :func:`parse_readium_locator`. A Readium-based reader stores
+    and restores this shape; handing it an ``epubcfi(...)`` string in the same
+    field leaves it with nothing it can resolve. Requires an href — without one
+    there is no anchor and the caller should fall back to a CFI.
+    """
+    href = str(getattr(locator, "href", "") or "").strip()
+    if not href:
+        return None
+
+    locations = {}
+
+    chapter_progress = getattr(locator, "chapter_progress", None)
+    if chapter_progress is not None:
+        try:
+            locations["progression"] = max(0.0, min(float(chapter_progress), 1.0))
+        except (TypeError, ValueError):
+            pass
+
+    if total_progression is None:
+        total_progression = getattr(locator, "percentage", None)
+    if total_progression is not None:
+        try:
+            locations["totalProgression"] = max(0.0, min(float(total_progression), 1.0))
+        except (TypeError, ValueError):
+            pass
+
+    css_selector = getattr(locator, "css_selector", None)
+    if css_selector:
+        locations["cssSelector"] = css_selector
+
+    # Keep the CFI alongside as partialCfi: harmless to Readium, and it means a
+    # CFI-capable reader can still resolve the same position.
+    cfi = getattr(locator, "cfi", None)
+    if is_epub_cfi(cfi):
+        locations["partialCfi"] = cfi
+
+    if not locations:
+        return None
+
+    payload = {"href": href, "type": "application/xhtml+xml", "locations": locations}
+
+    fragment = getattr(locator, "fragment", None)
+    if fragment:
+        payload["locations"]["fragments"] = [fragment]
+
+    return json.dumps(payload, separators=(",", ":"))
+
+
 def resolve_ebook_identifiers(ebook_parser, book, booklore_client=None, bookorbit_client=None) -> dict:
     """Best-effort {title, author, isbn, asin} for a mapping's ebook.
 
