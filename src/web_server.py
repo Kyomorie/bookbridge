@@ -8540,6 +8540,8 @@ def _build_listening_yearly_recap(all_days, year, items_finished):
             month_index = int(date_str.split("-")[1]) - 1
         except (IndexError, ValueError):
             continue
+        if month_index not in range(12):
+            continue
         seconds = int(round(float(value or 0)))
         months[month_index]["seconds"] += seconds
         total_seconds += seconds

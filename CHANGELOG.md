@@ -79,7 +79,8 @@ All notable changes to BookBridge will be documented in this file.
   sessions carrying only a linked KoSync document hash resolve to the correct
   book instead of remaining in the device retry queue; and a JSON `null` response
   from Storyteller's fallback details endpoint is rejected cleanly instead of
-  raising a `NoneType.get` error.
+  raising a `NoneType.get` error. Listening-stat recaps also skip malformed ABS
+  date keys with impossible month numbers instead of failing the entire stats API.
 
 - **Long audiobooks could be transcribed from only part of the audio, throwing
   every synced position off.** If BookBridge only received part of an audiobook,

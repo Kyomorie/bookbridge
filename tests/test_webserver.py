@@ -2691,6 +2691,18 @@ class CleanFlaskIntegrationTest(unittest.TestCase):
         self.assertTrue(any(session['isLinked'] is False for session in data['reading']['recentSessions']))
         mock_write_cached.assert_called_once()
 
+    def test_listening_yearly_recap_skips_out_of_range_months(self):
+        from src.web_server import _build_listening_yearly_recap
+
+        recap = _build_listening_yearly_recap(
+            {"2026-00-15": 10, "2026-13-01": 20, "2026-04-07": 30},
+            2026,
+            0,
+        )
+
+        self.assertEqual(recap["totalSeconds"], 30)
+        self.assertEqual(recap["months"][3]["seconds"], 30)
+
     def test_api_stats_reading_day_supports_unlinked_books(self):
         payload = {
             'date': '2026-04-07',
