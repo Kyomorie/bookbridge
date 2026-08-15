@@ -191,6 +191,62 @@ class TestDeviceSyncCacheFreshness(unittest.TestCase):
         self.service._resolve_source_path(self.book, source_filename)
         self.bookorbit_client.download_book.assert_not_called()
 
+    def test_cwa_is_not_asked_for_another_providers_id(self):
+        """ebook_source_id is namespaced per source and must not leak into CWA.
+
+        Reading it unconditionally sent every BookOrbit book's id to CWA as
+        /opds/download/<bookorbit id>/, which 401s or 404s forever. Observed live as
+        a flood of CWA errors for books CWA has never held.
+        """
+        cwa_client = MagicMock()
+        cwa_client.is_configured.return_value = True
+        self.service.cwa_client = cwa_client
+
+        bookorbit_book = SimpleNamespace(
+            ebook_source="bookorbit", ebook_source_id="1689",
+            abs_id="abs-1", abs_title="A BookOrbit Book", sync_mode="ebook_only",
+        )
+
+        self.assertFalse(
+            self.service._download_from_cwa(bookorbit_book, "some-book.epub", self.cache_dir / "x.epub")
+        )
+        cwa_client.get_book_by_id.assert_not_called()
+
+    def test_cwa_still_downloads_its_own_books(self):
+        cwa_client = MagicMock()
+        cwa_client.is_configured.return_value = True
+        cwa_client.get_book_by_id.return_value = {"download_url": "http://cwa/x"}
+        cwa_client.download_ebook.return_value = True
+        self.service.cwa_client = cwa_client
+
+        cwa_book = SimpleNamespace(
+            ebook_source="CWA", ebook_source_id="42",
+            abs_id="abs-2", abs_title="A CWA Book", sync_mode="ebook_only",
+        )
+
+        self.assertTrue(
+            self.service._download_from_cwa(cwa_book, "cwa_42.epub", self.cache_dir / "y.epub")
+        )
+        cwa_client.get_book_by_id.assert_called_once_with("42")
+
+    def test_cwa_filename_pattern_still_recognised(self):
+        """A cwa_<id>.epub filename identifies a CWA book even without the source."""
+        cwa_client = MagicMock()
+        cwa_client.is_configured.return_value = True
+        cwa_client.get_book_by_id.return_value = {"download_url": "http://cwa/x"}
+        cwa_client.download_ebook.return_value = True
+        self.service.cwa_client = cwa_client
+
+        unknown = SimpleNamespace(
+            ebook_source=None, ebook_source_id=None,
+            abs_id="abs-3", abs_title="Unknown", sync_mode="ebook_only",
+        )
+
+        self.assertTrue(
+            self.service._download_from_cwa(unknown, "cwa_99.epub", self.cache_dir / "z.epub")
+        )
+        cwa_client.get_book_by_id.assert_called_once_with("99")
+
     def test_destructive_download_cannot_clobber_the_cached_copy(self):
         """A download helper that deletes the path it is given must not lose the cache.
 

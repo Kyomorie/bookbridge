@@ -588,9 +588,15 @@ class KOReaderDeviceSyncService:
         if not self.cwa_client or not self.cwa_client.is_configured():
             return False
 
+        # ebook_source_id is namespaced to the source that owns the book, so it is a
+        # CWA id only when the book is CWA-sourced. Reading it unconditionally sent
+        # every other provider's id to CWA — a BookOrbit book was requested as
+        # /opds/download/<bookorbit id>/, which can only ever fail.
         source_name = str(getattr(book, "ebook_source", "") or "").strip().lower()
-        cwa_id = str(getattr(book, "ebook_source_id", "") or "").strip()
-        if source_name != "cwa" and not cwa_id:
+        cwa_id = ""
+        if source_name == "cwa":
+            cwa_id = str(getattr(book, "ebook_source_id", "") or "").strip()
+        if not cwa_id:
             match = self._CWA_FILENAME_RE.match(str(source_filename or ""))
             if match:
                 cwa_id = str(match.group("cwa_id") or "").strip()
