@@ -48,16 +48,32 @@ class ABSSyncClient(SyncClient):
             abs_ts = item_data.get('currentTime', 0)
             abs_last_update = item_data.get('lastUpdate')
             abs_finished = bool(item_data.get('isFinished'))
+            abs_duration = item_data.get('duration')
             # Note: Still need to convert to percentage using transcript
         else:
             response = self.abs_client.get_progress(abs_id)
             abs_ts = response.get('currentTime') if response is not None else None
             abs_last_update = response.get('lastUpdate') if response is not None else None
             abs_finished = bool(response.get('isFinished')) if response is not None else False
+            abs_duration = response.get('duration') if response is not None else None
 
         if abs_ts is None:
             logger.info("🔍 ABS timestamp is None, probably not started the book yet")
             abs_ts = 0.0
+
+        # book.duration is stamped at match time and divides every seconds->percentage
+        # conversion below, so a re-encoded or re-chaptered audiobook silently skews
+        # every ABS position until it is re-matched. Adopt the service's own duration
+        # for this cycle and report it so the cycle can persist the correction.
+        corrected_duration = self._corrected_duration(book, abs_duration)
+        if corrected_duration is not None:
+            logger.info(
+                "📏 ABS duration changed for '%s': %.1fs -> %.1fs (percentages recomputed)",
+                title_snip or abs_id,
+                float(book.duration or 0.0),
+                corrected_duration,
+            )
+            book.duration = corrected_duration
 
         # ABS can mark an item finished without moving currentTime to the exact
         # duration. Treat the service's completion flag as authoritative so the
@@ -81,6 +97,8 @@ class ABSSyncClient(SyncClient):
         service_updated_at = parse_service_timestamp(abs_last_update)
         if service_updated_at is not None:
             current['service_updated_at'] = service_updated_at
+        if corrected_duration is not None:
+            current['service_duration'] = corrected_duration
 
         return ServiceState(
             current=current,
@@ -92,6 +110,37 @@ class ABSSyncClient(SyncClient):
             value_seconds_formatter=lambda v: f"{v:.2f}s",
             value_formatter=lambda v: f"{v:.4%}"
         )
+
+    # Below this relative change a duration difference is rounding/metadata noise,
+    # not a re-encode. Kept generous so normal jitter never rewrites the divisor.
+    _DURATION_DRIFT_TOLERANCE = 0.005
+
+    @classmethod
+    def _corrected_duration(cls, book: Book, service_duration) -> Optional[float]:
+        """Return the service's duration when it materially disagrees with ours.
+
+        Returns None when there is nothing to correct. A missing, zero, or
+        unparseable service value is always None: adopting it would zero the
+        divisor and be far worse than the staleness it would fix.
+        """
+        try:
+            candidate = float(service_duration)
+        except (TypeError, ValueError):
+            return None
+        if candidate <= 0:
+            return None
+
+        stored = book.duration if book else None
+        try:
+            stored = float(stored) if stored else 0.0
+        except (TypeError, ValueError):
+            stored = 0.0
+
+        if stored <= 0:
+            return candidate
+        if abs(candidate - stored) / stored <= cls._DURATION_DRIFT_TOLERANCE:
+            return None
+        return candidate
 
     def _abs_to_percentage(self, abs_seconds, book: Book):
         """Convert ABS timestamp to percentage using book duration (preferred) or transcript"""

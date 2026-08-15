@@ -879,6 +879,26 @@ class SyncManager:
         return normalized if len(normalized) > 1 else None
 
 
+    def _persist_corrected_duration(self, book, state) -> None:
+        """Persist a duration a client reported as materially different from ours.
+
+        ``Book.duration`` divides every audio seconds->percentage conversion, so a
+        stale value silently skews positions rather than looking wrong. The client
+        has already applied the correction in memory for this cycle; write it back
+        so the next cycle (and the dashboard) start from the right number.
+        """
+        corrected = state.current.get('service_duration') if state and state.current else None
+        if not corrected:
+            return
+        try:
+            book.duration = float(corrected)
+            self.database_service.update_book_if_exists(book)
+        except Exception as e:
+            logger.warning(
+                "Could not persist corrected duration for '%s': %s",
+                getattr(book, 'abs_id', '?'), e, exc_info=True,
+            )
+
     def _fetch_states_parallel(self, book, prev_states_by_client, title_snip, bulk_states_per_client=None, clients_to_use=None):
         """Fetch states from specified clients (or all if not specified) in parallel."""
         clients_to_use = clients_to_use or self.sync_clients
@@ -924,6 +944,7 @@ class SyncManager:
                         state.current['_service_prev_updated_at'] = getattr(
                             prev_state, 'service_updated_at', None
                         )
+                        self._persist_corrected_duration(book, state)
                         config[client_name] = state
                 except Exception as e:
                     logger.warning(f"⚠️ '{client_name}' state fetch failed: {e}", exc_info=True)

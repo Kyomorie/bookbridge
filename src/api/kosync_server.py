@@ -1202,6 +1202,14 @@ def kosync_get_progress(doc_id):
         user_id=getattr(g, "kosync_user_id", None),
         source="get",
     )
+    # An unknown hash is usually a file that was edited since we last hashed it, so
+    # wake the reconciler now rather than leaving the device unresolved until its
+    # next scheduled pass. Cheap and coalescing: many signals produce one pass.
+    try:
+        from src.services.hash_reconciler import signal_reconcile_soon
+        signal_reconcile_soon()
+    except Exception as e:
+        logger.debug(f"KOSync: could not signal the hash reconciler: {e}")
 
     logger.warning(
         f"⚠️ KOSync: Document not found: '{doc_id}' (GET from {request.remote_addr}). "

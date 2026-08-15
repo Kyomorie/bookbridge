@@ -110,6 +110,22 @@ class EbookParser:
         )
 
     @staticmethod
+    def _file_cache_key(filepath) -> str:
+        """Cache key for a parsed file: path plus its mtime and size.
+
+        Keying on the path alone means replacing a file in place — which is what
+        editing metadata in Calibre/CWA does — keeps serving the old text and spine
+        until the entry is evicted or the process restarts. Falls back to the bare
+        path when the file cannot be stat'ed, preserving the previous behavior.
+        """
+        path_str = str(filepath)
+        try:
+            stat = Path(filepath).stat()
+        except OSError:
+            return path_str
+        return f"{path_str}|{stat.st_mtime_ns}|{stat.st_size}"
+
+    @staticmethod
     def _parse_extra_book_dirs(raw: str) -> list:
         """Parse EXTRA_EBOOK_DIRS into a list of Paths (comma/newline separated)."""
         if not raw:
@@ -450,8 +466,9 @@ class EbookParser:
         if not filepath.exists():
             filepath = self.resolve_book_path(filepath.name)
         str_path = str(filepath)
+        cache_key = self._file_cache_key(filepath)
 
-        cached = self.cache.get(str_path)
+        cached = self.cache.get(cache_key)
         if cached:
             if progress_callback: progress_callback(1.0)
             return cached['text'], cached['map']
@@ -505,7 +522,7 @@ class EbookParser:
                     current_idx = end + 1
 
             combined_text = " ".join(full_text_parts)
-            self.cache.put(str_path, {'text': combined_text, 'map': spine_map})
+            self.cache.put(cache_key, {'text': combined_text, 'map': spine_map})
             return combined_text, spine_map
 
         except Exception as e:
@@ -971,7 +988,8 @@ class EbookParser:
         start of the chapter. Returns an empty set for books without overlays.
         """
         str_path = str(book_path)
-        cached = self._media_overlay_ids_cache.get(str_path)
+        cache_key = self._file_cache_key(book_path)
+        cached = self._media_overlay_ids_cache.get(cache_key)
         if cached is not None:
             return cached
 
@@ -986,7 +1004,7 @@ class EbookParser:
         except Exception as e:
             logger.debug(f"Media overlay scan failed for '{str_path}': {e}")
 
-        self._media_overlay_ids_cache.put(str_path, ids)
+        self._media_overlay_ids_cache.put(cache_key, ids)
         return ids
 
     def get_fragment_for_tag(self, tag, valid_ids: Optional[set] = None):

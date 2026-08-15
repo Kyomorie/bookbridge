@@ -1567,6 +1567,23 @@
                             on a single exact audiobook. Ambiguous matches still become suggestions. Requires Ollama
                             for the fuzzy-agreement path.</small>
                     </div>
+                    <div class="checkbox-wrapper full-width">
+                        <input type="checkbox" id="kosync_hash_reconcile" name="KOSYNC_HASH_RECONCILE_ENABLED"
+                            {% if get_bool('KOSYNC_HASH_RECONCILE_ENABLED') %}checked{% endif %}>
+                        <label for="kosync_hash_reconcile">Keep book links working after file edits</label>
+                        <small>Editing a book's metadata in your library (genres, cover, anything that rewrites the
+                            file) changes its sync fingerprint and would otherwise break the link to your reader.
+                            When enabled, BookBridge re-checks your books on a schedule and re-links them
+                            automatically, so you never have to update a hash by hand. Earlier copies already on a
+                            device keep working.</small>
+                    </div>
+                    <div class="form-group">
+                        <label>Re-check Interval (minutes)</label>
+                        <input type="number" name="KOSYNC_HASH_RECONCILE_MINUTES" min="5"
+                            value="{{ get_val('KOSYNC_HASH_RECONCILE_MINUTES', '360') }}">
+                        <div class="help-text">How often to re-check your books for changed files. Unchanged files
+                            are skipped cheaply, so this is inexpensive for books stored on disk. Minimum 5 minutes.</div>
+                    </div>
                 </div>
             </div>
 

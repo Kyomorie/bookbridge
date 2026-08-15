@@ -3495,6 +3495,7 @@ def settings():
         bool_keys = [
             'KOSYNC_USE_PERCENTAGE_FROM_SERVER',
             'KOSYNC_AUTO_MAP_ON_AGREEMENT',
+            'KOSYNC_HASH_RECONCILE_ENABLED',
             'KOREADER_ANNOTATION_SYNC',
             'SYNC_FRESHNESS_GUARDS',
             'SYNC_ABS_EBOOK',
@@ -8257,6 +8258,20 @@ def update_hash(abs_id):
     return redirect(url_for('index'))
 
 
+def _extracted_cover_is_stale(cover_path, source_path) -> bool:
+    """True when the ebook has been rewritten since its cover was extracted.
+
+    Adding or replacing a cover rewrites the EPUB, but the extracted jpg is
+    written once and served forever, so the dashboard keeps showing the old
+    art (and it is preferred over the live audio cover). Compare mtimes so an
+    edited book re-extracts on the next request.
+    """
+    try:
+        return Path(source_path).stat().st_mtime > Path(cover_path).stat().st_mtime
+    except (OSError, TypeError):
+        return False
+
+
 def serve_cover(filename):
     """Serve cover images with lazy extraction."""
     # Filename is likely <hash>.jpg
@@ -8264,12 +8279,23 @@ def serve_cover(filename):
 
     # 1. Check if file exists
     cover_path = COVERS_DIR / filename
+    book = database_service.get_book_by_kosync_id(doc_hash)
+
     if cover_path.exists():
-        return send_from_directory(COVERS_DIR, filename)
+        source_path = None
+        if book and book.ebook_filename:
+            try:
+                source_path = container.ebook_parser().resolve_book_path(book.ebook_filename)
+            except Exception as e:
+                logger.debug(f"Cover freshness check could not resolve the ebook: {e}")
+        if not source_path or not _extracted_cover_is_stale(cover_path, source_path):
+            return send_from_directory(COVERS_DIR, filename)
+        logger.info(
+            "🖼️ Re-extracting cover for '%s': the ebook changed since it was cached",
+            sanitize_log_data(getattr(book, "abs_title", None) or doc_hash),
+        )
 
     # 2. Try to extract
-    # Find book by kosync ID
-    book = database_service.get_book_by_kosync_id(doc_hash)
 
     if book and book.ebook_filename:
         # We need the full path to the book. ebook_parser resolves it usually.
@@ -9636,7 +9662,19 @@ def proxy_cover(abs_id):
         req = requests.get(url, stream=True, timeout=10)
         if req.status_code == 200:
             from flask import Response
-            return Response(req.iter_content(chunk_size=1024), content_type=req.headers.get('content-type', 'image/jpeg'))
+            response = Response(
+                req.iter_content(chunk_size=1024),
+                content_type=req.headers.get('content-type', 'image/jpeg'),
+            )
+            # This proxy is live, but with no cache headers browsers apply their own
+            # heuristic freshness and a cover replaced upstream can look stale for a
+            # long time. A short max-age plus the upstream validator keeps it cheap
+            # and lets a changed cover appear quickly.
+            response.headers['Cache-Control'] = 'public, max-age=300'
+            upstream_etag = req.headers.get('ETag')
+            if upstream_etag:
+                response.headers['ETag'] = upstream_etag
+            return response
         else:
             return "Cover not found", 404
     except Exception as e:
@@ -11287,6 +11325,16 @@ if __name__ == '__main__':
         ).start()
     except Exception as exc:
         logger.warning("Annotation sync daemon failed to start: %s", exc, exc_info=True)
+
+    # Keep KoSync hashes bound to their books after a library file is edited. The
+    # manifest prebuilder does this too, but only once a device has asked for a
+    # manifest (ref #342), so installs that never use device-sync would otherwise
+    # never re-link a drifted hash.
+    try:
+        from src.services.hash_reconciler import start_hash_reconciler_thread
+        start_hash_reconciler_thread(container.koreader_device_sync_service())
+    except Exception as exc:
+        logger.warning("Hash reconciler failed to start: %s", exc, exc_info=True)
 
     # Re-attach Forge & Match completion watchers orphaned by a restart. The
     # banner/card survive in the DB (status='forging'), but the polling thread

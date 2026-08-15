@@ -165,6 +165,32 @@ class TestDeviceSyncCacheFreshness(unittest.TestCase):
         self.assertEqual(cache_path.read_bytes(), b"OLD")
         self.bookorbit_client.download_book.assert_called_once()
 
+    def test_failed_revalidation_backs_off_a_full_ttl(self):
+        """A failing source must not be retried by every manifest rebuild.
+
+        The prebuilder rebuilds every 60s, so without a backoff an unreachable or
+        401ing source is re-downloaded every minute for as long as the copy stays
+        expired (observed live as a CWA 401 storm with ERROR tracebacks).
+        """
+        os.environ["DEVICE_SYNC_EBOOK_CACHE_TTL_MINUTES"] = "60"
+        source_filename = "test-book.epub"
+
+        cache_path = self._write_cache_file(source_filename)
+        self._backdate_mtime(cache_path, 7200)
+        self.bookorbit_client.download_book.return_value = None
+
+        self.service._resolve_source_path(self.book, source_filename)
+
+        self.assertFalse(
+            self.service._hosted_cache_expired(cache_path),
+            "a failed refresh must push the next attempt out by a full TTL",
+        )
+
+        # A second immediate pass therefore attempts no further download.
+        self.bookorbit_client.download_book.reset_mock()
+        self.service._resolve_source_path(self.book, source_filename)
+        self.bookorbit_client.download_book.assert_not_called()
+
     def test_destructive_download_cannot_clobber_the_cached_copy(self):
         """A download helper that deletes the path it is given must not lose the cache.
 
