@@ -8,6 +8,24 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **Shared library: one setting to give everyone every book.** New opt-in
+  *Settings → Features → Shared Library*. With it on, every book anyone matches
+  becomes visible to every user automatically, and a newly created account starts
+  with the whole library — so nobody has to re-match a book someone else already
+  processed. Only visibility is shared: reading progress, KOSync documents and
+  reading stats stay per-user exactly as before, and removing a book still only
+  removes it from your own library. Leave it off if each person curates their own
+  shelves.
+
+- **Truncated audiobook downloads are now caught instead of silently accepted.**
+  BookBridge verifies that a downloaded audio file is the size the server said it
+  would be, and that the audio it is about to transcribe actually covers the
+  runtime your library reports. A new *Minimum Transcript Coverage* setting
+  (default 85%) controls the tolerance; set it to 0 if you deliberately sync
+  abridged audio. The check runs *before* transcription starts, so a bad download
+  fails in seconds instead of after hours of processing, and the job retries with
+  a fresh download rather than producing a book that syncs to the wrong place.
+
 - **BridgeSync performance and resilience upgrade (plugin v0.6.1).** Highlight
   exchanges now normalize and sort each book once, use indexed identity lookups,
   omit unchanged complete key lists, and fit every batch to the real JSON byte
@@ -34,6 +52,41 @@ All notable changes to BookBridge will be documented in this file.
   Update the plugin on your device to get the new setting.
 
 ### Fixed
+
+- **Long audiobooks could be transcribed from only part of the audio, throwing
+  every synced position off.** If BookBridge only received part of an audiobook,
+  it transcribed and aligned what it got without complaining — the result looked
+  like a finished book, but every position it calculated was off by however much
+  audio was missing. One reported case turned a 28-hour audiobook into 21 hours,
+  putting the ebook roughly four hours ahead of where the listener actually was.
+  BookBridge now refuses to align audio that falls short of the runtime your
+  library reports, and re-checks any previously cached transcript, so an affected
+  book repairs itself on its next transcription attempt instead of staying wrong
+  forever. Books already aligned from short audio should be re-aligned.
+
+- **Progress percentages shown for audio sources read too high.** When converting
+  an audiobook position into "how far through the book am I", BookBridge divided
+  by the last point its transcript matched rather than the length of the book.
+  On a healthy book that was a small over-estimate; on a book aligned from
+  incomplete audio it was large. Books get the corrected figure when they are
+  next aligned.
+
+- **Audiobookshelf mobile reading positions are now understood properly (#359).**
+  The Audiobookshelf web reader and its mobile apps record ebook positions in two
+  different formats. BookBridge only understood the web reader's, so a position
+  saved from the mobile app could not be resolved — it logged an
+  `Error resolving CFI->index` every sync cycle and fell back to matching by
+  percentage alone, which is much less precise. Both formats are now read
+  correctly, and the recurring error is gone.
+
+- **Adding a book someone else already matched no longer re-runs the whole
+  process (#360).** In a multi-user setup, the book catalog and its audio↔ebook
+  alignment are shared, but each person needs their own claim on a book for it to
+  appear in their library. Submitting an already-matched book for a second user
+  used to reset it and re-run transcription and alignment from scratch. It now
+  reuses the existing alignment and finishes immediately, as long as the same
+  ebook and audiobook are being paired — genuinely re-pairing a book to a
+  different ebook still reprocesses, as it must.
 
 - **BridgeSync plugin: a failed book download is now retried on the next sync
   (plugin v0.5.5).** Previously, if one download failed mid-sync (network blip,
