@@ -388,7 +388,26 @@ class ABSClient:
                 with open(output_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
                         f.write(chunk)
-            
+                # iter_content stops silently when the connection closes early, so a
+                # truncated body would otherwise be accepted as a complete download.
+                declared = r.headers.get('Content-Length')
+
+            # Content-Length is a decimal string; anything else is unverifiable.
+            declared = str(declared or "").strip()
+            if declared.isdigit():
+                expected_bytes = int(declared)
+                actual_bytes = os.path.getsize(output_path) if os.path.exists(output_path) else 0
+                if expected_bytes > 0 and actual_bytes != expected_bytes:
+                    logger.error(
+                        "❌ ABS Download truncated: got %s bytes, expected %s (%s)",
+                        actual_bytes,
+                        expected_bytes,
+                        output_path,
+                    )
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                    return False
+
             if os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
                 return True
             return False

@@ -71,6 +71,78 @@ class AudioTranscriber:
             minutes = 45
         return max(1, minutes) * 60
 
+    @property
+    def min_coverage(self) -> float:
+        """Minimum fraction of the audiobook a transcript must span to be usable.
+
+        A transcript that covers only part of the audio still aligns cleanly against
+        the ebook, so nothing downstream notices — every position derived from that
+        map is then silently wrong by 1/coverage. Read per access (DI singleton, so a
+        cached value would ignore settings changes until restart). 0 disables.
+        """
+        raw = os.environ.get("TRANSCRIPT_MIN_COVERAGE", "0.85")
+        try:
+            coverage = float(raw)
+        except (TypeError, ValueError):
+            logger.warning(f"⚠️ Invalid TRANSCRIPT_MIN_COVERAGE '{raw}', using 0.85", exc_info=True)
+            coverage = 0.85
+        return min(max(0.0, coverage), 1.0)
+
+    def _check_audio_coverage(self, actual_duration: float, expected_duration: Optional[float]) -> None:
+        """Raise when the audio/transcript we have falls short of the known runtime.
+
+        Mirrors the SMIL fast-path failsafe (see transcribe_from_smil), which has
+        always rejected a short transcript. The Whisper path had no equivalent, so a
+        truncated download or a partial split was accepted as a complete book.
+        """
+        threshold = self.min_coverage
+        if not threshold or not expected_duration or expected_duration <= 0:
+            return
+        if actual_duration is None or actual_duration <= 0:
+            raise ValueError(
+                f"TRANSCRIPT REJECTED: no audio duration resolved (expected {expected_duration:.0f}s)"
+            )
+
+        coverage = actual_duration / expected_duration
+        if coverage < threshold:
+            raise ValueError(
+                f"TRANSCRIPT REJECTED: Coverage too low ({coverage:.1%}). "
+                f"Expected {expected_duration:.0f}s, got {actual_duration:.0f}s"
+            )
+
+    @staticmethod
+    def _transcript_extent(transcript: Optional[list]) -> float:
+        """Last timestamp covered by a transcript, or 0.0 when it is unusable."""
+        if not transcript:
+            return 0.0
+        try:
+            return float(transcript[-1].get('end', 0.0) or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _verify_download_size(response, local_path: Path) -> None:
+        """Raise when a streamed download is shorter than its declared Content-Length.
+
+        `requests.iter_content` stops silently when the connection closes early, so a
+        truncated body used to land on disk as a "successful" download.
+        """
+        declared = str(response.headers.get('Content-Length') or "").strip()
+        # Content-Length is a decimal string; anything else is not a length we can
+        # check against, so verification is simply skipped.
+        if not declared.isdigit():
+            return
+        expected_bytes = int(declared)
+        if expected_bytes <= 0:
+            return
+
+        actual_bytes = local_path.stat().st_size if local_path.exists() else 0
+        if actual_bytes != expected_bytes:
+            raise ValueError(
+                f"Truncated download for {local_path.name}: got {actual_bytes} bytes, "
+                f"expected {expected_bytes}"
+            )
+
     def validate_smil(self, smil_segments: list, ebook_text: str) -> tuple[bool, float]:
         """
         Robustly validate SMIL alignment using text similarity.
@@ -411,6 +483,7 @@ class AudioTranscriber:
         full_book_text=None,
         progress_callback=None,
         cancellation_token: Optional[CancellationToken] = None,
+        expected_duration: Optional[float] = None,
     ) -> Optional[list]:
         """
         Main transcription pipeline.
@@ -441,10 +514,25 @@ class AudioTranscriber:
                 if progress.get('chunks_completed', 0) > 0 and progress.get('done', False):
                     cached_transcript = progress.get('transcript', [])
                     if cached_transcript:
-                        logger.info(f"⚡ Resuming from completed local cache for {abs_id}")
-                        return cached_transcript
-                    progress_file.unlink()
-                    logger.info(f"Invalidated empty completed transcript cache for {abs_id}")
+                        # A cache written before the coverage guard existed can hold a
+                        # silently truncated transcript, and _prune_audio_cache keeps
+                        # this file forever. Re-check it here or the book never heals.
+                        try:
+                            self._check_audio_coverage(
+                                self._transcript_extent(cached_transcript), expected_duration
+                            )
+                        except ValueError as coverage_err:
+                            progress_file.unlink(missing_ok=True)
+                            logger.warning(
+                                f"⚠️ {coverage_err} — discarding cached transcript for {abs_id} "
+                                f"and re-transcribing",
+                            )
+                        else:
+                            logger.info(f"⚡ Resuming from completed local cache for {abs_id}")
+                            return cached_transcript
+                    else:
+                        progress_file.unlink()
+                        logger.info(f"Invalidated empty completed transcript cache for {abs_id}")
              except (json.JSONDecodeError, OSError) as e:
                  logger.debug(f"Failed to read progress cache file: {e}")
 
@@ -538,6 +626,7 @@ class AudioTranscriber:
                                         for chunk in r.iter_content(chunk_size=8192):
                                             raise_if_cancelled()
                                             f.write(chunk)
+                                    self._verify_download_size(r, local_path)
 
                             if not local_path.exists() or local_path.stat().st_size == 0:
                                 raise ValueError(f"File {local_path} is empty or missing.")
@@ -564,6 +653,23 @@ class AudioTranscriber:
             total_chunks = len(downloaded_files)
             # Calculate total audio duration for progress reporting
             total_audio_duration = sum(self.get_audio_duration(f) for f in downloaded_files)
+
+            # Coverage is checked BEFORE transcribing: a truncated download otherwise
+            # costs hours of Whisper before producing a map that is wrong anyway.
+            try:
+                self._check_audio_coverage(total_audio_duration, expected_duration)
+            except ValueError as coverage_err:
+                # Wipe the chunks too — otherwise the retry "finds a valid cache" and
+                # re-checks the same short audio forever instead of re-downloading.
+                if not raw_audio:
+                    shutil.rmtree(book_cache_dir, ignore_errors=True)
+                logger.error(
+                    f"❌ '{abs_id}' {coverage_err} — the audio BookBridge fetched is shorter "
+                    f"than the runtime the library reports. Cleared the audio cache; the job "
+                    f"will retry with a fresh download.",
+                    exc_info=True,
+                )
+                raise
 
             for idx, local_path in enumerate(downloaded_files):
                 # Skip already-completed chunks when resuming
@@ -626,6 +732,15 @@ class AudioTranscriber:
             if not full_transcript:
                 progress_file.unlink(missing_ok=True)
                 raise ValueError("Transcription completed without any segments")
+
+            # Belt-and-braces: chunks can individually fail to decode, so the
+            # transcript can still fall short of audio that measured fine above.
+            try:
+                self._check_audio_coverage(self._transcript_extent(full_transcript), expected_duration)
+            except ValueError as coverage_err:
+                progress_file.unlink(missing_ok=True)
+                logger.error(f"❌ '{abs_id}' {coverage_err}", exc_info=True)
+                raise
 
             # Clean up cache only on success. Keep `_progress.json` (it holds the finished
             # transcript) so a later re-align can reuse it via the resume check above and

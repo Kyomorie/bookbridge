@@ -2084,6 +2084,9 @@ class SyncManager:
                     full_book_text=book_text, # Passed for context/alignment inside transcriber if old logic used
                     progress_callback=lambda p: update_progress(p, 2),
                     cancellation_token=cancellation_token,
+                    expected_duration=(
+                        getattr(book, "audio_duration", None) or getattr(book, "duration", None)
+                    ),
                 )
                 if raw_transcript:
                     transcript_source = "whisper"

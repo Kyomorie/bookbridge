@@ -1414,6 +1414,36 @@
 
             <div class="tab-panel" data-panel="features">
 
+            <!-- Shared library (multi-user) -->
+            <div class="settings-section">
+                <div class="section-header">
+                    <h3>Shared Library</h3>
+                    <div class="header-tail">
+                        <div class="toggle-switch-wrapper">
+                            <span class="toggle-label">Enable</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" name="SHARE_ALL_BOOKS_WITH_ALL_USERS"
+                                    {% if get_bool('SHARE_ALL_BOOKS_WITH_ALL_USERS') %}checked{% endif %}>
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="section-body">
+                    <div class="form-group full-width">
+                        <div class="help-text">
+                            Every matched book becomes visible to every user, and new accounts start
+                            with the whole library — nobody has to re-match a book someone else already
+                            processed. For a household reading one shared library.
+                            <strong>Visibility only:</strong> reading progress, KOSync documents and
+                            stats stay per-user exactly as they are today, and removing a book still
+                            only drops the claim of the user who removed it. Leave off if each user
+                            curates their own library.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Telegram (Optional) -->
             <div class="settings-section">
                 {% set telegram_configured = get_val('TELEGRAM_BOT_TOKEN') != '' %}
@@ -2110,6 +2140,12 @@
                             min="1" max="120" step="1" placeholder="45" />
                         <div class="help-text">Audio is normalized to WAV and split into chunks of this length before transcription. Lower it (e.g. 15) if a small GPU runs out of memory on long books. Ignored when <strong>Send Original Audio</strong> is enabled, since the server then does its own chunking.</div>
                     </div>
+                    <div class="form-group">
+                        <label>Minimum Transcript Coverage</label>
+                        <input type="number" name="TRANSCRIPT_MIN_COVERAGE" value="{{ get_val('TRANSCRIPT_MIN_COVERAGE', '0.85') }}"
+                            min="0" max="1" step="0.05" placeholder="0.85" />
+                        <div class="help-text">Fraction of the audiobook's known runtime a transcript must span before BookBridge will align it. A truncated download or a partly-decoded file still aligns cleanly against the ebook, so without this check every synced position ends up wrong by the shortfall. Set <code>0</code> to disable — needed only for genuinely abridged audio.</div>
+                    </div>
                     <!-- Wrapper: Whisper.cpp -->
                     <div id="group_whispercpp" class="dynamic-group full-width" style="display:contents;">
                         <div class="form-group full-width">
@@ -2296,6 +2332,11 @@
                     <h3>👥 Users</h3>
                 </div>
                 <div class="section-body">
+                    <div class="help-text full-width" style="margin-bottom:10px">
+                        Each user has their own progress and credentials but shares the book catalog.
+                        To make every matched book visible to everyone automatically, enable
+                        <a href="{{ url_for('settings') }}#features" style="color:#aab4f5;">Features → Shared Library</a>.
+                    </div>
                     <table class="users-table full-width">
                         <tr>
                             <th>User</th>
