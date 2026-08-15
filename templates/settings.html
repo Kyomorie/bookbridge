@@ -1584,6 +1584,16 @@
                         <div class="help-text">How often to re-check your books for changed files. Unchanged files
                             are skipped cheaply, so this is inexpensive for books stored on disk. Minimum 5 minutes.</div>
                     </div>
+                    <div class="form-group">
+                        <label>BookOrbit Search Limit (books)</label>
+                        <input type="number" name="KOSYNC_BOOKORBIT_DISCOVERY_LIMIT" min="0"
+                            value="{{ get_val('KOSYNC_BOOKORBIT_DISCOVERY_LIMIT', '40') }}">
+                        <div class="help-text">When a reader opens a book BookBridge doesn't recognise, it can look
+                            through your BookOrbit library to identify it. BookOrbit has no local files, so each
+                            candidate must be downloaded — this caps how many are fetched per search. Already-cached
+                            books are checked for free and don't count. Set to <code>0</code> to disable the
+                            BookOrbit search.</div>
+                    </div>
                 </div>
             </div>
 

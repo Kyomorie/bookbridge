@@ -2546,6 +2546,85 @@ def _scan_directory_for_hash(scan_dir, doc_hash: str) -> Optional[str]:
     return None
 
 
+def _bookorbit_discovery_limit() -> int:
+    """How many BookOrbit books a single hash discovery may download."""
+    try:
+        return max(0, int(float(os.environ.get("KOSYNC_BOOKORBIT_DISCOVERY_LIMIT", "40"))))
+    except (TypeError, ValueError):
+        return 40
+
+
+def _scan_bookorbit_for_hash(doc_hash: str) -> Optional[str]:
+    """Hash BookOrbit-hosted ebooks looking for doc_hash. Returns filename or None.
+
+    BookOrbit has no local files and no bulk-hash endpoint, so a match costs one
+    download per candidate. Only books this bridge already tracks are considered,
+    already-cached copies are hashed from disk, and the number of downloads is
+    capped — an unbounded sweep of a large library would be far more expensive
+    than the miss it is trying to avoid.
+    """
+    try:
+        bookorbit_client = _container.bookorbit_client()
+    except Exception:
+        return None
+    if not bookorbit_client or not bookorbit_client.is_configured():
+        return None
+
+    parser = _container.ebook_parser()
+    cache_dir = _container.data_dir() / "epub_cache"
+    budget = _bookorbit_discovery_limit()
+    if budget <= 0:
+        return None
+
+    logger.info("🔎 Starting BookOrbit search for hash %s (budget %d)...", doc_hash, budget)
+    downloads = 0
+    for book in _database_service.get_books_by_status("active") or []:
+        if str(getattr(book, "ebook_source", "") or "").strip().lower() != "bookorbit":
+            continue
+        source_id = str(getattr(book, "ebook_source_id", "") or "").strip()
+        filename = str(getattr(book, "original_ebook_filename", None)
+                       or getattr(book, "ebook_filename", None) or "").strip()
+        if not source_id or not filename:
+            continue
+
+        # Prefer an existing cached copy: free to hash, no download spent.
+        cached_path = safe_cache_path(cache_dir, filename)
+        if cached_path and cached_path.exists() and cached_path.stat().st_size > 0:
+            try:
+                if parser.get_kosync_id(cached_path) == doc_hash:
+                    logger.info(f"📚 Matched EPUB via BookOrbit cache: {filename}")
+                    return filename
+            except Exception as e:
+                logger.debug(f"BookOrbit cache hash failed for '{filename}': {e}")
+            continue
+
+        if downloads >= budget:
+            continue
+        try:
+            content = bookorbit_client.download_book(source_id)
+            downloads += 1
+            if not content:
+                continue
+            if parser.get_kosync_id_from_bytes(filename, content) != doc_hash:
+                continue
+            if cached_path is None:
+                logger.warning("KOSync: refused unsafe cache filename '%s'", filename)
+                continue
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cached_path.write_bytes(content)
+            _cache_kosync_metadata(doc_hash, filename, 'bookorbit')
+            logger.info(f"📚 Matched EPUB via BookOrbit download: {filename}")
+            return filename
+        except Exception as e:
+            logger.debug(f"BookOrbit discovery failed for '{filename}': {e}")
+
+    logger.info(
+        "🔍 BookOrbit search finished (%d downloaded, budget %d). No match found",
+        downloads, budget,
+    )
+    return None
+
+
 def _try_find_epub_by_hash(doc_hash: str) -> Optional[str]:
     """Try to find matching EPUB file for a KOSync document hash."""
     try:
@@ -2575,6 +2654,11 @@ def _try_find_epub_by_hash(doc_hash: str) -> Optional[str]:
             matched = _scan_directory_for_hash(scan_dir, doc_hash)
             if matched:
                 return matched
+
+        # Fallback to BookOrbit (API-hosted library with no local files)
+        matched = _scan_bookorbit_for_hash(doc_hash)
+        if matched:
+            return matched
 
         # Fallback to Grimmory
         if _container.booklore_client().is_configured():
