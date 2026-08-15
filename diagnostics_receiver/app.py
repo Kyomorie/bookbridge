@@ -1430,6 +1430,37 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
         params.append(limit)
         rows = db.execute(query, params).fetchall()
 
+        # Feedback belongs to the handful of manual batches, not the millions of
+        # fleet warning rows. Aggregate it once, starting from batches so SQLite
+        # can use idx_warnings_batch, instead of rescanning warnings for every
+        # finding in this page.
+        feedback_by_key = {
+            (row["template"], row["logger"], row["level"]): {
+                "feedback_count": row["feedback_count"],
+                "unanswered_feedback_count": row["unanswered_feedback_count"],
+            }
+            for row in db.execute(
+                """\
+                SELECT COALESCE(w.template, '') AS template,
+                       COALESCE(w.logger, '') AS logger,
+                       COALESCE(w.level, '') AS level,
+                       COUNT(DISTINCT b.id) AS feedback_count,
+                       COUNT(DISTINCT CASE
+                           WHEN TRIM(COALESCE(b.response_md, '')) = '' THEN b.id
+                       END) AS unanswered_feedback_count
+                FROM batches b
+                CROSS JOIN warnings w INDEXED BY idx_warnings_batch
+                WHERE w.batch_id = b.id
+                  AND b.is_manual = 1
+                  AND TRIM(COALESCE(b.user_message, '')) <> ''
+                GROUP BY COALESCE(w.template, ''),
+                         COALESCE(w.logger, ''),
+                         COALESCE(w.level, '')
+                """
+            ).fetchall()
+        }
+        no_feedback = {"feedback_count": 0, "unanswered_feedback_count": 0}
+
         findings_list: list[dict[str, Any]] = []
         for r in rows:
             rd = dict(r)
@@ -1438,23 +1469,10 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
             except (json.JSONDecodeError, TypeError):
                 rd["app_versions"] = []
             rd["has_analysis"] = rd["analysis_md"] is not None
-            feedback = db.execute(
-                """\
-                SELECT COUNT(DISTINCT b.id) AS feedback_count,
-                       COUNT(DISTINCT CASE
-                           WHEN TRIM(COALESCE(b.response_md, '')) = '' THEN b.id
-                       END) AS unanswered_feedback_count
-                FROM batches b
-                JOIN warnings w ON w.batch_id = b.id
-                WHERE b.is_manual = 1
-                  AND TRIM(COALESCE(b.user_message, '')) <> ''
-                  AND COALESCE(w.template, '') = ?
-                  AND COALESCE(w.logger, '') = ?
-                  AND COALESCE(w.level, '') = ?
-                """,
+            rd.update(feedback_by_key.get(
                 (rd["template"], rd["logger"], rd["level"]),
-            ).fetchone()
-            rd.update(dict(feedback))
+                no_feedback,
+            ))
             findings_list.append(rd)
 
         return jsonify({

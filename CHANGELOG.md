@@ -71,6 +71,11 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **The private diagnostics report center no longer times out while loading its
+  overview.** Finding pages now aggregate linked user-report counts once per
+  request instead of re-scanning the fleet warning history for every displayed
+  finding.
+
 - **Several diagnostics-backed integration edge cases now fail cleanly or recover.**
   Audiobookshelf 401 errors now point directly to the ABS key setting; BookOrbit
   progress errors report the real HTTP status instead of calling every

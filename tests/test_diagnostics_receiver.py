@@ -12,6 +12,7 @@ from typing import Any
 from unittest.mock import patch
 
 from diagnostics_receiver.app import (
+    _get_db,
     _hash_token,
     create_receiver_app,
     init_db,
@@ -2410,6 +2411,45 @@ class TestManualSubmissions(unittest.TestCase):
         ).get_json()
         self.assertEqual(summary["submissions"]["awaiting_response"], 0)
         self.assertEqual(summary["submissions"]["responded"], 1)
+
+    def test_finding_list_aggregates_feedback_once_per_page(self) -> None:
+        os.environ["DIAG_READ_TOKEN"] = "maintainer-token"
+        statements: list[str] = []
+
+        @self._app.before_request
+        def trace_queries() -> None:
+            _get_db().set_trace_callback(statements.append)
+
+        warnings = [
+            {
+                "template": f"Manual feedback pattern {index}",
+                "logger": "sync",
+                "level": "ERROR",
+                "count": 1,
+            }
+            for index in range(25)
+        ]
+        self._post(_valid_payload(
+            manual=True,
+            user_message="Please investigate these failures",
+            warnings=warnings,
+        ))
+
+        statements.clear()
+        response = self._client.get(
+            "/api/v1/findings?status=all&limit=200",
+            headers=self._admin_headers(),
+        )
+        findings = response.get_json()["findings"]
+        feedback_queries = [
+            statement for statement in statements
+            if "AS feedback_count" in statement
+        ]
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(findings), 25)
+        self.assertTrue(all(row["feedback_count"] == 1 for row in findings))
+        self.assertEqual(len(feedback_queries), 1)
 
 
 class TestInjectionSanitization(unittest.TestCase):
