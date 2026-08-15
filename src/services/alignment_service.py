@@ -33,6 +33,9 @@ class AlignmentService:
         self.ollama_client = ollama_client
         # Parsed alignment maps for the actively-synced books; see _get_alignment.
         self._alignment_cache = LRUCache(capacity=self._env_int("ALIGNMENT_CACHE_SIZE", 3))
+        # Ebook lengths keyed by abs_id. Tiny scalars, unlike the map blobs, so a
+        # plain dict is fine; invalidated alongside the map in _save_alignment.
+        self._total_chars_cache: Dict[str, Optional[int]] = {}
 
     def _ollama_ready(self) -> bool:
         client = self.ollama_client
@@ -122,7 +125,7 @@ class AlignmentService:
             return False
 
         # 4. Store to Database
-        self._save_alignment(abs_id, alignment_map, align_method)
+        self._save_alignment(abs_id, alignment_map, align_method, total_chars=ebook_len)
         return True
 
     @time_execution
@@ -200,7 +203,7 @@ class AlignmentService:
                 rebuilt_segments = self.polisher.rebuild_fragmented_sentences(segments, ebook_text)
                 alignment_map, align_method = self._generate_alignment_map_with_method(rebuilt_segments, ebook_text)
                 if alignment_map:
-                    self._save_alignment(abs_id, alignment_map, align_method)
+                    self._save_alignment(abs_id, alignment_map, align_method, total_chars=len(ebook_text))
                     logger.info(f"AlignmentService: Anchored Storyteller map stored for {abs_id} ({len(alignment_map)} points)")
                     return True
             
@@ -212,7 +215,7 @@ class AlignmentService:
                 {"char": 0, "ts": 0.0},
                 {"char": len(ebook_text), "ts": storyteller_transcript.get_duration()},
             ]
-            self._save_alignment(abs_id, clean_map, "storyteller_linear")
+            self._save_alignment(abs_id, clean_map, "storyteller_linear", total_chars=len(ebook_text))
             logger.info(f"AlignmentService: Linear fallback map stored for {abs_id} ({len(clean_map)} points)")
             return True
 
@@ -370,15 +373,26 @@ class AlignmentService:
         if not alignment:
             return None
 
+        # The map's last anchor is the last place the transcript matched the book,
+        # not the end of the book. Dividing by it over-reports every position — by
+        # a little on a healthy map, and by 1/coverage on a map that only spans
+        # part of the text. Prefer the recorded ebook length; fall back to the old
+        # denominator for maps stored before it was captured.
         max_char = self._point_char(alignment[-1])
-        if max_char <= 0:
+        total_chars = self._get_alignment_total_chars(abs_id)
+        # Anchors are offsets into the same text, so total_chars can never be the
+        # smaller of the two. If it is, the record disagrees with the map it
+        # belongs to — fall back rather than trust it.
+        if not total_chars or total_chars < max_char:
+            total_chars = max_char
+        if total_chars <= 0:
             return None
 
         char = self._interpolate_char_for_time(alignment, timestamp)
         if char is None:
             return None
 
-        return max(0.0, min(char / max_char, 1.0))
+        return max(0.0, min(char / total_chars, 1.0))
 
     @staticmethod
     def _filter_monotonic_lis(anchors: List[Dict]) -> List[Dict]:
@@ -744,7 +758,8 @@ class AlignmentService:
             return False
         return True
 
-    def _save_alignment(self, abs_id: str, alignment_map: List[Dict], align_method: str = None):
+    def _save_alignment(self, abs_id: str, alignment_map: List[Dict], align_method: str = None,
+                        total_chars: Optional[int] = None):
         """Upsert alignment to SQLite."""
         with self.database_service.get_session() as session:
             json_blob = json.dumps(alignment_map)
@@ -754,14 +769,32 @@ class AlignmentService:
             if existing:
                 existing.alignment_map_json = json_blob
                 existing.align_method = align_method
+                existing.total_chars = total_chars
                 existing.last_updated = utcnow()
             else:
-                new_align = BookAlignment(abs_id=abs_id, alignment_map_json=json_blob, align_method=align_method)
+                new_align = BookAlignment(abs_id=abs_id, alignment_map_json=json_blob,
+                                          align_method=align_method, total_chars=total_chars)
                 session.add(new_align)
-            
+
             # Context manager handles commit
             logger.info(f"   💾 Saved alignment for {abs_id} to DB.")
         self._alignment_cache.delete(abs_id)
+        self._total_chars_cache.pop(abs_id, None)
+
+    def _get_alignment_total_chars(self, abs_id: str) -> Optional[int]:
+        """Cached ebook length for a book's map; None when the map predates it.
+
+        Coerces defensively: a non-numeric value must degrade to the legacy
+        last-anchor denominator rather than poison the comparison below it.
+        """
+        if abs_id in self._total_chars_cache:
+            return self._total_chars_cache[abs_id]
+        try:
+            total_chars = int(self.database_service.get_alignment_total_chars(abs_id))
+        except (AttributeError, TypeError, ValueError):
+            total_chars = None
+        self._total_chars_cache[abs_id] = total_chars
+        return total_chars
 
     def _get_alignment(self, abs_id: str) -> Optional[List[Dict]]:
         # A long book's map is a 10-15MB JSON blob, and this runs several

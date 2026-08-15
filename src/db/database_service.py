@@ -496,6 +496,44 @@ class DatabaseService:
             )
             return bool(updated)
 
+    def has_alignment(self, abs_id: str) -> bool:
+        """Whether a stored alignment map exists for a book.
+
+        Deliberately selects only the key: a map blob runs 10-15MB, and callers
+        that merely need to know "has this book already been aligned?" (the
+        re-match guard) must not pay to load and parse it.
+        """
+        if not abs_id:
+            return False
+        with self.get_session() as session:
+            row = (
+                session.query(BookAlignment.abs_id)
+                .filter(BookAlignment.abs_id == abs_id)
+                .first()
+            )
+            return row is not None
+
+    def get_alignment_total_chars(self, abs_id: str) -> Optional[int]:
+        """Ebook length a book's alignment map was built against, if recorded.
+
+        Returns None for maps stored before ``total_chars`` existed; callers fall
+        back to the map's last anchor. Selects the scalar only (see has_alignment).
+        """
+        if not abs_id:
+            return None
+        with self.get_session() as session:
+            row = (
+                session.query(BookAlignment.total_chars)
+                .filter(BookAlignment.abs_id == abs_id)
+                .first()
+            )
+            if not row or row[0] is None:
+                return None
+            try:
+                return int(row[0])
+            except (TypeError, ValueError):
+                return None
+
     def get_alignment_provenance(self) -> dict:
         """Report how each stored alignment map was built.
 
@@ -771,6 +809,47 @@ class DatabaseService:
             ).first()
             if not exists:
                 session.add(UserBook(user_id=user_id, abs_id=abs_id))
+
+    def link_book_to_all_active_users(self, abs_id: str) -> int:
+        """Claim one book for every active user. Returns links created.
+
+        Backs the share-all-books setting: the catalog row and its alignment are
+        already shared, so visibility is the only thing that needs fanning out.
+        Idempotent — existing claims are skipped, matching link_user_book.
+        """
+        if not abs_id:
+            return 0
+        with self.get_session() as session:
+            user_ids = {
+                row[0] for row in session.query(User.id).filter(User.active == 1).all()
+            }
+            claimed = {
+                row[0] for row in
+                session.query(UserBook.user_id).filter(UserBook.abs_id == abs_id).all()
+            }
+            missing = user_ids - claimed
+            for user_id in missing:
+                session.add(UserBook(user_id=user_id, abs_id=abs_id))
+            return len(missing)
+
+    def backfill_user_books_for_user(self, user_id: int) -> int:
+        """Claim every catalog book for one user. Returns links created.
+
+        Used when a new account is created while share-all-books is on, so they
+        start with the same library everyone else already sees.
+        """
+        if user_id is None:
+            return 0
+        with self.get_session() as session:
+            all_ids = {row[0] for row in session.query(Book.abs_id).all()}
+            claimed = {
+                row[0] for row in
+                session.query(UserBook.abs_id).filter(UserBook.user_id == user_id).all()
+            }
+            missing = all_ids - claimed
+            for abs_id in missing:
+                session.add(UserBook(user_id=user_id, abs_id=abs_id))
+            return len(missing)
 
     def unlink_user_book(self, user_id: int, abs_id: str) -> int:
         """Remove a user's claim on a book. Returns rows deleted."""
