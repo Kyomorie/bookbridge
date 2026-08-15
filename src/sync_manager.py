@@ -1835,7 +1835,13 @@ class SyncManager:
                     if client_bundle is not None
                     else self.active_library_service
                 )
-                self._run_background_job(book, idx, total, library_service, client_bundle)
+                cancellation_token = register_worker(abs_id)
+                try:
+                    self._run_background_job(
+                        book, idx, total, library_service, client_bundle, cancellation_token
+                    )
+                finally:
+                    unregister_worker(abs_id, cancellation_token)
             except Exception as e:
                 logger.error(
                     f"❌ Unexpected error processing ebook-only batch entry '{abs_id}': {e}",

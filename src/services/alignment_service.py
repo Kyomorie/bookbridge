@@ -769,7 +769,12 @@ class AlignmentService:
             if existing:
                 existing.alignment_map_json = json_blob
                 existing.align_method = align_method
-                existing.total_chars = total_chars
+                # Only update total_chars when caller supplies a value; a map rebuilt
+                # against the same ebook keeps the same length, and a caller that
+                # simply doesn't know the length (e.g. unanchored Storyteller path)
+                # must not destroy a known-good value.
+                if total_chars is not None:
+                    existing.total_chars = total_chars
                 existing.last_updated = utcnow()
             else:
                 new_align = BookAlignment(abs_id=abs_id, alignment_map_json=json_blob,

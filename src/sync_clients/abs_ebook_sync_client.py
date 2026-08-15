@@ -79,6 +79,9 @@ class ABSEbookSyncClient(SyncClient):
         for key in ("href", "chapter_progress", "position"):
             if key in locator:
                 state[key] = locator[key]
+        # `get_text_from_current_state` reads `frag`; map locator's `fragment` to it.
+        if "fragment" in locator:
+            state["frag"] = locator["fragment"]
         return state
 
     def get_service_state(self, book: Book, prev_state: Optional[State], title_snip: str = "", bulk_context: dict = None) -> Optional[ServiceState]:

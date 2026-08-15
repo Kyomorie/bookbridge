@@ -70,6 +70,22 @@ class KOReaderDeviceSyncService:
             key=lambda book: (str(getattr(book, "abs_title", "") or "").lower(), str(book.abs_id)),
         )
 
+    @staticmethod
+    def _safe_file_size(path) -> Optional[int]:
+        """Byte size of ``path``, or None when it cannot be stat'ed.
+
+        The cache-cleanup paths delete orphaned EPUBs concurrently, so a file that
+        existed when the artifact was resolved can be gone by the time the manifest
+        item is built. An unguarded stat would raise out of the whole build_manifest
+        loop and cost every book its manifest entry; a missing size costs only this
+        one item's download-timeout hint, which the plugin already tolerates.
+        """
+        try:
+            return int(Path(path).stat().st_size)
+        except OSError:
+            logger.debug("KOReader device-sync could not size '%s'", sanitize_log_data(str(path)))
+            return None
+
     def build_manifest(self, shelf_mapping: dict[str, list[str]] | None = None) -> dict:
         books = self._get_active_books()
         filename_map = self._build_manifest_filename_map(books)
@@ -89,7 +105,7 @@ class KOReaderDeviceSyncService:
                 "title": str(getattr(book, "abs_title", "") or ""),
                 "content_hash": resolved["content_hash"],
                 "download_path": f"/koreader/device-sync/books/{quote(str(book.abs_id), safe='')}/download",
-                "size": Path(resolved["path"]).stat().st_size,
+                "size": self._safe_file_size(resolved["path"]),
                 "filename": filename,
             })
 

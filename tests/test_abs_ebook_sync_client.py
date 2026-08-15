@@ -347,3 +347,145 @@ class TestABSWritesMatchingLocatorShape(unittest.TestCase):
     def test_reset_to_zero_is_unchanged(self):
         self.client.update_progress(self.book, UpdateProgressRequest(LocatorResult(percentage=0)))
         self.mock_abs_client.update_ebook_progress.assert_called_with("dcc", 0, "")
+
+
+class TestParseReadiumLocatorFragments(unittest.TestCase):
+    """Tests for parse_readium_locator fragments handling."""
+
+    def test_readium_locator_with_fragments_populates_fragment(self):
+        from src.utils.ebook_utils import parse_readium_locator
+        location = (
+            '{"href":"OEBPS/Text/ch1.xhtml",'
+            '"locations":{"progression":0.5,"fragments":["chapter-1-id"]}}'
+        )
+        parsed = parse_readium_locator(location)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["fragment"], "chapter-1-id")
+
+    def test_readium_locator_without_fragments_omits_key(self):
+        from src.utils.ebook_utils import parse_readium_locator
+        location = (
+            '{"href":"OEBPS/Text/ch1.xhtml",'
+            '"locations":{"progression":0.5}}'
+        )
+        parsed = parse_readium_locator(location)
+        self.assertIsNotNone(parsed)
+        self.assertNotIn("fragment", parsed)
+
+    def test_readium_locator_with_empty_fragments_omits_key(self):
+        from src.utils.ebook_utils import parse_readium_locator
+        location = (
+            '{"href":"OEBPS/Text/ch1.xhtml",'
+            '"locations":{"progression":0.5,"fragments":[]}}'
+        )
+        parsed = parse_readium_locator(location)
+        self.assertIsNotNone(parsed)
+        self.assertNotIn("fragment", parsed)
+
+    def test_readium_locator_with_non_list_fragments_omits_key(self):
+        from src.utils.ebook_utils import parse_readium_locator
+        location = (
+            '{"href":"OEBPS/Text/ch1.xhtml",'
+            '"locations":{"progression":0.5,"fragments":"not-a-list"}}'
+        )
+        parsed = parse_readium_locator(location)
+        self.assertIsNotNone(parsed)
+        self.assertNotIn("fragment", parsed)
+
+    def test_readium_locator_with_non_string_fragment_omits_key(self):
+        from src.utils.ebook_utils import parse_readium_locator
+        location = (
+            '{"href":"OEBPS/Text/ch1.xhtml",'
+            '"locations":{"progression":0.5,"fragments":[123]}}'
+        )
+        parsed = parse_readium_locator(location)
+        self.assertIsNotNone(parsed)
+        self.assertNotIn("fragment", parsed)
+
+    def test_readium_locator_with_whitespace_fragment_omits_key(self):
+        from src.utils.ebook_utils import parse_readium_locator
+        location = (
+            '{"href":"OEBPS/Text/ch1.xhtml",'
+            '"locations":{"progression":0.5,"fragments":["   "]}}'
+        )
+        parsed = parse_readium_locator(location)
+        self.assertIsNotNone(parsed)
+        self.assertNotIn("fragment", parsed)
+
+
+class TestBuildPositionStateWithFragment(unittest.TestCase):
+    """Tests for _build_position_state carrying fragment to frag."""
+
+    def test_build_position_state_carries_fragment_as_frag(self):
+        from src.sync_clients.abs_ebook_sync_client import ABSEbookSyncClient
+        location = (
+            '{"href":"OEBPS/Text/ch1.xhtml",'
+            '"locations":{"progression":0.5,"fragments":["my-fragment-id"]}}'
+        )
+        state = ABSEbookSyncClient._build_position_state(0.5, location)
+        self.assertEqual(state["frag"], "my-fragment-id")
+
+    def test_build_position_state_without_fragment_omits_frag(self):
+        from src.sync_clients.abs_ebook_sync_client import ABSEbookSyncClient
+        location = (
+            '{"href":"OEBPS/Text/ch1.xhtml",'
+            '"locations":{"progression":0.5}}'
+        )
+        state = ABSEbookSyncClient._build_position_state(0.5, location)
+        self.assertNotIn("frag", state)
+
+
+class TestGetTextFromCurrentStateWithFragment(unittest.TestCase):
+    """Tests for get_text_from_current_state using fragment (regression test for #359)."""
+
+    def setUp(self):
+        self.mock_abs_client = MagicMock()
+        self.mock_ebook_parser = MagicMock()
+        self.client = ABSEbookSyncClient(self.mock_abs_client, self.mock_ebook_parser)
+        self.book = Book(abs_id="dcc", ebook_filename="dcc.epub")
+
+    def _state_for(self, location):
+        self.mock_abs_client.get_progress_with_status.return_value = (
+            {"ebookProgress": 0.201571, "ebookLocation": location}, 200,
+        )
+        return self.client.get_service_state(self.book, None)
+
+    def test_get_text_from_current_state_passes_fragment_to_resolve_locator_id(self):
+        """The bug: frag was always None, so resolve_locator_id returned None
+        and get_text_at_percentage was incorrectly used as fallback."""
+        location = (
+            '{"href":"OEBPS/Text/part0014.xhtml",'
+            '"locations":{"progression":0.0,"fragments":["chapter-10-id"]}}'
+        )
+        state = self._state_for(location)
+
+        self.mock_ebook_parser.resolve_locator_id.return_value = "chapter ten text"
+
+        text = self.client.get_text_from_current_state(self.book, state)
+
+        self.assertEqual(text, "chapter ten text")
+        # Verify resolve_locator_id was called with the fragment (not None)
+        self.mock_ebook_parser.resolve_locator_id.assert_called_once_with(
+            "dcc.epub", "OEBPS/Text/part0014.xhtml", "chapter-10-id",
+        )
+        # Verify get_text_at_percentage was NOT called (the bug was it was called)
+        self.mock_ebook_parser.get_text_at_percentage.assert_not_called()
+
+    def test_get_text_from_current_state_falls_back_to_percentage_when_fragment_resolution_fails(self):
+        """When resolve_locator_id returns None, it should still fall back to percentage."""
+        location = (
+            '{"href":"OEBPS/Text/part0014.xhtml",'
+            '"locations":{"progression":0.0,"fragments":["chapter-10-id"]}}'
+        )
+        state = self._state_for(location)
+
+        self.mock_ebook_parser.resolve_locator_id.return_value = None
+        self.mock_ebook_parser.get_text_at_percentage.return_value = "pct text"
+
+        text = self.client.get_text_from_current_state(self.book, state)
+
+        self.assertEqual(text, "pct text")
+        self.mock_ebook_parser.resolve_locator_id.assert_called_once_with(
+            "dcc.epub", "OEBPS/Text/part0014.xhtml", "chapter-10-id",
+        )
+        self.mock_ebook_parser.get_text_at_percentage.assert_called_once_with("dcc.epub", 0.201571)

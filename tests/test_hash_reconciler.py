@@ -22,8 +22,13 @@ from src.services.koreader_device_sync_service import KOReaderDeviceSyncService
 
 
 def _reset_user_services():
-    """Module-global cache — clear it so tests cannot leak into each other."""
-    hash_reconciler._user_services.clear()
+    """No per-user service cache exists any more (services are rebuilt each pass).
+
+    Kept as a no-op so the setUp/addCleanup call sites keep documenting that this
+    module must not leak state between tests, and so re-introducing a cache has an
+    obvious place to be cleared.
+    """
+    return None
 
 
 class _Sentinel(Exception):
@@ -434,7 +439,13 @@ class TestPerUserScoping(unittest.TestCase):
         scoped.assert_not_called()
         self.global_service.reconcile_hashes.assert_called_once()
 
-    def test_per_user_services_are_cached_between_passes(self):
+    def test_per_user_services_are_rebuilt_every_pass(self):
+        """A cached service would pin stale credentials until the next restart.
+
+        Caching bought nothing for hashing — _scoped_service already shares the
+        global service's file-hash cache — but it did mean a user who corrected a
+        wrong ABS key or CWA password kept being reconciled with the old clients.
+        """
         calls = []
 
         def fake_scoped(global_service, registry, user_id):
@@ -447,7 +458,10 @@ class TestPerUserScoping(unittest.TestCase):
             hash_reconciler._reconcile_all_users(self.global_service, self.registry, self.db)
             hash_reconciler._reconcile_all_users(self.global_service, self.registry, self.db)
 
-        self.assertEqual(calls, [1, 2], "services must be reused, not rebuilt each pass")
+        self.assertEqual(
+            calls, [1, 2, 1, 2],
+            "each pass must rebuild per-user clients so credential changes apply",
+        )
 
 
 if __name__ == "__main__":

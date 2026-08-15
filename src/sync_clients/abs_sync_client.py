@@ -73,14 +73,16 @@ class ABSSyncClient(SyncClient):
                 float(book.duration or 0.0),
                 corrected_duration,
             )
-            book.duration = corrected_duration
+
+        # Use corrected duration for this cycle's calculations without mutating the shared book object
+        effective_duration = corrected_duration if corrected_duration is not None else book.duration
 
         # ABS can mark an item finished without moving currentTime to the exact
         # duration. Treat the service's completion flag as authoritative so the
         # next cycle does not reinterpret a completed book as a small rewind.
-        if abs_finished and book.duration and book.duration > 0:
-            abs_ts = float(book.duration)
-        abs_pct = 1.0 if abs_finished else self._abs_to_percentage(abs_ts, book)
+        if abs_finished and effective_duration and effective_duration > 0:
+            abs_ts = float(effective_duration)
+        abs_pct = 1.0 if abs_finished else self._abs_to_percentage(abs_ts, book, duration_override=effective_duration)
         if abs_ts > 0 and abs_pct is None:
             # We lower this to debug to avoid spam if book is offline/unprocessed
             pass
@@ -142,11 +144,12 @@ class ABSSyncClient(SyncClient):
             return None
         return candidate
 
-    def _abs_to_percentage(self, abs_seconds, book: Book):
+    def _abs_to_percentage(self, abs_seconds, book: Book, duration_override: Optional[float] = None):
         """Convert ABS timestamp to percentage using book duration (preferred) or transcript"""
-        # 1. Try Book model duration (Golden Source)
-        if book.duration and book.duration > 0:
-            return min(max(abs_seconds / book.duration, 0.0), 1.0)
+        # 1. Try Book model duration (Golden Source), or duration_override if provided
+        effective_duration = duration_override if (duration_override is not None and duration_override > 0) else book.duration
+        if effective_duration and effective_duration > 0:
+            return min(max(abs_seconds / effective_duration, 0.0), 1.0)
             
         # 2. Try Transcript file (Legacy fallback)
         transcript_path = book.transcript_file

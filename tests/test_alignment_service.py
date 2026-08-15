@@ -598,6 +598,21 @@ def test_save_alignment_updates_total_chars_on_existing_row(mock_db):
     assert existing.total_chars == 4242
 
 
+def test_save_alignment_preserves_total_chars_when_not_supplied(mock_db):
+    """When updating an existing row without total_chars, the previous value must not be overwritten with None."""
+    session = mock_db.get_session()
+    session.__enter__.return_value = session
+    existing = BookAlignment(abs_id="test_id", alignment_map_json="[]", total_chars=50000)
+    session.query.return_value.filter_by.return_value.first.return_value = existing
+
+    service = AlignmentService(mock_db, Polisher())
+    # Simulate unanchored Storyteller path that cannot supply total_chars
+    service._save_alignment("test_id", [{"char": 0, "ts": 0.0}], "storyteller")
+
+    # The original total_chars must be preserved
+    assert existing.total_chars == 50000
+
+
 def test_progress_for_time_ignores_total_chars_smaller_than_the_map(mock_db):
     """An inconsistent record must not shrink the denominator below the anchors."""
     alignment_map = [{"char": 0, "ts": 0.0}, {"char": 1000, "ts": 10.0}]

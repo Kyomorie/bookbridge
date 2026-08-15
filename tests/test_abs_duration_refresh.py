@@ -65,7 +65,7 @@ class TestServiceStateAppliesCorrection(unittest.TestCase):
 
         self.assertAlmostEqual(state.current["pct"], 0.25)
         self.assertEqual(state.current["service_duration"], 2000.0)
-        self.assertEqual(book.duration, 2000.0)
+        self.assertEqual(book.duration, 1000.0, "book.duration must not be mutated; correction is local to this cycle")
 
     def test_no_correction_key_when_duration_agrees(self):
         book = _book(1000.0)
@@ -104,6 +104,33 @@ class TestServiceStateAppliesCorrection(unittest.TestCase):
 
         self.assertEqual(state.current["service_duration"], 2000.0)
         self.assertAlmostEqual(state.current["pct"], 0.25)
+        self.assertEqual(book.duration, 1000.0, "book.duration must not be mutated in bulk context path")
+
+    def test_duration_correction_does_not_mutate_shared_book(self):
+        """
+        Regression test: when ABS reports a materially different duration,
+        get_service_state must NOT mutate the passed book object's duration attribute,
+        but must still report the correction via current['service_duration'] and
+        compute the percentage using the CORRECTED duration.
+        """
+        book = _book(1000.0)  # Stored duration
+        self.abs_client.get_progress.return_value = {
+            "currentTime": 500.0,  # 500s into a 2000s book = 25%
+            "duration": 2000.0,    # ABS reports 2000s (material difference)
+            "lastUpdate": None,
+            "isFinished": False,
+        }
+
+        state = self.client.get_service_state(book, prev_state=None)
+
+        # 1. book.duration is NOT mutated (still equals original stored value)
+        self.assertEqual(book.duration, 1000.0, "book.duration must not be mutated by get_service_state")
+
+        # 2. Correction is still reported via current['service_duration']
+        self.assertEqual(state.current["service_duration"], 2000.0, "service_duration must report the corrected value")
+
+        # 3. Percentage is computed using the CORRECTED duration (500/2000 = 0.25), not the stale one (500/1000 = 0.5)
+        self.assertAlmostEqual(state.current["pct"], 0.25, places=4, msg="Percentage must use corrected duration, not stale book.duration")
 
 
 if __name__ == "__main__":

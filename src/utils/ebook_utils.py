@@ -2325,9 +2325,9 @@ def parse_readium_locator(raw) -> Optional[dict]:
     per-cycle ``Error resolving CFI->index`` and dropped position resolution to a
     plain percentage.
 
-    Returns ``{'href', 'chapter_progress', 'position', 'cfi', 'total_progression'}``
-    with absent fields omitted, or ``None`` when *raw* is not a JSON locator (a
-    plain CFI, empty, or anything else).
+    Returns ``{'href', 'chapter_progress', 'position', 'cfi', 'total_progression',
+    'fragment'}`` with absent fields omitted, or ``None`` when *raw* is not a JSON
+    locator (a plain CFI, empty, or anything else).
     """
     if isinstance(raw, dict):
         payload = raw
@@ -2366,6 +2366,15 @@ def parse_readium_locator(raw) -> Optional[dict]:
     position = _as_int(locations.get("position"))
     cfi = str(locations.get("partialCfi") or locations.get("cfi") or "").strip()
 
+    fragment = None
+    fragments = locations.get("fragments")
+    if isinstance(fragments, list) and fragments:
+        first = fragments[0]
+        if isinstance(first, str):
+            stripped = first.strip()
+            if stripped:
+                fragment = stripped
+
     locator = {}
     if href:
         locator["href"] = href
@@ -2377,6 +2386,8 @@ def parse_readium_locator(raw) -> Optional[dict]:
         locator["position"] = position
     if is_epub_cfi(cfi):
         locator["cfi"] = cfi
+    if fragment is not None:
+        locator["fragment"] = fragment
 
     return locator or None
 

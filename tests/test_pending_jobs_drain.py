@@ -8,6 +8,8 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from src.sync_manager import SyncManager
+from src.utils.transcription_cancel import request_cancel, unregister_worker
+from src.utils.transcription_cancel import _active as _cancel_active
 
 
 class _FakeBook:
@@ -103,7 +105,8 @@ class TestEbookOnlyBatchDrain(unittest.TestCase):
 
         db.save_book = _tracking_save_book
 
-        def _tracking_run_job(book, idx, total, library_service, client_bundle):
+        def _tracking_run_job(book, idx, total, library_service, client_bundle,
+                              cancellation_token=None):
             events.append(("run", book.abs_id, idx, total))
 
         mgr._run_background_job.side_effect = _tracking_run_job
@@ -215,6 +218,71 @@ class TestMixedPendingQueue(unittest.TestCase):
         target(*args)
         mgr._run_background_job.assert_called_once()
         self.assertIs(mgr._run_background_job.call_args.args[0], ebook_book)
+
+
+class TestEbookOnlyBatchCancellation(unittest.TestCase):
+    """Requirement: ebook-only batch books are cancellable while processing."""
+
+    def setUp(self):
+        # Ensure clean cancellation state before each test
+        for abs_id in list(_cancel_active.keys()):
+            token = _cancel_active.pop(abs_id, None)
+            if token:
+                token.cancel()
+
+    def tearDown(self):
+        # Clean up any registrations this test created
+        for abs_id in list(_cancel_active.keys()):
+            token = _cancel_active.pop(abs_id, None)
+            if token:
+                token.cancel()
+
+    def test_ebook_only_batch_book_is_cancellable_during_processing(self):
+        """While _run_ebook_only_batch processes a book, request_cancel returns True."""
+        books = [_FakeBook(f"eb-{i}", sync_mode="ebook_only") for i in range(3)]
+        db = _FakeDatabaseService(pending=books, books_by_id={b.abs_id: b for b in books})
+        mgr = _make_manager(db)
+
+        # Track whether cancellation was possible during each book's processing
+        cancellable_during_run = {}
+
+        # cancellation_token is intentionally OPTIONAL here. The pre-fix batch
+        # called _run_background_job with five positional args, so a required
+        # sixth would make this test fail on arity (a TypeError) instead of on
+        # the behaviour under test. Keeping it optional means the assertion
+        # below is what distinguishes fixed from broken.
+        def _tracking_run_job(book, idx, total, library_service, client_bundle,
+                              cancellation_token=None):
+            # The batch must register the token BEFORE dispatching the job, so a
+            # concurrent delete can cancel it. This stub stands in for the real
+            # _run_background_job, which would otherwise self-register on entry
+            # and mask the gap.
+            cancellable_during_run[book.abs_id] = request_cancel(book.abs_id)
+
+        mgr._run_background_job = MagicMock(side_effect=_tracking_run_job)
+
+        with patch("src.sync_manager.threading.Thread") as thread_cls:
+            mgr.check_pending_jobs()
+            kwargs = thread_cls.call_args.kwargs
+            target = kwargs["target"]
+            args = kwargs["args"]
+
+        # Run the batch synchronously
+        target(*args)
+
+        # Each book should have been cancellable while it was being processed
+        for book in books:
+            self.assertTrue(
+                cancellable_during_run.get(book.abs_id, False),
+                f"Book {book.abs_id} should have been cancellable during processing"
+            )
+
+        # After the batch completes, no book should be cancellable (no leaked registrations)
+        for book in books:
+            self.assertFalse(
+                request_cancel(book.abs_id),
+                f"Book {book.abs_id} should not be cancellable after batch completes"
+            )
 
 
 if __name__ == "__main__":

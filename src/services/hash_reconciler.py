@@ -20,10 +20,6 @@ from src.utils.user_context import reset_current_user_id, set_current_user_id
 
 logger = logging.getLogger(__name__)
 
-# Per-user device-sync services, cached so their mtime/size hash caches survive
-# between passes. Keyed by user id.
-_user_services: dict = {}
-
 _DEFAULT_INTERVAL_MINUTES = 360
 _MIN_INTERVAL_MINUTES = 5
 
@@ -104,9 +100,10 @@ def _scoped_service(global_service, registry, user_id: int):
 def _reconcile_all_users(global_service, registry, database_service) -> None:
     """Run one reconcile pass per active user, then a global sweep.
 
-    Per-user services are cached across passes so their mtime/size hash caches
-    survive; the global sweep still runs afterwards to catch books nobody has
-    claimed (single-user installs land here exclusively).
+    Per-user services are rebuilt each pass so credential changes take effect
+    without a restart; the file-hash cache they share with the global service is
+    what actually avoids re-hashing. The global sweep still runs afterwards to
+    catch books nobody has claimed (single-user installs land here exclusively).
     """
     users = []
     if registry is not None and database_service is not None:
@@ -120,17 +117,18 @@ def _reconcile_all_users(global_service, registry, database_service) -> None:
         user_id = getattr(user, "id", None)
         if user_id is None:
             continue
-        service = _user_services.get(user_id)
-        if service is None:
-            try:
-                service = _scoped_service(global_service, registry, user_id)
-            except Exception as e:
-                logger.warning(
-                    "🔗 Hash reconcile: could not build clients for user %s: %s",
-                    user_id, e, exc_info=True,
-                )
-                continue
-            _user_services[user_id] = service
+        # Built fresh every pass: caching the service would pin this user's API
+        # clients, so a corrected ABS key or CWA password would go unused until
+        # the process restarted. Construction is cheap and the registry does its
+        # own client caching, with its own invalidation.
+        try:
+            service = _scoped_service(global_service, registry, user_id)
+        except Exception as e:
+            logger.warning(
+                "🔗 Hash reconcile: could not build clients for user %s: %s",
+                user_id, e, exc_info=True,
+            )
+            continue
 
         # Threads do not inherit contextvars, so bind the user explicitly for
         # anything downstream that resolves per-user settings.
