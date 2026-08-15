@@ -37,7 +37,12 @@ class KOReaderDeviceSyncService:
         kavita_client=None,
         epub_cache_dir=None,
         bookorbit_client=None,
+        user_id=None,
     ):
+        # When set, this instance is scoped to one user: it sees only the books
+        # that user has claimed, and its clients carry that user's credentials.
+        # None keeps the historical global/admin behavior.
+        self.user_id = user_id
         self.database_service = database_service
         self.ebook_parser = ebook_parser
         self.abs_client = abs_client
@@ -53,9 +58,13 @@ class KOReaderDeviceSyncService:
         # Audiobook-only mappings have no ebook file by design, so they're never
         # relevant to this ebook-focused device manifest -- including them just
         # produces a "no original ebook filename" warning every cycle, forever.
+        if self.user_id is not None:
+            books = self.database_service.get_books_by_status("active", user_id=self.user_id)
+        else:
+            books = self.database_service.get_books_by_status("active")
         return sorted(
             (
-                book for book in self.database_service.get_books_by_status("active")
+                book for book in books
                 if getattr(book, "sync_mode", "audiobook") != "audiobook_only"
             ),
             key=lambda book: (str(getattr(book, "abs_title", "") or "").lower(), str(book.abs_id)),

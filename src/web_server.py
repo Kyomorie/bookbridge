@@ -11332,7 +11332,11 @@ if __name__ == '__main__':
     # never re-link a drifted hash.
     try:
         from src.services.hash_reconciler import start_hash_reconciler_thread
-        start_hash_reconciler_thread(container.koreader_device_sync_service())
+        start_hash_reconciler_thread(
+            container.koreader_device_sync_service(),
+            user_client_registry=container.user_client_registry(),
+            database_service=database_service,
+        )
     except Exception as exc:
         logger.warning("Hash reconciler failed to start: %s", exc, exc_info=True)
 

@@ -13,11 +13,17 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from src.services import hash_reconciler
 from src.services.koreader_device_sync_service import KOReaderDeviceSyncService
+
+
+def _reset_user_services():
+    """Module-global cache — clear it so tests cannot leak into each other."""
+    hash_reconciler._user_services.clear()
 
 
 class _Sentinel(Exception):
@@ -230,6 +236,177 @@ class TestReconcilerSettings(unittest.TestCase):
         self.assertEqual(service.reconcile_hashes.call_count, 2)
         self.assertEqual(passes[0], 360 * 60, "the wait must use the configured interval")
         hash_reconciler._wake_event.clear()
+
+
+class TestPerUserScoping(unittest.TestCase):
+    """The global bundle holds only the admin's credentials.
+
+    Another user's CWA/BookOrbit books can never be revalidated by it, so each
+    active user needs a pass with their own clients (CLAUDE.md failure mode #5).
+    """
+
+    def setUp(self):
+        _reset_user_services()
+        self.addCleanup(_reset_user_services)
+
+        self.tmp = TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+        self.global_service = KOReaderDeviceSyncService(
+            database_service=MagicMock(),
+            ebook_parser=MagicMock(),
+            abs_client=MagicMock(),
+            booklore_client=MagicMock(),
+            cwa_client=MagicMock(),
+            kavita_client=MagicMock(),
+            epub_cache_dir=Path(self.tmp.name),
+            bookorbit_client=MagicMock(),
+        )
+        self.global_service.reconcile_hashes = MagicMock(return_value={})
+
+        self.bundle = SimpleNamespace(
+            abs_client="user-abs",
+            booklore_client="user-booklore",
+            cwa_client="user-cwa",
+            bookorbit_client="user-bookorbit",
+        )
+        self.registry = MagicMock()
+        self.registry.get_clients.return_value = self.bundle
+
+        self.db = MagicMock()
+        self.db.list_users.return_value = [
+            SimpleNamespace(id=1, active=1),
+            SimpleNamespace(id=2, active=1),
+        ]
+
+    def test_scoped_service_uses_the_users_clients_and_books(self):
+        scoped = hash_reconciler._scoped_service(self.global_service, self.registry, 2)
+
+        self.assertEqual(scoped.user_id, 2)
+        self.assertEqual(scoped.cwa_client, "user-cwa")
+        self.assertEqual(scoped.bookorbit_client, "user-bookorbit")
+        # Catalogue services stay shared.
+        self.assertIs(scoped.database_service, self.global_service.database_service)
+        self.assertIs(scoped.ebook_parser, self.global_service.ebook_parser)
+
+    def test_scoped_service_shares_the_hash_cache(self):
+        """A content hash is user-independent; re-hashing per user is pure waste."""
+        scoped = hash_reconciler._scoped_service(self.global_service, self.registry, 2)
+
+        self.assertIs(scoped._content_hash_cache, self.global_service._content_hash_cache)
+        self.assertIs(scoped._content_hash_cache_lock, self.global_service._content_hash_cache_lock)
+
+        # A hash computed under one scope is visible to the other.
+        scoped._content_hash_cache["/books/x.epub"] = (1.0, 10, "deadbeef")
+        self.assertEqual(
+            self.global_service._content_hash_cache["/books/x.epub"], (1.0, 10, "deadbeef")
+        )
+
+    def test_user_scoped_service_only_sees_that_users_books(self):
+        db = MagicMock()
+        db.get_books_by_status.return_value = []
+        scoped = KOReaderDeviceSyncService(
+            database_service=db, ebook_parser=MagicMock(), abs_client=MagicMock(),
+            booklore_client=MagicMock(), cwa_client=MagicMock(),
+            epub_cache_dir=Path(self.tmp.name), user_id=7,
+        )
+        scoped._get_active_books()
+        db.get_books_by_status.assert_called_once_with("active", user_id=7)
+
+    def test_global_service_still_sees_every_book(self):
+        db = MagicMock()
+        db.get_books_by_status.return_value = []
+        glob = KOReaderDeviceSyncService(
+            database_service=db, ebook_parser=MagicMock(), abs_client=MagicMock(),
+            booklore_client=MagicMock(), cwa_client=MagicMock(),
+            epub_cache_dir=Path(self.tmp.name),
+        )
+        glob._get_active_books()
+        db.get_books_by_status.assert_called_once_with("active")
+
+    def test_a_pass_runs_for_every_active_user_plus_the_global_sweep(self):
+        made = {}
+
+        def fake_scoped(global_service, registry, user_id):
+            svc = MagicMock()
+            svc.reconcile_hashes.return_value = {}
+            made[user_id] = svc
+            return svc
+
+        with patch.object(hash_reconciler, "_scoped_service", side_effect=fake_scoped):
+            hash_reconciler._reconcile_all_users(self.global_service, self.registry, self.db)
+
+        self.assertEqual(sorted(made), [1, 2])
+        for svc in made.values():
+            svc.reconcile_hashes.assert_called_once()
+        self.global_service.reconcile_hashes.assert_called_once()
+
+    def test_inactive_users_are_skipped(self):
+        self.db.list_users.return_value = [
+            SimpleNamespace(id=1, active=1),
+            SimpleNamespace(id=2, active=0),
+        ]
+        made = {}
+
+        def fake_scoped(global_service, registry, user_id):
+            svc = MagicMock()
+            made[user_id] = svc
+            return svc
+
+        with patch.object(hash_reconciler, "_scoped_service", side_effect=fake_scoped):
+            hash_reconciler._reconcile_all_users(self.global_service, self.registry, self.db)
+
+        self.assertEqual(sorted(made), [1])
+
+    def test_ambient_user_is_bound_during_the_pass_and_reset_after(self):
+        from src.utils.user_context import get_current_user_id
+        seen = []
+
+        def fake_scoped(global_service, registry, user_id):
+            svc = MagicMock()
+            svc.reconcile_hashes.side_effect = lambda: seen.append(get_current_user_id())
+            return svc
+
+        with patch.object(hash_reconciler, "_scoped_service", side_effect=fake_scoped):
+            hash_reconciler._reconcile_all_users(self.global_service, self.registry, self.db)
+
+        self.assertEqual(seen, [1, 2], "each pass must run under its own user context")
+        self.assertIsNone(get_current_user_id(), "context must not leak past the pass")
+
+    def test_one_users_failure_does_not_stop_the_others(self):
+        def fake_scoped(global_service, registry, user_id):
+            if user_id == 1:
+                raise RuntimeError("credentials unavailable")
+            svc = MagicMock()
+            svc.reconcile_hashes.return_value = {}
+            return svc
+
+        with patch.object(hash_reconciler, "_scoped_service", side_effect=fake_scoped):
+            hash_reconciler._reconcile_all_users(self.global_service, self.registry, self.db)
+
+        self.global_service.reconcile_hashes.assert_called_once()
+
+    def test_single_user_install_falls_back_to_the_global_sweep(self):
+        with patch.object(hash_reconciler, "_scoped_service") as scoped:
+            hash_reconciler._reconcile_all_users(self.global_service, None, None)
+
+        scoped.assert_not_called()
+        self.global_service.reconcile_hashes.assert_called_once()
+
+    def test_per_user_services_are_cached_between_passes(self):
+        calls = []
+
+        def fake_scoped(global_service, registry, user_id):
+            calls.append(user_id)
+            svc = MagicMock()
+            svc.reconcile_hashes.return_value = {}
+            return svc
+
+        with patch.object(hash_reconciler, "_scoped_service", side_effect=fake_scoped):
+            hash_reconciler._reconcile_all_users(self.global_service, self.registry, self.db)
+            hash_reconciler._reconcile_all_users(self.global_service, self.registry, self.db)
+
+        self.assertEqual(calls, [1, 2], "services must be reused, not rebuilt each pass")
 
 
 if __name__ == "__main__":
