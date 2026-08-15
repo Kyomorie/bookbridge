@@ -1788,3 +1788,84 @@ class TestGetAllKosyncDocumentsUserFilter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRemoteAuthHeaderToggle(unittest.TestCase):
+    """Reverse-proxy auto-login (PR #366) is security-relevant: pin the toggle.
+
+    The setting is a checkbox, so it can arrive as 'on' as well as 'true' — and a
+    boolean read that misses a spelling either silently disables the feature or,
+    far worse for this one, leaves it enabled when the operator turned it off.
+    """
+
+    def setUp(self):
+        import flask
+        import src.web_server as web_server
+
+        self.web_server = web_server
+        self.app = flask.Flask(__name__)
+
+        self._saved_db = web_server.database_service
+        self.db = MagicMock()
+        self.db.get_user_by_username.return_value = SimpleNamespace(
+            id=1, username="alice", role="admin", active=1,
+        )
+        web_server.database_service = self.db
+
+        self._saved = {
+            key: os.environ.get(key)
+            for key in ("REMOTE_AUTH_ENABLED", "REMOTE_AUTH_HEADER")
+        }
+
+    def tearDown(self):
+        self.web_server.database_service = self._saved_db
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def _resolve(self, header_value="alice", header_name="Remote-User"):
+        headers = {header_name: header_value} if header_value else {}
+        with self.app.test_request_context("/", headers=headers):
+            return self.web_server._remote_auth_user()
+
+    def test_disabled_by_default_ignores_the_header(self):
+        os.environ.pop("REMOTE_AUTH_ENABLED", None)
+        self.assertIsNone(self._resolve())
+
+    def test_every_truthy_spelling_enables_it(self):
+        for spelling in ("true", "True", "1", "yes", "on", "ON", " on "):
+            with self.subTest(spelling=spelling):
+                os.environ["REMOTE_AUTH_ENABLED"] = spelling
+                user = self._resolve()
+                self.assertIsNotNone(user, f"{spelling!r} should enable remote auth")
+                self.assertEqual(user.username, "alice")
+
+    def test_falsy_spellings_keep_it_disabled(self):
+        for spelling in ("false", "False", "0", "no", "off", ""):
+            with self.subTest(spelling=spelling):
+                os.environ["REMOTE_AUTH_ENABLED"] = spelling
+                self.assertIsNone(self._resolve(), f"{spelling!r} must not enable remote auth")
+
+    def test_unknown_user_is_not_provisioned(self):
+        os.environ["REMOTE_AUTH_ENABLED"] = "true"
+        self.db.get_user_by_username.return_value = None
+        self.assertIsNone(self._resolve("attacker"))
+
+    def test_inactive_user_is_rejected(self):
+        os.environ["REMOTE_AUTH_ENABLED"] = "true"
+        self.db.get_user_by_username.return_value = SimpleNamespace(
+            id=2, username="disabled", role="user", active=0,
+        )
+        self.assertIsNone(self._resolve("disabled"))
+
+    def test_missing_header_is_rejected(self):
+        os.environ["REMOTE_AUTH_ENABLED"] = "true"
+        self.assertIsNone(self._resolve(None))
+
+    def test_custom_header_name_is_honoured(self):
+        os.environ["REMOTE_AUTH_ENABLED"] = "true"
+        os.environ["REMOTE_AUTH_HEADER"] = "X-Forwarded-User"
+        self.assertIsNotNone(self._resolve(header_name="X-Forwarded-User"))
+        self.assertIsNone(self._resolve(header_name="Remote-User"))

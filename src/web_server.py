@@ -912,7 +912,7 @@ def _safe_next_url(default=None):
 
 def _remote_auth_user():
     """Return the User named by the configured reverse-proxy header, or None."""
-    if os.environ.get('REMOTE_AUTH_ENABLED', 'false').strip().lower() not in ('true', '1', 'yes', 'on'):
+    if not env_truthy('REMOTE_AUTH_ENABLED'):
         return None
     header_name = os.environ.get('REMOTE_AUTH_HEADER', 'Remote-User').strip() or 'Remote-User'
     username = (request.headers.get(header_name) or '').strip()
