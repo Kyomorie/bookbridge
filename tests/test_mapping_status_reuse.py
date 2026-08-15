@@ -96,6 +96,69 @@ class TestPreserveOrResetMappingStatus(MappingStatusReuseTestCase):
 
         self.assertEqual(book.status, "pending")
 
+    def test_changed_storyteller_uuid_still_requeues(self):
+        """A different readalong is different audio, so the old map cannot stand.
+
+        The uuid is overwritten by the Storyteller/library/BookFusion mapping paths
+        but was never compared, so re-linking a book to another readalong kept the
+        alignment built against the previous one.
+        """
+        book = _Book(status="active", kosync_doc_id="hash-1", ebook_filename="book.epub")
+        book.storyteller_uuid = "uuid-old"
+
+        web_server._preserve_or_reset_mapping_status(
+            book,
+            kosync_doc_id="hash-1",
+            ebook_filename="book.epub",
+            storyteller_uuid="uuid-new",
+        )
+
+        self.assertEqual(book.status, "pending")
+
+    def test_changed_ebook_source_id_still_requeues(self):
+        book = _Book(status="active", kosync_doc_id="hash-1", ebook_filename="book.epub")
+        book.ebook_source_id = "src-1"
+
+        web_server._preserve_or_reset_mapping_status(
+            book,
+            kosync_doc_id="hash-1",
+            ebook_filename="book.epub",
+            ebook_source_id="src-2",
+        )
+
+        self.assertEqual(book.status, "pending")
+
+    def test_same_storyteller_uuid_still_reuses_the_alignment(self):
+        book = _Book(status="active", kosync_doc_id="hash-1", ebook_filename="book.epub")
+        book.storyteller_uuid = "uuid-same"
+
+        web_server._preserve_or_reset_mapping_status(
+            book,
+            kosync_doc_id="hash-1",
+            ebook_filename="book.epub",
+            storyteller_uuid="uuid-same",
+        )
+
+        self.assertEqual(book.status, "active")
+
+    def test_backfilling_a_blank_identity_field_does_not_requeue(self):
+        """Legacy rows have blanks; populating one is not a re-map.
+
+        Treating empty -> populated as a change would re-transcribe exactly the
+        books this guard exists to spare.
+        """
+        book = _Book(status="active", kosync_doc_id="hash-1", ebook_filename="book.epub")
+        book.storyteller_uuid = None
+
+        web_server._preserve_or_reset_mapping_status(
+            book,
+            kosync_doc_id="hash-1",
+            ebook_filename="book.epub",
+            storyteller_uuid="uuid-new",
+        )
+
+        self.assertEqual(book.status, "active")
+
     def test_no_alignment_requeues_as_before(self):
         self.db.has_alignment.return_value = False
         book = _Book(status="active", kosync_doc_id="hash-1", ebook_filename="book.epub")

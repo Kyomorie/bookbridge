@@ -53,3 +53,75 @@ class TestExtractedCoverFreshness(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCoverFreshnessVerdictCaching(unittest.TestCase):
+    """The freshness check must not run on every cover request.
+
+    The dashboard requests one cover per mapping, and confirming freshness costs a
+    DB lookup plus resolve_book_path — which rglobs the whole library whenever its
+    100-entry path cache misses, and a real library has far more books than that.
+    """
+
+    def setUp(self):
+        import src.web_server as web_server
+
+        self.web_server = web_server
+        self.tmp = TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.covers = Path(self.tmp.name)
+        self.cover = self.covers / "abc.jpg"
+        self.cover.write_bytes(b"jpg")
+
+        # COVERS_DIR/database_service are assigned by setup_dependencies() at boot,
+        # so they may not exist as module attributes in a bare unit test.
+        self._saved_covers = getattr(web_server, "COVERS_DIR", None)
+        self._saved_db = getattr(web_server, "database_service", None)
+        web_server.COVERS_DIR = self.covers
+        web_server._cover_fresh_until.clear()
+        self.addCleanup(web_server._cover_fresh_until.clear)
+
+        self.lookups = []
+
+        class _DB:
+            def get_book_by_kosync_id(_self, doc_hash):
+                self.lookups.append(doc_hash)
+                return None  # no mapping -> nothing to compare, verdict is "fresh"
+
+        web_server.database_service = _DB()
+
+        def _restore():
+            web_server.COVERS_DIR = self._saved_covers
+            web_server.database_service = self._saved_db
+
+        self.addCleanup(_restore)
+
+    def _serve(self):
+        from flask import Flask
+
+        app = Flask(__name__)
+        with app.test_request_context("/"):
+            return self.web_server.serve_cover("abc.jpg")
+
+    def test_repeat_requests_do_not_re_resolve_the_ebook(self):
+        self._serve()
+        self._serve()
+        self._serve()
+
+        self.assertEqual(
+            len(self.lookups), 1,
+            "the freshness verdict must be cached, not recomputed per request",
+        )
+
+    def test_expired_verdict_is_rechecked(self):
+        self._serve()
+        self.assertEqual(len(self.lookups), 1)
+
+        # Expire the cached verdict; an ebook edited later must still be noticed.
+        self.web_server._cover_fresh_until["abc"] = time.time() - 1
+        self._serve()
+
+        self.assertEqual(
+            len(self.lookups), 2,
+            "an expired verdict must fall through to a fresh check",
+        )

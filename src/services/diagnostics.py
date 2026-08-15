@@ -163,6 +163,13 @@ def scrub_diagnostic_text(text: str) -> str:
     # 5. Quoted spans (>= 12 inner chars)
     def _replace_quoted_inner(m: re.Match, quote_char: str) -> str:
         inner = m.group(1)
+        # An xpointer exempted by rule 4 is almost always QUOTED at the emitting
+        # site (e.g. "Error resolving XPath '<xpath>'"), so hashing it here would
+        # undo that exemption and leave the finding unactionable again. Carries no
+        # user data -- EPUB element names are structural -- and _make_template's
+        # digit collapse still bounds cardinality.
+        if _XPATH_TOKEN_RE.match(inner.strip()):
+            return m.group(0)
         h = _sha1_prefix(inner)
         return f"{quote_char}t:{h}{quote_char}"
 

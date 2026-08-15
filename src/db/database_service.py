@@ -71,7 +71,6 @@ class DatabaseService:
     def _run_alembic_migrations(self):
         """Run Alembic migrations to ensure database schema is up to date."""
         import sys
-        import traceback
         from alembic.config import Config
         from alembic import command
         from sqlalchemy import inspect, text
@@ -124,7 +123,6 @@ class DatabaseService:
             logger.info("✅ Database migrations completed successfully")
         except Exception as e:
             logger.error(f"❌ FATAL: Alembic migration failed: {e}", exc_info=True)
-            logger.error(f"❌ Migration error details: {traceback.format_exc()}", exc_info=True)
             # Re-raise to prevent startup with invalid schema
             raise
         finally:

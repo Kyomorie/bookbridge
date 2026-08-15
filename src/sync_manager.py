@@ -2873,7 +2873,6 @@ class SyncManager:
             except Exception as e:
                 logger.error(f"❌ Sync cycle internal error: {e}", exc_info=True)
                 # Log traceback for robust debugging
-                logger.error(traceback.format_exc(), exc_info=True)
             finally:
                 self._sync_lock.release()
                 self._dispatch_pending_syncs()
@@ -3550,6 +3549,28 @@ class SyncManager:
                     if getattr(result, 'error_code', None) == ABS_ITEM_NOT_FOUND
                 ]
                 if stale_abs_clients:
+                    # Book.status is a property of the SHARED catalog row, but this
+                    # probe only proves the item is gone from THIS user's
+                    # Audiobookshelf. Marking a book others still claim would stop
+                    # syncing it for all of them over one user's stale mapping, so
+                    # only a single-claimant book is demoted; otherwise say so and
+                    # leave the catalog alone.
+                    try:
+                        claimants = self.database_service.get_book_user_ids(abs_id) or []
+                    except Exception as exc:
+                        logger.warning(
+                            "Could not resolve claimants for stale ABS book '%s': %s",
+                            abs_id, exc, exc_info=True,
+                        )
+                        claimants = []
+                    if len(claimants) > 1:
+                        logger.error(
+                            f"🛑 '{abs_id}' '{title_snip}' Audiobookshelf library item no longer exists "
+                            f"for user {get_current_user_id()} (reported by "
+                            f"{', '.join(sorted(stale_abs_clients))}) — {len(claimants)} users claim this "
+                            f"book, so it stays active for the others. Re-match it for this user to resume syncing"
+                        )
+                        continue
                     self.database_service.set_book_status(abs_id, 'error')
                     logger.error(
                         f"🛑 '{abs_id}' '{title_snip}' Audiobookshelf library item no longer exists "
@@ -3649,7 +3670,6 @@ class SyncManager:
                         handler.flush()
 
             except Exception as e:
-                logger.error(traceback.format_exc(), exc_info=True)
                 logger.error(f"❌ Sync error: {e}", exc_info=True)
             finally:
                 book_durations.append((time.monotonic() - book_t0, title_snip))
@@ -4102,5 +4122,4 @@ class SyncManager:
         except Exception as e:
             error_msg = f"Error clearing progress for {abs_id}: {e}"
             logger.error(error_msg, exc_info=True)
-            logger.error(traceback.format_exc(), exc_info=True)
             raise RuntimeError(error_msg) from e

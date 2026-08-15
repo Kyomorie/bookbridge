@@ -283,10 +283,15 @@ class TestStaleABSItemMarksBookError(BaseSyncCycleTestCase):
         )
         return manager, mocks
 
-    def _run_cycle_capturing_logs(self, item_exists):
+    def _run_cycle_capturing_logs(self, item_exists, claimants=None):
         from io import StringIO
 
         manager, mocks = self._build_manager(item_exists)
+        # Default to a single claimant: the shared catalog row may only be demoted
+        # when nobody else still claims the book.
+        mocks['database_service'].get_book_user_ids.return_value = (
+            [1] if claimants is None else claimants
+        )
 
         log_stream = StringIO()
         handler = logging.StreamHandler(log_stream)
@@ -321,6 +326,31 @@ class TestStaleABSItemMarksBookError(BaseSyncCycleTestCase):
             mocks['database_service'].save_state.called,
             "A book being marked 'error' must not also record a partial sync",
         )
+
+    def test_shared_book_is_not_demoted_for_one_users_stale_mapping(self):
+        """Book.status is catalog-wide, but the 404 probe only speaks for one user.
+
+        Demoting a book two people claim would stop it syncing for the second user
+        because the first user's Audiobookshelf lost the item (CLAUDE.md failure
+        mode #5: per-user state must not leak into shared catalog state).
+        """
+        mocks, log_output = self._run_cycle_capturing_logs(
+            item_exists=False, claimants=[1, 2]
+        )
+
+        mocks['database_service'].set_book_status.assert_not_called()
+        self.assertIn("Audiobookshelf library item no longer exists", log_output)
+        self.assertIn("stays active for the others", log_output)
+
+    def test_single_claimant_book_is_still_demoted(self):
+        mocks, log_output = self._run_cycle_capturing_logs(
+            item_exists=False, claimants=[7]
+        )
+
+        mocks['database_service'].set_book_status.assert_called_once_with(
+            'test-abs-id-stale', 'error'
+        )
+        self.assertIn("marking book as 'error'", log_output)
 
     def test_indeterminate_probe_leaves_book_active(self):
         mocks, log_output = self._run_cycle_capturing_logs(item_exists=None)

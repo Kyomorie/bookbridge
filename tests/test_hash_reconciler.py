@@ -9,6 +9,7 @@ Covers KOReaderDeviceSyncService.reconcile_hashes plus the daemon's setting read
 - the daemon does no work while disabled
 """
 
+import itertools
 import os
 import tempfile
 import unittest
@@ -18,6 +19,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from src.services import hash_reconciler
+
+_FLOOR = hash_reconciler._MIN_SIGNAL_INTERVAL_SECONDS
 from src.services.koreader_device_sync_service import KOReaderDeviceSyncService
 
 
@@ -256,7 +259,7 @@ class TestReconcilerSettings(unittest.TestCase):
         ks._last_device_sync_activity = 0.0
         self.assertFalse(hash_reconciler._device_sync_busy())
 
-    def test_signal_wakes_the_daemon_early(self):
+    def test_signal_wakes_the_daemon_early_once_past_the_floor(self):
         """An unresolved hash must not wait a whole interval for the next pass."""
         os.environ["KOSYNC_HASH_RECONCILE_ENABLED"] = "true"
         os.environ["KOSYNC_HASH_RECONCILE_MINUTES"] = "360"
@@ -266,7 +269,6 @@ class TestReconcilerSettings(unittest.TestCase):
         hash_reconciler.signal_reconcile_soon()
         self.assertTrue(hash_reconciler._wake_event.is_set())
 
-        # Second pass starts as soon as the wait observes the signal.
         passes = []
 
         def fake_wait(timeout=None):
@@ -275,12 +277,56 @@ class TestReconcilerSettings(unittest.TestCase):
                 raise _Sentinel()
             return True
 
-        with patch.object(hash_reconciler._wake_event, "wait", side_effect=fake_wait):
-            with self.assertRaises(_Sentinel):
-                hash_reconciler.run_hash_reconciler_daemon(service, initial_delay_sec=0)
+        # Each monotonic() reading advances well past the signal floor, so the
+        # signal is acted on rather than absorbed.
+        clock = itertools.count(0, _FLOOR + 100)
+
+        with patch.object(hash_reconciler.time, "monotonic", side_effect=lambda: next(clock)):
+            with patch.object(hash_reconciler._wake_event, "wait", side_effect=fake_wait):
+                with self.assertRaises(_Sentinel):
+                    hash_reconciler.run_hash_reconciler_daemon(service, initial_delay_sec=0)
 
         self.assertEqual(service.reconcile_hashes.call_count, 2)
         self.assertEqual(passes[0], 360 * 60, "the wait must use the configured interval")
+        hash_reconciler._wake_event.clear()
+
+    def test_signal_too_soon_after_a_pass_is_absorbed(self):
+        """A hash that can never resolve is re-signalled on every device poll.
+
+        Each pass walks the whole catalogue, so acting on every signal would pin the
+        reconciler at 100% duty for as long as one such book exists.
+        """
+        os.environ["KOSYNC_HASH_RECONCILE_ENABLED"] = "true"
+        os.environ["KOSYNC_HASH_RECONCILE_MINUTES"] = "360"
+        service = MagicMock()
+        hash_reconciler._wake_event.clear()
+        hash_reconciler.signal_reconcile_soon()
+
+        waits = []
+
+        def fake_wait(timeout=None):
+            waits.append(timeout)
+            if len(waits) >= 3:
+                raise _Sentinel()
+            return True  # a signal is pending every time
+
+        # Barely any time passes between readings, so every signal lands inside
+        # the floor and must be absorbed.
+        clock = itertools.count(0, 1)
+
+        with patch.object(hash_reconciler.time, "monotonic", side_effect=lambda: next(clock)):
+            with patch.object(hash_reconciler._wake_event, "wait", side_effect=fake_wait):
+                with self.assertRaises(_Sentinel):
+                    hash_reconciler.run_hash_reconciler_daemon(service, initial_delay_sec=0)
+
+        self.assertEqual(
+            service.reconcile_hashes.call_count, 1,
+            "a signal inside the floor must not trigger another catalogue pass",
+        )
+        self.assertLessEqual(
+            waits[1], _FLOOR,
+            "the re-wait must be capped by the remaining cooldown",
+        )
         hash_reconciler._wake_event.clear()
 
 

@@ -1814,8 +1814,11 @@ class TestRemoteAuthHeaderToggle(unittest.TestCase):
 
         self._saved = {
             key: os.environ.get(key)
-            for key in ("REMOTE_AUTH_ENABLED", "REMOTE_AUTH_HEADER")
+            for key in (
+                "REMOTE_AUTH_ENABLED", "REMOTE_AUTH_HEADER", "REMOTE_AUTH_TRUSTED_PROXIES",
+            )
         }
+        os.environ.pop("REMOTE_AUTH_TRUSTED_PROXIES", None)
 
     def tearDown(self):
         self.web_server.database_service = self._saved_db
@@ -1825,10 +1828,60 @@ class TestRemoteAuthHeaderToggle(unittest.TestCase):
             else:
                 os.environ[key] = value
 
-    def _resolve(self, header_value="alice", header_name="Remote-User"):
+    def _resolve(self, header_value="alice", header_name="Remote-User",
+                 remote_addr="127.0.0.1"):
+        """Resolve the remote-auth user.
+
+        Defaults to a loopback peer: Flask's test context sets no REMOTE_ADDR at
+        all, and a request with no peer address is (correctly) refused, which
+        would otherwise mask what these toggle tests are actually asserting.
+        """
         headers = {header_name: header_value} if header_value else {}
-        with self.app.test_request_context("/", headers=headers):
+        environ = {"REMOTE_ADDR": remote_addr} if remote_addr else {}
+        with self.app.test_request_context("/", headers=headers, environ_base=environ):
             return self.web_server._remote_auth_user()
+
+    def test_untrusted_peer_cannot_authenticate_with_the_header(self):
+        """The header is a full sign-in, so an arbitrary LAN host must not use it.
+
+        Without a peer check, anything able to reach the published port could send
+        `Remote-User: admin` and be signed in as an administrator.
+        """
+        os.environ["REMOTE_AUTH_ENABLED"] = "true"
+        self.assertIsNone(
+            self._resolve(remote_addr="192.168.1.50"),
+            "a host outside the trusted proxy list must not be signed in",
+        )
+
+    def test_trusted_proxy_cidr_is_honoured(self):
+        os.environ["REMOTE_AUTH_ENABLED"] = "true"
+        os.environ["REMOTE_AUTH_TRUSTED_PROXIES"] = "10.1.2.0/24"
+        user = self._resolve(remote_addr="10.1.2.7")
+        self.assertIsNotNone(user)
+        self.assertEqual(user.username, "alice")
+        # A neighbour outside the configured range is still refused.
+        self.assertIsNone(self._resolve(remote_addr="10.1.3.7"))
+
+    def test_blank_trust_list_means_loopback_only(self):
+        os.environ["REMOTE_AUTH_ENABLED"] = "true"
+        os.environ["REMOTE_AUTH_TRUSTED_PROXIES"] = ""
+        self.assertIsNotNone(self._resolve(remote_addr="127.0.0.1"))
+        self.assertIsNotNone(self._resolve(remote_addr="::1"))
+        self.assertIsNone(self._resolve(remote_addr="10.0.0.9"))
+
+    def test_malformed_trust_entry_does_not_widen_or_empty_the_list(self):
+        """A typo must not fail open, and must not discard the valid entries."""
+        os.environ["REMOTE_AUTH_ENABLED"] = "true"
+        os.environ["REMOTE_AUTH_TRUSTED_PROXIES"] = "not-an-ip, 10.1.2.0/24"
+        self.assertIsNotNone(self._resolve(remote_addr="10.1.2.7"))
+        self.assertIsNone(self._resolve(remote_addr="192.168.1.50"))
+
+    def test_missing_remote_addr_is_refused(self):
+        os.environ["REMOTE_AUTH_ENABLED"] = "true"
+        with self.app.test_request_context(
+            "/", headers={"Remote-User": "alice"}, environ_base={"REMOTE_ADDR": None}
+        ):
+            self.assertIsNone(self.web_server._remote_auth_user())
 
     def test_disabled_by_default_ignores_the_header(self):
         os.environ.pop("REMOTE_AUTH_ENABLED", None)

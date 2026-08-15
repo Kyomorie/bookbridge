@@ -156,7 +156,6 @@ class SmilExtractor:
         except Exception as e:
             logger.error(f"❌ Error extracting SMIL transcript: {e}", exc_info=True)
             import traceback
-            logger.error(traceback.format_exc(), exc_info=True)
             return []
 
     def _detect_timestamp_mode(self, zf: zipfile.ZipFile, smil_files: List[str]) -> str:

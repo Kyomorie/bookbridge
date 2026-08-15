@@ -259,6 +259,42 @@ assert(BridgeSync._extractWithArchiver(fake_archiver, "update.zip", "/stage"))
 assert(extracted_paths[1] == "/stage/bridgesync.koplugin/_meta.lua",
     "current KOReader archiver must extract entries into staging")
 
+-- A failed entry must fail the whole extraction. Returning success on a partial
+-- tree let _installPluginZip stage a plugin missing modules other than
+-- _meta.lua/main.lua and rename it over the backup, bricking the plugin.
+local partial_archiver = {
+    Reader = {
+        new = function()
+            local entries = {
+                { path = "bridgesync.koplugin/_meta.lua" },
+                { path = "bridgesync.koplugin/main.lua" },
+                { path = "bridgesync.koplugin/bridge_annotations.lua" },
+            }
+            return {
+                err = nil,
+                open = function() return true end,
+                close = function() end,
+                iterate = function()
+                    local index = 0
+                    return function()
+                        index = index + 1
+                        return entries[index]
+                    end
+                end,
+                -- Third entry fails and, as some archiver builds do, sets no err.
+                extractToPath = function(_, path)
+                    return path ~= "bridgesync.koplugin/bridge_annotations.lua"
+                end,
+            }
+        end,
+    },
+}
+local partial_ok, partial_err = BridgeSync._extractWithArchiver(
+    partial_archiver, "update.zip", "/stage")
+assert(not partial_ok, "a failed entry must not report extraction success")
+assert(type(partial_err) == "string" and partial_err:find("bridge_annotations", 1, true),
+    "the failure must name the entry that could not be extracted")
+
 local archive_path = settings_dir .. "/bridgesync-update-test.zip"
 local archive = assert(io.open(archive_path, "wb"))
 archive:write("plugin archive")
@@ -272,17 +308,17 @@ os.remove(archive_path)
 
 local metadata_path = settings_dir .. "/bridgesync-update-meta.lua"
 local metadata = assert(io.open(metadata_path, "wb"))
-metadata:write('return { name = "bridgesync", version = "0.6.1" }')
+metadata:write('return { name = "bridgesync", version = "0.6.2" }')
 metadata:close()
-assert(BridgeSync._validatePluginMetadata(metadata_path, "0.6.1"),
+assert(BridgeSync._validatePluginMetadata(metadata_path, "0.6.2"),
     "matching staged BridgeSync metadata must pass")
-local metadata_ok, metadata_err = BridgeSync._validatePluginMetadata(metadata_path, "0.6.2")
+local metadata_ok, metadata_err = BridgeSync._validatePluginMetadata(metadata_path, "9.9.9")
 assert(not metadata_ok and metadata_err:find("does not match", 1, true),
     "a staged plugin with the wrong version must fail closed")
 metadata = assert(io.open(metadata_path, "wb"))
-metadata:write('return { fullname = "Bridge Sync", name = "other", version = "0.6.1" }')
+metadata:write('return { fullname = "Bridge Sync", name = "other", version = "0.6.2" }')
 metadata:close()
-metadata_ok, metadata_err = BridgeSync._validatePluginMetadata(metadata_path, "0.6.1")
+metadata_ok, metadata_err = BridgeSync._validatePluginMetadata(metadata_path, "0.6.2")
 assert(not metadata_ok and metadata_err:find("not BridgeSync", 1, true),
     "a staged package with the wrong identity must fail closed")
 os.remove(metadata_path)
@@ -382,7 +418,7 @@ assert(#uploaded_log_payloads == 3,
 assert(uploaded_log_payloads[2].operation == "session_upload")
 assert(uploaded_log_payloads[2].status == "failure")
 assert(uploaded_log_payloads[3].status == "success")
-assert(uploaded_log_payloads[3].plugin_version == "0.6.1")
+assert(uploaded_log_payloads[3].plugin_version == "0.6.2")
 assert(type(sqlite_values.device_log_upload_offset) == "number",
     "successful telemetry must persist the acknowledged log byte offset")
 

@@ -27,7 +27,7 @@ ALL_SETTINGS = [
     'ABS_COLLECTION_NAME', 'ABS_PROGRESS_OFFSET_SECONDS', 'ABS_ONLY_SEARCH_IN_ABS_LIBRARY_ID',
     'ABS_SOCKET_ENABLED', 'ABS_SOCKET_DEBOUNCE_SECONDS',
     
-    'REMOTE_AUTH_ENABLED', 'REMOTE_AUTH_HEADER',
+    'REMOTE_AUTH_ENABLED', 'REMOTE_AUTH_HEADER', 'REMOTE_AUTH_TRUSTED_PROXIES',
 
     # KOSync
     'KOSYNC_ENABLED', 'KOSYNC_SERVER', 'KOSYNC_USER', 'KOSYNC_KEY', 'KOSYNC_AUTH_METHOD',
@@ -135,6 +135,7 @@ ALL_SETTINGS = [
     'TRANSCRIPTION_PROVIDER', 'DEEPGRAM_API_KEY', 'DEEPGRAM_MODEL', 'WHISPER_CPP_URL', 'WHISPER_CPP_TIMEOUT', 'WHISPER_CPP_SEND_ORIGINAL', 'WHISPER_CPP_CHUNK_MINUTES',
     'AUDIO_SPLIT_DURATION_MINUTES',
     'SMIL_VALIDATION_THRESHOLD', 'TRANSCRIPT_MIN_COVERAGE',
+    'DIAGNOSTICS_MAX_PAYLOAD_BYTES',
     'SHARE_ALL_BOOKS_WITH_ALL_USERS',
 ]
 
@@ -166,6 +167,10 @@ DEFAULT_CONFIG = {
     'WHISPER_CPP_CHUNK_MINUTES': '0',
     'AUDIO_SPLIT_DURATION_MINUTES': '45',
     'TRANSCRIPT_MIN_COVERAGE': '0.85',
+    # Byte budget for a diagnostics upload. The receiver rejects larger bodies with
+    # HTTP 413 and a 413 never clears the sender's snapshot, so an oversized payload
+    # would resend and re-fail forever. 0 disables shedding.
+    'DIAGNOSTICS_MAX_PAYLOAD_BYTES': '800000',
     'SHARE_ALL_BOOKS_WITH_ALL_USERS': 'false',
     'DEEPGRAM_API_KEY': '',
     'DEEPGRAM_MODEL': 'nova-2',
@@ -310,6 +315,11 @@ DEFAULT_CONFIG = {
     'ABS_SOCKET_ENABLED': 'true',
     'REMOTE_AUTH_ENABLED': 'false',
     'REMOTE_AUTH_HEADER': 'Remote-User',
+    # Empty means loopback only. Deliberately fail-closed: the header is a full
+    # authentication bypass for anything that can reach the port, so a permissive
+    # default (e.g. all RFC1918) would not protect the common threat — another
+    # machine on the same LAN as the published port.
+    'REMOTE_AUTH_TRUSTED_PROXIES': '',
     'ABS_SOCKET_DEBOUNCE_SECONDS': '30',
     'INSTANT_SYNC_ENABLED': 'true',
     'STORYTELLER_POLL_MODE': 'global',

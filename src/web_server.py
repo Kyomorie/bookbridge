@@ -910,6 +910,58 @@ def _safe_next_url(default=None):
     return next_url
 
 
+_LOOPBACK_PROXY_NETWORKS = ('127.0.0.0/8', '::1/128')
+
+
+def _trusted_proxy_networks() -> list:
+    """Networks allowed to present the remote-auth header, read per call.
+
+    Empty/unset means loopback only. Parsed per call so the Settings UI applies
+    without a restart; malformed entries are dropped rather than silently
+    widening (or emptying) the trust list.
+    """
+    import ipaddress
+
+    raw = os.environ.get('REMOTE_AUTH_TRUSTED_PROXIES', '') or ''
+    entries = [part.strip() for part in raw.replace('\n', ',').split(',') if part.strip()]
+    if not entries:
+        entries = list(_LOOPBACK_PROXY_NETWORKS)
+
+    networks = []
+    for entry in entries:
+        try:
+            networks.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            get_persistent_condition_logger().warn(
+                logger,
+                f"remote_auth_bad_proxy_entry:{entry}",
+                "⚠️ REMOTE_AUTH_TRUSTED_PROXIES entry %s is not a valid IP or CIDR — ignoring it",
+                sanitize_log_data(entry),
+            )
+    return networks
+
+
+def _remote_auth_peer_trusted() -> bool:
+    """Whether this request's direct peer may present the remote-auth header.
+
+    The header is a complete authentication bypass, so it is only honoured from a
+    configured proxy address. Without this check anything able to reach the
+    published port could send `Remote-User: admin`. `request.remote_addr` is the
+    real TCP peer here (the app installs no ProxyFix/X-Forwarded-For rewriting),
+    so it cannot be spoofed by a client header.
+    """
+    import ipaddress
+
+    peer = (request.remote_addr or '').strip()
+    if not peer:
+        return False
+    try:
+        address = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    return any(address in network for network in _trusted_proxy_networks())
+
+
 def _remote_auth_user():
     """Return the User named by the configured reverse-proxy header, or None."""
     if not env_truthy('REMOTE_AUTH_ENABLED'):
@@ -917,6 +969,19 @@ def _remote_auth_user():
     header_name = os.environ.get('REMOTE_AUTH_HEADER', 'Remote-User').strip() or 'Remote-User'
     username = (request.headers.get(header_name) or '').strip()
     if not username or database_service is None:
+        return None
+    if not _remote_auth_peer_trusted():
+        # Someone reached the port directly and supplied the header. That is either
+        # a misconfigured trust list or an attempt to bypass login, and both need to
+        # be visible — but it can repeat on every request, so it is rate-limited.
+        get_persistent_condition_logger().warn(
+            logger,
+            f"remote_auth_untrusted_peer:{request.remote_addr}",
+            "🔒 Rejected %s header from untrusted address %s — add the reverse proxy "
+            "to REMOTE_AUTH_TRUSTED_PROXIES if this is your proxy (empty = loopback only)",
+            sanitize_log_data(header_name),
+            sanitize_log_data(request.remote_addr or 'unknown'),
+        )
         return None
     try:
         user = database_service.get_user_by_username(username)
@@ -2021,6 +2086,8 @@ def _preserve_or_reset_mapping_status(
     kosync_doc_id=None,
     ebook_filename=None,
     audio_source_id=None,
+    storyteller_uuid=None,
+    ebook_source_id=None,
 ) -> None:
     """Queue a mapping for processing, unless its existing alignment still applies.
 
@@ -2041,10 +2108,17 @@ def _preserve_or_reset_mapping_status(
         return
 
     abs_id = getattr(target_book, "abs_id", None)
+    # Every identity value a caller may overwrite has to be listed here: a field
+    # that is set later but never compared silently keeps a stale alignment. The
+    # readalong uuid and the ebook source id are as much a part of the pairing as
+    # the filename — swapping a book to a different Storyteller readalong changes
+    # the audio the map was built against.
     candidates = (
         ("kosync_doc_id", kosync_doc_id),
         ("ebook_filename", ebook_filename),
         ("audio_source_id", audio_source_id),
+        ("storyteller_uuid", storyteller_uuid),
+        ("ebook_source_id", ebook_source_id),
     )
 
     changed = []
@@ -2052,6 +2126,10 @@ def _preserve_or_reset_mapping_status(
         if new_value is None:
             continue
         existing = getattr(target_book, attr, None)
+        # Only a value that actually differs counts. A field going from empty to
+        # populated is deliberately NOT a change: legacy rows have blanks that get
+        # backfilled with the same effective pairing, and treating that as a re-map
+        # would re-transcribe books this guard exists to spare.
         if existing and str(existing) != str(new_value):
             changed.append(attr)
 
@@ -2265,6 +2343,8 @@ def _upsert_storyteller_mapping(
         target_book,
         kosync_doc_id=kosync_doc_id,
         ebook_filename=resolved_ebook_filename,
+        storyteller_uuid=selected_storyteller_uuid,
+        ebook_source_id=selected_ebook_source_id,
     )
     target_book.abs_title = abs_title or target_book.abs_title or Path(resolved_ebook_filename).stem
     target_book.ebook_filename = resolved_ebook_filename
@@ -3081,6 +3161,8 @@ def _create_or_update_library_audio_mapping(
         kosync_doc_id=kosync_doc_id,
         ebook_filename=resolved_ebook_filename,
         audio_source_id=str(audio_source_id),
+        storyteller_uuid=storyteller_uuid,
+        ebook_source_id=ebook_source_id,
     )
     target_book.audio_source = audio_source
     target_book.audio_source_id = str(audio_source_id)
@@ -3357,7 +3439,11 @@ def _create_or_update_bookfusion_progress_mapping(
         resolved_title = audio_title or bookfusion_title or abs_id
 
     target_book = existing_book or Book(abs_id=abs_id, sync_mode="audiobook")
-    _preserve_or_reset_mapping_status(target_book, audio_source_id=str(audio_source_id))
+    _preserve_or_reset_mapping_status(
+        target_book,
+        audio_source_id=str(audio_source_id),
+        storyteller_uuid=storyteller_uuid,
+    )
     target_book.abs_id = abs_id
     target_book.abs_title = resolved_title or target_book.abs_title or abs_id
     target_book.audio_source = audio_source
@@ -8272,6 +8358,10 @@ def _extracted_cover_is_stale(cover_path, source_path) -> bool:
         return False
 
 
+_COVER_FRESH_TTL_SECONDS = 300
+_cover_fresh_until: dict = {}
+
+
 def serve_cover(filename):
     """Serve cover images with lazy extraction."""
     # Filename is likely <hash>.jpg
@@ -8279,6 +8369,17 @@ def serve_cover(filename):
 
     # 1. Check if file exists
     cover_path = COVERS_DIR / filename
+
+    # The dashboard requests one cover per mapping, so anything on this path runs
+    # hundreds of times per page load. Confirming freshness costs a DB lookup plus
+    # resolve_book_path, which falls back to an rglob of the whole library when its
+    # 100-entry path cache misses — and a large library has far more books than
+    # that. Remember a recent "fresh" verdict so that work happens at most once per
+    # book per TTL instead of on every request; an ebook edited inside the window is
+    # picked up on the next one.
+    if cover_path.exists() and _cover_fresh_until.get(doc_hash, 0) > time.time():
+        return send_from_directory(COVERS_DIR, filename)
+
     book = database_service.get_book_by_kosync_id(doc_hash)
 
     if cover_path.exists():
@@ -8289,7 +8390,9 @@ def serve_cover(filename):
             except Exception as e:
                 logger.debug(f"Cover freshness check could not resolve the ebook: {e}")
         if not source_path or not _extracted_cover_is_stale(cover_path, source_path):
+            _cover_fresh_until[doc_hash] = time.time() + _COVER_FRESH_TTL_SECONDS
             return send_from_directory(COVERS_DIR, filename)
+        _cover_fresh_until.pop(doc_hash, None)
         logger.info(
             "🖼️ Re-extracting cover for '%s': the ebook changed since it was cached",
             sanitize_log_data(getattr(book, "abs_title", None) or doc_hash),

@@ -101,6 +101,27 @@ class TestScrubDiagnosticText(unittest.TestCase):
         self.assertIn("/body/DocFragment[5]/body/div/p[42]/text().0", result)
         self.assertNotIn("path:", result)
 
+    def test_quoted_xpath_survives_the_quoted_span_rule(self):
+        """The exemption is worthless if the quoted-span rule hashes it back.
+
+        Every emitting site quotes the xpointer — e.g. ebook_utils' "Error resolving
+        XPath '<xpath>'" — so rule 5 would turn the exempted token into 't:<hash>'
+        and leave the finding just as unactionable as before.
+        """
+        text = (
+            "❌ Error resolving XPath "
+            "'/body/DocFragment[5]/body/div/p[42]/text().0': list index out of range"
+        )
+        result = scrub_diagnostic_text(text)
+        self.assertIn("/body/DocFragment[5]/body/div/p[42]/text().0", result)
+        self.assertNotIn("t:", result)
+
+    def test_quoted_non_xpath_is_still_hashed(self):
+        """The exemption must not become a hole for ordinary quoted text."""
+        result = scrub_diagnostic_text("Failed for 'Some Readers Private Title'")
+        self.assertNotIn("Some Readers Private Title", result)
+        self.assertIn("t:", result)
+
     def test_xpath_with_id_predicate_not_scrubbed(self):
         """An @id= xpointer is exempt from the filesystem-path rule."""
         text = "resolve //*[@id='chapter-3']/p[2] failed"

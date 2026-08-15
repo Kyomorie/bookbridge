@@ -3052,7 +3052,16 @@ local function _extractWithArchiver(Archiver, zip_path, staging)
             archive:close()
             return nil, "unsafe path in update archive"
         end
-        if not archive:extractToPath(path, staging .. "/" .. path) then break end
+        -- A failed entry must abort the whole update. Breaking out and returning
+        -- success left a PARTIAL plugin staged; _installPluginZip only checks that
+        -- _meta.lua and main.lua exist, so a tree missing any other module passed
+        -- every gate and was renamed into place over the backup -- bricking the
+        -- plugin at the next require().
+        if not archive:extractToPath(path, staging .. "/" .. path) then
+            local entry_err = archive.err
+            archive:close()
+            return nil, tostring(entry_err or ("could not extract " .. path))
+        end
     end
     local extract_err = archive.err
     archive:close()
@@ -3062,8 +3071,17 @@ end
 
 BridgeSync._extractWithArchiver = _extractWithArchiver
 
-local function _verifyPluginArchive(zip_path, expected_digest)
-    if not expected_digest or expected_digest == "" then return true end
+local function _verifyPluginArchive(zip_path, expected_digest, log)
+    if not expected_digest or expected_digest == "" then
+        -- Older bridges do not send X-Content-SHA256, and some reverse proxies strip
+        -- unknown X- response headers. Continuing is deliberate (the update would
+        -- otherwise be impossible), but it must not look like the archive was
+        -- checked when it was not.
+        if log then
+            log("warn", "Update archive checksum unavailable - installing without SHA-256 verification")
+        end
+        return true
+    end
     expected_digest = tostring(expected_digest)
     if #expected_digest ~= 64 or not expected_digest:match("^%x+$") then
         return nil, "server returned an invalid update checksum"
@@ -3170,7 +3188,10 @@ function BridgeSync:_installPluginZip(zip_path, expected_version, expected_diges
     local staging = plugins_dir .. "/" .. plugin_name .. ".update"
     local backup = plugins_dir .. "/" .. plugin_name .. ".bak"
 
-    local digest_ok, digest_err = _verifyPluginArchive(zip_path, expected_digest)
+    local digest_ok, digest_err = _verifyPluginArchive(
+        zip_path, expected_digest,
+        function(level, message) self:_appendLog(level, message) end
+    )
     if not digest_ok then return nil, digest_err end
 
     -- Clear any leftovers from a previously interrupted attempt.

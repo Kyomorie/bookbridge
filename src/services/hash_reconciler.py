@@ -30,6 +30,12 @@ _DEVICE_QUIET_SECONDS = 180
 _DEVICE_BUSY_RETRY_SECONDS = 120
 _MAX_DEFERRALS = 30
 
+# Floor between two SIGNAL-triggered passes. A permanently unresolvable hash is
+# re-reported on every device poll, and each pass walks the whole catalogue, so
+# without this one such book pins the reconciler at 100% duty. Scheduled passes
+# (KOSYNC_HASH_RECONCILE_MINUTES) are not affected.
+_MIN_SIGNAL_INTERVAL_SECONDS = 900
+
 
 def _device_sync_busy() -> bool:
     """True when a reader has hit the device-sync endpoints very recently."""
@@ -152,6 +158,9 @@ def run_hash_reconciler_daemon(device_sync_service, initial_delay_sec: float = 6
 
     logger.info("🔗 Hash reconciler thread started")
     deferrals = 0
+    # Treated as "a pass just happened" so a signal arriving immediately after
+    # startup still respects the floor.
+    last_pass_monotonic = time.monotonic()
     while True:
         if not _reconcile_enabled():
             logger.debug("🔗 Hash reconcile disabled; skipping pass")
@@ -172,12 +181,33 @@ def run_hash_reconciler_daemon(device_sync_service, initial_delay_sec: float = 6
                 _reconcile_all_users(device_sync_service, user_client_registry, database_service)
             except Exception as e:
                 logger.warning("🔗 Hash reconcile pass failed: %s", e, exc_info=True)
+            finally:
+                last_pass_monotonic = time.monotonic()
 
         # Wait out the interval, but wake early when an unresolvable hash is seen.
         # Signals raised while a pass was running coalesce into this single wait.
-        _wake_event.clear()
-        if _wake_event.wait(timeout=_reconcile_interval_seconds()):
-            logger.info("🔗 Hash reconcile woken early by an unresolved document hash")
+        #
+        # A hash that can never resolve (the common one: a device's copy is not
+        # byte-identical to the library file, so every poll re-reports it) would
+        # otherwise wake a full-catalogue pass on every single poll. The floor caps
+        # how often a SIGNAL may trigger work; the scheduled interval is unaffected.
+        remaining = _reconcile_interval_seconds()
+        while remaining > 0:
+            _wake_event.clear()
+            if not _wake_event.wait(timeout=remaining):
+                break  # ordinary scheduled pass
+            since_pass = time.monotonic() - last_pass_monotonic
+            if since_pass >= _MIN_SIGNAL_INTERVAL_SECONDS:
+                logger.info("🔗 Hash reconcile woken early by an unresolved document hash")
+                break
+            # Too soon after the last pass — absorb the signal and keep waiting.
+            cooldown = _MIN_SIGNAL_INTERVAL_SECONDS - since_pass
+            logger.debug(
+                "🔗 Hash reconcile signal ignored — only %.0fs since the last pass "
+                "(floor %ds); retrying in %.0fs",
+                since_pass, _MIN_SIGNAL_INTERVAL_SECONDS, cooldown,
+            )
+            remaining = min(cooldown, remaining)
 
 
 def start_hash_reconciler_thread(device_sync_service, initial_delay_sec: float = 600.0,
