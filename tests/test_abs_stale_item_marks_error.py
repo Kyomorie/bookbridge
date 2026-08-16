@@ -283,15 +283,18 @@ class TestStaleABSItemMarksBookError(BaseSyncCycleTestCase):
         )
         return manager, mocks
 
-    def _run_cycle_capturing_logs(self, item_exists, claimants=None):
+    def _run_cycle_capturing_logs(self, item_exists, claimants=None, claimants_error=None):
         from io import StringIO
 
         manager, mocks = self._build_manager(item_exists)
         # Default to a single claimant: the shared catalog row may only be demoted
         # when nobody else still claims the book.
-        mocks['database_service'].get_book_user_ids.return_value = (
-            [1] if claimants is None else claimants
-        )
+        if claimants_error is not None:
+            mocks['database_service'].get_book_user_ids.side_effect = claimants_error
+        else:
+            mocks['database_service'].get_book_user_ids.return_value = (
+                [1] if claimants is None else claimants
+            )
 
         log_stream = StringIO()
         handler = logging.StreamHandler(log_stream)
@@ -351,6 +354,22 @@ class TestStaleABSItemMarksBookError(BaseSyncCycleTestCase):
             'test-abs-id-stale', 'error'
         )
         self.assertIn("marking book as 'error'", log_output)
+
+    def test_unresolvable_claimants_leave_book_active(self):
+        """An unknown claimant count must not be treated as 'single claimant'.
+
+        The demotion guard reads the claimant list to decide whether the shared
+        catalog row is safe to touch. If that read fails, the answer is unknown —
+        and demoting on unknown reproduces the exact cross-user breakage the guard
+        was added to prevent.
+        """
+        mocks, log_output = self._run_cycle_capturing_logs(
+            item_exists=False, claimants_error=RuntimeError("database is locked")
+        )
+
+        mocks['database_service'].set_book_status.assert_not_called()
+        self.assertIn("claimants could not be resolved", log_output)
+        self.assertIn("leaving the book active", log_output)
 
     def test_indeterminate_probe_leaves_book_active(self):
         mocks, log_output = self._run_cycle_capturing_logs(item_exists=None)

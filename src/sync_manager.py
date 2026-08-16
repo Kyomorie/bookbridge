@@ -2872,7 +2872,6 @@ class SyncManager:
                 self._sync_cycle_internal(target_abs_id)
             except Exception as e:
                 logger.error(f"❌ Sync cycle internal error: {e}", exc_info=True)
-                # Log traceback for robust debugging
             finally:
                 self._sync_lock.release()
                 self._dispatch_pending_syncs()
@@ -3558,11 +3557,19 @@ class SyncManager:
                     try:
                         claimants = self.database_service.get_book_user_ids(abs_id) or []
                     except Exception as exc:
-                        logger.warning(
-                            "Could not resolve claimants for stale ABS book '%s': %s",
-                            abs_id, exc, exc_info=True,
+                        # Unknown is not the same as "nobody else claims it". Falling
+                        # through here would demote the shared row on a transient DB
+                        # error, which is the very outcome this guard exists to
+                        # prevent — and it matches the probe's own rule that only a
+                        # definitive answer may mark a book broken.
+                        logger.error(
+                            f"🛑 '{abs_id}' '{title_snip}' Audiobookshelf library item no longer exists "
+                            f"(reported by {', '.join(sorted(stale_abs_clients))}), but its claimants "
+                            f"could not be resolved ({exc}) — leaving the book active rather than "
+                            f"risking other users' sync. It will be re-checked next cycle",
+                            exc_info=True,
                         )
-                        claimants = []
+                        continue
                     if len(claimants) > 1:
                         logger.error(
                             f"🛑 '{abs_id}' '{title_snip}' Audiobookshelf library item no longer exists "
