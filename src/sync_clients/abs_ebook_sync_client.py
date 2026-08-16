@@ -6,6 +6,7 @@ from src.api.api_clients import ABSClient
 from src.db.models import Book, State
 from src.sync_clients.sync_client_interface import SyncClient, SyncResult, UpdateProgressRequest, ServiceState, ABS_ITEM_NOT_FOUND
 from src.utils.ebook_utils import EbookParser, build_readium_locator, parse_readium_locator
+from src.utils.logging_utils import sanitize_log_data
 
 logger = logging.getLogger(__name__)
 
@@ -192,8 +193,29 @@ class ABSEbookSyncClient(SyncClient):
         `get_service_state`; when present it stands in for the probe, because it
         was read from the same field microseconds earlier. Callers without a prior
         read (progress resets, the ebook-only path) pass None and still probe.
+
+        Mirroring only happens under ABS_EBOOK_LOCATOR_FORMAT='auto'. It is the most
+        precise choice for someone who only ever uses one reader, and the wrong one
+        for anyone who switches: measured on real devices, a Readium locator opens at
+        the cover in the official ABS app and web reader, while a CFI is readable
+        everywhere and exact in the official app. Hence 'cfi' is the default.
         """
         cfi = locator.cfi
+
+        # Read per call so the Settings UI applies without a restart.
+        fmt = (os.environ.get('ABS_EBOOK_LOCATOR_FORMAT', 'cfi') or 'cfi').strip().lower()
+        if fmt not in ('cfi', 'readium', 'auto'):
+            logger.warning(
+                "⚠️ ABS_EBOOK_LOCATOR_FORMAT=%s is not one of cfi/readium/auto — using 'cfi'",
+                sanitize_log_data(fmt),
+            )
+            fmt = 'cfi'
+
+        if fmt == 'cfi':
+            return cfi
+        if fmt == 'readium':
+            known_shape = 'readium'
+
         if known_shape is not None:
             if known_shape != 'readium':
                 return cfi

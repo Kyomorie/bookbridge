@@ -1841,6 +1841,24 @@
                             %}checked{% endif %}>
                         <label for="abs_ebook">Enable ABS Ebook Sync (Bi-directional)</label>
                     </div>
+                    <div class="form-group" style="align-items: center;">
+                        <label>ABS Ebook Position Format</label>
+                        <select name="ABS_EBOOK_LOCATOR_FORMAT" id="abs_ebook_locator_format">
+                            <option value="cfi" {% if get_val('ABS_EBOOK_LOCATOR_FORMAT', 'cfi') == 'cfi' %}selected{% endif %}>CFI (recommended)</option>
+                            <option value="readium" {% if get_val('ABS_EBOOK_LOCATOR_FORMAT') == 'readium' %}selected{% endif %}>Readium locator</option>
+                            <option value="auto" {% if get_val('ABS_EBOOK_LOCATOR_FORMAT') == 'auto' %}selected{% endif %}>Auto (match your reader)</option>
+                        </select>
+                        <div class="help-text" style="display: block; width: 100%; margin-top: 5px;">
+                            Audiobookshelf stores one position field shared by every reader, but readers
+                            disagree on its format. <strong>CFI</strong> is read by all of them and is exact
+                            in the official ABS app and web reader; some third-party readers land in the
+                            right chapter but a little early. <strong>Readium locator</strong> is exact in
+                            third-party readers such as Audiobooth, but the official ABS app and web reader
+                            cannot restore it and will open at the cover. <strong>Auto</strong> writes back
+                            whichever format your reader last used &mdash; the most precise choice if you
+                            only ever use one reader, and the wrong one if you switch between them.
+                        </div>
+                    </div>
                     <div class="checkbox-wrapper full-width">
                         <input type="checkbox" id="reprocess_on_clear" name="REPROCESS_ON_CLEAR_IF_NO_ALIGNMENT" {% if
                             get_bool('REPROCESS_ON_CLEAR_IF_NO_ALIGNMENT') %}checked{% endif %}>

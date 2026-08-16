@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 from src.sync_clients.abs_ebook_sync_client import ABSEbookSyncClient
@@ -290,11 +291,23 @@ class TestABSWritesMatchingLocatorShape(unittest.TestCase):
                '{"position":78,"progression":0.336}}')
 
     def setUp(self):
+        # Mirroring the reader's shape is now the 'auto' mode of
+        # ABS_EBOOK_LOCATOR_FORMAT, not unconditional behaviour: the default is 'cfi',
+        # because a Readium locator opens at the cover in the official ABS app and web
+        # reader. This class exercises the mirroring, so it selects that mode.
+        self._original_format = os.environ.get('ABS_EBOOK_LOCATOR_FORMAT')
+        os.environ['ABS_EBOOK_LOCATOR_FORMAT'] = 'auto'
         self.mock_abs_client = MagicMock()
         self.mock_ebook_parser = MagicMock()
         self.client = ABSEbookSyncClient(self.mock_abs_client, self.mock_ebook_parser)
         self.book = Book(abs_id="dcc", ebook_filename="dcc.epub")
         self.mock_abs_client.update_ebook_progress.return_value = True
+
+    def tearDown(self):
+        if self._original_format is None:
+            os.environ.pop('ABS_EBOOK_LOCATOR_FORMAT', None)
+        else:
+            os.environ['ABS_EBOOK_LOCATOR_FORMAT'] = self._original_format
 
     def _push(self, existing_location, **locator_kwargs):
         self.mock_abs_client.get_progress_with_status.return_value = (
@@ -366,11 +379,22 @@ class TestLocatorShapeIsCarriedNotRefetched(unittest.TestCase):
     CFI = "epubcfi(/6/14!/4/2/1:0)"
 
     def setUp(self):
+        # The carried-shape optimisation only has anything to decide under 'auto';
+        # 'cfi'/'readium' answer the shape question outright. See
+        # tests/test_abs_ebook_locator_format.py for the mode selection itself.
+        self._original_format = os.environ.get('ABS_EBOOK_LOCATOR_FORMAT')
+        os.environ['ABS_EBOOK_LOCATOR_FORMAT'] = 'auto'
         self.mock_abs_client = MagicMock()
         self.mock_ebook_parser = MagicMock()
         self.client = ABSEbookSyncClient(self.mock_abs_client, self.mock_ebook_parser)
         self.book = Book(abs_id="dcc", ebook_filename="dcc.epub")
         self.mock_abs_client.update_ebook_progress.return_value = True
+
+    def tearDown(self):
+        if self._original_format is None:
+            os.environ.pop('ABS_EBOOK_LOCATOR_FORMAT', None)
+        else:
+            os.environ['ABS_EBOOK_LOCATOR_FORMAT'] = self._original_format
 
     def _state_for(self, existing_location):
         """The real ServiceState this cycle would have produced."""

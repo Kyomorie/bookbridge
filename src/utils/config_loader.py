@@ -117,7 +117,8 @@ ALL_SETTINGS = [
     'SYNC_PERIOD_MINS', 'SYNC_DELTA_ABS_SECONDS', 'SYNC_DELTA_KOSYNC_PERCENT',
     'SYNC_DELTA_BETWEEN_CLIENTS_PERCENT', 'SYNC_DELTA_KOSYNC_WORDS',
     'SYNC_FRESHNESS_GUARDS', 'SYNC_ROLLBACK_VETO_SECONDS',
-    'XPATH_FALLBACK_TO_PREVIOUS_SEGMENT', 'SYNC_ABS_EBOOK', 'REPROCESS_ON_CLEAR_IF_NO_ALIGNMENT',
+    'XPATH_FALLBACK_TO_PREVIOUS_SEGMENT', 'SYNC_ABS_EBOOK', 'ABS_EBOOK_LOCATOR_FORMAT',
+    'REPROCESS_ON_CLEAR_IF_NO_ALIGNMENT',
     'FUZZY_MATCH_THRESHOLD', 'SUGGESTIONS_ENABLED',
     'INSTANT_SYNC_ENABLED', 'KOREADER_SESSION_GAP_MINUTES',
     'STORYTELLER_POLL_MODE', 'STORYTELLER_POLL_SECONDS', 'STORYTELLER_POLL_WAIT_FOR_SETTLE',
@@ -309,6 +310,13 @@ DEFAULT_CONFIG = {
     'SUGGESTIONS_ENABLED': 'false',
     'KOSYNC_USE_PERCENTAGE_FROM_SERVER': 'false',
     'SYNC_ABS_EBOOK': 'false',
+    # cfi | readium | auto. Measured on real devices: a CFI is readable by every ABS
+    # client (exact in the official app), while a Readium locator opens at the cover
+    # in the official app and web reader. 'cfi' is therefore the safe default and
+    # matches main's long-standing behaviour; 'auto' mirrors whatever shape the reader
+    # already stored, which is more precise for Readium-only readers but strands
+    # anyone who also opens the official app.
+    'ABS_EBOOK_LOCATOR_FORMAT': 'cfi',
     'REPROCESS_ON_CLEAR_IF_NO_ALIGNMENT': 'true',
     'XPATH_FALLBACK_TO_PREVIOUS_SEGMENT': 'false',
     'ABS_ONLY_SEARCH_IN_ABS_LIBRARY_ID': 'false',
