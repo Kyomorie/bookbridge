@@ -677,6 +677,71 @@ class EbookParser:
             logger.error(f"❌ Error resolving locator ID '{fragment_id}' in '{filename}': {e}", exc_info=True)
             return None
 
+    def resolve_href_progression(self, filename, href, chapter_progress) -> Optional[str]:
+        """Return text at a Readium href + in-chapter progression (no fragment needed).
+
+        :meth:`resolve_locator_id` requires a fragment id, but real Audiobookshelf
+        ecosystem locators carry none — they store only ``href`` plus
+        ``locations.progression``. Those positions therefore fell through to the
+        whole-book percentage, which lands somewhere else entirely: measured on a live
+        position, 6725 characters away, 0.99% of the book and a different scene. The
+        chapter's own span answers it exactly.
+
+        ``char_len`` is the chapter's EXTRACTED-TEXT length. ``content`` is raw HTML
+        and runs materially longer (~1.17x on a real book), so it must never be used
+        for this arithmetic — mixing the two spaces is what makes the naive version of
+        this calculation wrong.
+
+        Returns None when the href matches no spine item, mirroring the "not found"
+        convention of its sibling.
+        """
+        try:
+            if not href:
+                logger.debug(f"resolve_href_progression: missing href for '{filename}'")
+                return None
+
+            try:
+                progression = float(chapter_progress) if chapter_progress is not None else 0.0
+            except (TypeError, ValueError):
+                progression = 0.0
+            # A locator may legitimately omit progression; the chapter's start is still
+            # far closer than the whole-book percentage.
+            progression = max(0.0, min(1.0, progression))
+
+            book_path = self.resolve_book_path(filename)
+            full_text, spine_map = self.extract_text_and_map(book_path)
+            if not full_text or not spine_map:
+                return None
+
+            target_item = None
+            for item in spine_map:
+                if href in item['href'] or item['href'] in href:
+                    target_item = item
+                    break
+
+            if not target_item:
+                logger.debug(
+                    f"resolve_href_progression: href='{href}' matches no spine item in '{filename}'"
+                )
+                return None
+
+            start = int(target_item['start'])
+            char_len = int(target_item.get('char_len') or 0)
+            offset = start + int(progression * char_len)
+            offset = max(start, min(offset, start + char_len))
+
+            logger.debug(
+                "resolve_href_progression: '%s' href='%s' progression=%.4f -> char %d "
+                "(chapter %d..%d)", filename, href, progression, offset, start, start + char_len,
+            )
+            return full_text[offset: min(len(full_text), offset + 500)] or None
+
+        except Exception as e:
+            logger.error(
+                f"❌ Error resolving href progression '{href}' in '{filename}': {e}", exc_info=True
+            )
+            return None
+
     def _generate_css_selector(self, target_tag):
         """Generate a Readium-compatible CSS selector."""
         if not target_tag: return ""

@@ -252,6 +252,9 @@ class TestABSReadiumLocator(unittest.TestCase):
     def test_text_extraction_still_falls_back_to_percentage_when_href_fails(self):
         state = self._state_for(self.REPORTED_LOCATION)
         self.mock_ebook_parser.resolve_locator_id.return_value = None
+        # href + progression is tried before the percentage; exhaust it too so this
+        # test still pins the percentage as the LAST resort.
+        self.mock_ebook_parser.resolve_href_progression.return_value = None
         self.mock_ebook_parser.get_text_at_percentage.return_value = "pct text"
 
         self.assertEqual(self.client.get_text_from_current_state(self.book, state), "pct text")
@@ -553,6 +556,9 @@ class TestGetTextFromCurrentStateWithFragment(unittest.TestCase):
         state = self._state_for(location)
 
         self.mock_ebook_parser.resolve_locator_id.return_value = None
+        # href + progression is tried before the percentage; exhaust it too so this
+        # test still pins the percentage as the LAST resort.
+        self.mock_ebook_parser.resolve_href_progression.return_value = None
         self.mock_ebook_parser.get_text_at_percentage.return_value = "pct text"
 
         text = self.client.get_text_from_current_state(self.book, state)

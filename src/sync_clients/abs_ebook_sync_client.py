@@ -138,6 +138,14 @@ class ABSEbookSyncClient(SyncClient):
             txt = self.ebook_parser.resolve_locator_id(epub, href, state.current.get('frag'))
             if txt:
                 return txt
+            # Real ABS-ecosystem locators carry no fragment, so the call above can
+            # never fire for them. Resolving the href against its chapter span is
+            # exact; the whole-book percentage below lands ~1% of the book away.
+            txt = self.ebook_parser.resolve_href_progression(
+                epub, href, state.current.get('chapter_progress')
+            )
+            if txt:
+                return txt
         if pct is not None and epub:
             return self.ebook_parser.get_text_at_percentage(epub, pct)
         return None
