@@ -1323,6 +1323,23 @@ class SyncManager:
             full_text, _ = self._get_cached_ebook_text(target_epub)
             context_txt = ""
             if full_text:
+                # The text is already parsed and cached here, so its length is free.
+                # Maps stored before the ebook-length column exists otherwise stay
+                # broken until someone re-aligns the book. Strictly best-effort: it
+                # sits inside the same try as locator resolution, so anything raised
+                # here would silently return "no locator" and break the actual job of
+                # this method.
+                backfill = getattr(
+                    self.alignment_service, "record_total_chars_if_missing", None
+                )
+                if backfill is not None:
+                    try:
+                        backfill(book.abs_id, len(full_text))
+                    except Exception as e:
+                        logger.warning(
+                            f"⚠️ '{book.abs_id}' alignment-length backfill failed: {e}",
+                            exc_info=True,
+                        )
                 start = max(0, int(char_offset) - 400)
                 end = min(len(full_text), int(char_offset) + 400)
                 context_txt = full_text[start:end]
@@ -3532,6 +3549,9 @@ class SyncManager:
                             txt,
                             previous_location=client_state.previous_pct if client_state else None,
                             credit_listening=(credit_listening_leader and client_name == primary_audio_client),
+                            # This cycle already read this client; handing the read back
+                            # lets it skip re-fetching state it just had.
+                            current_state=client_state,
                         )
                         result = client.update_progress(book, request)
                         results[client_name] = result

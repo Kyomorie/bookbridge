@@ -116,6 +116,9 @@ class ABSEbookSyncClient(SyncClient):
             delta=delta,
             threshold=self.delta_abs_thresh,
             is_configured=True,
+            # Which shape this reader stores, decided from the value we just read so
+            # the write path does not have to ask ABS the same question again.
+            locator_shape='readium' if parse_readium_locator(abs_cfi) else 'cfi',
             display=("ABS eBook", "{prev:.4%} -> {curr:.4%}"),
             value_formatter=lambda v: f"{v*100:.4f}%"
         )
@@ -164,7 +167,7 @@ class ABSEbookSyncClient(SyncClient):
             return ABS_ITEM_NOT_FOUND
         return None
 
-    def _location_for_target(self, target_id: str, locator) -> str:
+    def _location_for_target(self, target_id: str, locator, known_shape: Optional[str] = None) -> str:
         """Write the position back in the shape this book's ABS reader uses.
 
         `ebookLocation` is opaque to Audiobookshelf — it stores whatever the
@@ -176,17 +179,26 @@ class ABSEbookSyncClient(SyncClient):
         So mirror what is already stored: the reader that wrote it is the reader
         that will read it back. Falls back to the CFI when the field is empty or
         already a CFI, which keeps web-reader installs behaving exactly as before.
+
+        `known_shape` is the answer carried over from this cycle's own
+        `get_service_state`; when present it stands in for the probe, because it
+        was read from the same field microseconds earlier. Callers without a prior
+        read (progress resets, the ebook-only path) pass None and still probe.
         """
         cfi = locator.cfi
-        try:
-            response, _status = self.abs_client.get_progress_with_status(target_id)
-        except Exception as e:
-            logger.debug(f"ABS ebook locator-shape probe failed for '{target_id}': {e}", exc_info=True)
-            return cfi
+        if known_shape is not None:
+            if known_shape != 'readium':
+                return cfi
+        else:
+            try:
+                response, _status = self.abs_client.get_progress_with_status(target_id)
+            except Exception as e:
+                logger.debug(f"ABS ebook locator-shape probe failed for '{target_id}': {e}", exc_info=True)
+                return cfi
 
-        existing = (response or {}).get('ebookLocation')
-        if not parse_readium_locator(existing):
-            return cfi
+            existing = (response or {}).get('ebookLocation')
+            if not parse_readium_locator(existing):
+                return cfi
 
         readium = build_readium_locator(locator)
         if not readium:
@@ -225,7 +237,10 @@ class ABSEbookSyncClient(SyncClient):
 
         pct = locator.percentage
         target_id = self._resolve_target_id(book)
-        cfi = self._location_for_target(target_id, locator)
+        prior = request.current_state
+        cfi = self._location_for_target(
+            target_id, locator, getattr(prior, 'locator_shape', None)
+        )
         success = self.abs_client.update_ebook_progress(target_id, pct, cfi)
         if success:
             try:

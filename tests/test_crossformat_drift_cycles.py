@@ -231,3 +231,38 @@ def test_leader_switch_outside_deadband():
     assert leader == "KoSync"
     assert leader_pct == config["KoSync"].current["pct"]
 
+
+
+def test_alignment_length_backfill_cannot_break_locator_resolution():
+    """The opportunistic backfill shares a try-block with the real work.
+
+    `_resolve_alignment_locator_from_abs_timestamp` wraps everything in one
+    `except Exception: return None, None`, so anything raised by the length
+    backfill would silently degrade to "no locator" — turning a free side-benefit
+    into a sync outage. It must be contained.
+    """
+    manager = _manager_with_deterministic_mapping()
+    book = SimpleNamespace(abs_id="abs-1", transcript_file="DB_MANAGED", ebook_filename="book.epub")
+
+    exploding = MagicMock(side_effect=RuntimeError("database is locked"))
+    manager.alignment_service.record_total_chars_if_missing = exploding
+
+    locator, context = manager._resolve_alignment_locator_from_abs_timestamp(book, 100.0)
+
+    exploding.assert_called_once()
+    assert locator is not None, "a failed backfill must not cost us the locator"
+    assert context
+
+
+def test_alignment_length_backfill_is_offered_the_parsed_length():
+    """It must receive the real ebook length, not a slice or a percentage."""
+    manager = _manager_with_deterministic_mapping()
+    book = SimpleNamespace(abs_id="abs-1", transcript_file="DB_MANAGED", ebook_filename="book.epub")
+
+    recorder = MagicMock(return_value=True)
+    manager.alignment_service.record_total_chars_if_missing = recorder
+
+    locator, _ = manager._resolve_alignment_locator_from_abs_timestamp(book, 100.0)
+
+    assert locator is not None
+    recorder.assert_called_once_with("abs-1", len(manager.ebook_parser.full_text))

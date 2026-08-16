@@ -801,6 +801,41 @@ class AlignmentService:
         self._total_chars_cache[abs_id] = total_chars
         return total_chars
 
+    def record_total_chars_if_missing(self, abs_id: str, total_chars: int) -> bool:
+        """Backfill the ebook length for a map stored before it was captured.
+
+        Every map written before the column existed divides by its own last anchor
+        instead of the book's length, which over-reports the position it reports
+        back. Re-aligning is the only other way to heal one, so callers that
+        already hold the ebook text pass its length here; it is a no-op once
+        recorded, and never overwrites an existing value.
+
+        Returns whether a value was written.
+        """
+        if not abs_id or not total_chars or total_chars <= 0:
+            return False
+        # A cached non-None means it is already recorded; skip the DB round-trip.
+        if self._total_chars_cache.get(abs_id) is not None:
+            return False
+        try:
+            wrote = self.database_service.set_alignment_total_chars_if_missing(
+                abs_id, int(total_chars)
+            )
+        except Exception as e:
+            logger.warning(
+                f"⚠️ Could not backfill alignment length for '{abs_id}': {e}", exc_info=True
+            )
+            return False
+        if wrote:
+            self._total_chars_cache[abs_id] = int(total_chars)
+            logger.info(
+                "📏 Backfilled alignment length for '%s' (%d chars) — its stored map "
+                "predates the ebook-length column and was reporting positions against "
+                "its own last anchor",
+                abs_id, int(total_chars),
+            )
+        return wrote
+
     def _get_alignment(self, abs_id: str) -> Optional[List[Dict]]:
         # A long book's map is a 10-15MB JSON blob, and this runs several
         # times per sync cycle (duration, normalization, locator mapping) —

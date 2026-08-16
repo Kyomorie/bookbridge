@@ -569,6 +569,56 @@ def test_progress_for_time_caches_total_chars_lookup(mock_db):
     assert mock_db.get_alignment_total_chars.call_count == 1
 
 
+# --- backfilling total_chars onto pre-existing maps --------------------------
+#
+# Every map stored before the column existed keeps dividing by its own last
+# anchor, and only a re-align would ever record a length. The sync path already
+# holds the parsed ebook text, so it can fill them in as books are touched.
+
+
+def test_backfill_records_length_and_fixes_the_denominator(mock_db):
+    alignment_map = [{"char": 0, "ts": 0.0}, {"char": 75_470, "ts": 76_726.9}]
+    service = _progress_service(mock_db, alignment_map, None)
+    mock_db.set_alignment_total_chars_if_missing.return_value = True
+
+    # Pre-backfill: the legacy last-anchor denominator inflates the position.
+    assert service.get_progress_for_time("abs-1", 50_889.5) == pytest.approx(0.6632, abs=0.001)
+
+    assert service.record_total_chars_if_missing("abs-1", 100_000) is True
+    mock_db.set_alignment_total_chars_if_missing.assert_called_once_with("abs-1", 100_000)
+
+    # Post-backfill the same timestamp resolves against the real book length,
+    # without re-reading the database.
+    assert service.get_progress_for_time("abs-1", 50_889.5) == pytest.approx(0.5006, abs=0.001)
+
+
+def test_backfill_never_overwrites_a_recorded_length(mock_db):
+    alignment_map = [{"char": 0, "ts": 0.0}, {"char": 75_470, "ts": 76_726.9}]
+    service = _progress_service(mock_db, alignment_map, 100_000)
+
+    # Prime the cache with the recorded value, as a real read would.
+    service.get_progress_for_time("abs-1", 1.0)
+
+    assert service.record_total_chars_if_missing("abs-1", 42) is False
+    mock_db.set_alignment_total_chars_if_missing.assert_not_called()
+
+
+def test_backfill_ignores_meaningless_lengths(mock_db):
+    service = _progress_service(mock_db, [{"char": 0, "ts": 0.0}], None)
+
+    assert service.record_total_chars_if_missing("abs-1", 0) is False
+    assert service.record_total_chars_if_missing("abs-1", -5) is False
+    assert service.record_total_chars_if_missing("", 100) is False
+    mock_db.set_alignment_total_chars_if_missing.assert_not_called()
+
+
+def test_backfill_survives_a_database_error(mock_db):
+    service = _progress_service(mock_db, [{"char": 0, "ts": 0.0}], None)
+    mock_db.set_alignment_total_chars_if_missing.side_effect = RuntimeError("locked")
+
+    assert service.record_total_chars_if_missing("abs-1", 100_000) is False
+
+
 def test_align_and_store_records_ebook_length(mock_db):
     ebook_text = "Alice in Wonderland"
     session = mock_db.get_session()
@@ -619,3 +669,33 @@ def test_progress_for_time_ignores_total_chars_smaller_than_the_map(mock_db):
     service = _progress_service(mock_db, alignment_map, 10)
 
     assert service.get_progress_for_time("abs-1", 5.0) == pytest.approx(0.5)
+
+
+def test_backfill_persists_against_a_real_database():
+    """End-to-end: a stored map with no length gets one, and only once."""
+    import shutil
+    from src.db.database_service import DatabaseService
+
+    tmp = tempfile.mkdtemp()
+    try:
+        db = DatabaseService(str(Path(tmp) / "align.db"))
+        service = AlignmentService(db, Polisher())
+
+        # A map exactly as the pre-column code stored it: no total_chars.
+        service._save_alignment("abs-legacy", [{"char": 0, "ts": 0.0},
+                                               {"char": 75_470, "ts": 76_726.9}])
+        assert db.get_alignment_total_chars("abs-legacy") is None
+
+        assert service.record_total_chars_if_missing("abs-legacy", 100_000) is True
+        assert db.get_alignment_total_chars("abs-legacy") == 100_000
+
+        # Second pass is a no-op, and a different length cannot displace it.
+        assert service.record_total_chars_if_missing("abs-legacy", 5) is False
+        assert db.get_alignment_total_chars("abs-legacy") == 100_000
+
+        # A book with no alignment row at all is simply skipped.
+        assert service.record_total_chars_if_missing("abs-unknown", 100_000) is False
+    finally:
+        if hasattr(db, 'db_manager'):
+            db.db_manager.close()
+        shutil.rmtree(tmp, ignore_errors=True)

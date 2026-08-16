@@ -532,6 +532,27 @@ class DatabaseService:
             except (TypeError, ValueError):
                 return None
 
+    def set_alignment_total_chars_if_missing(self, abs_id: str, total_chars: int) -> bool:
+        """Record an ebook length on a map that has none. Returns whether it wrote.
+
+        Backfill for maps stored before ``total_chars`` existed. Only ever fills a
+        NULL: a recorded length belongs to the text its anchors were built against,
+        so overwriting it with a different parse of a since-changed file would
+        silently re-scale every position the map resolves.
+        """
+        if not abs_id or not total_chars or total_chars <= 0:
+            return False
+        with self.get_session() as session:
+            row = (
+                session.query(BookAlignment)
+                .filter(BookAlignment.abs_id == abs_id)
+                .first()
+            )
+            if row is None or row.total_chars is not None:
+                return False
+            row.total_chars = int(total_chars)
+            return True
+
     def get_alignment_provenance(self) -> dict:
         """Report how each stored alignment map was built.
 

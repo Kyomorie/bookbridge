@@ -18,6 +18,12 @@ class ServiceState:
     display: Tuple[str, str]
     value_formatter: Callable[[float], str]
     value_seconds_formatter: Callable[[float], str] = None
+    # How this service stored the position it just reported ('readium' | 'cfi').
+    # Set by clients whose write shape has to mirror what the reader already uses,
+    # so the write path can reuse this read instead of probing the service again.
+    # Deliberately NOT inside `current`: that dict is persisted and fingerprinted,
+    # and an extra key there would perturb change detection.
+    locator_shape: Optional[str] = None
 
 @dataclass
 class LocatorResult:
@@ -42,6 +48,11 @@ class UpdateProgressRequest:
     # instead of zero (used when an audiobook-companion leader like Storyteller
     # advances the position — see STORYTELLER_LISTENING_SESSIONS).
     credit_listening: bool = False
+    # The ServiceState this same cycle already read from the client being written
+    # to. Lets a client reuse its own read instead of re-fetching state it just
+    # had; None whenever the caller has no prior read (resets, ebook-only path),
+    # in which case the client falls back to probing.
+    current_state: Optional['ServiceState'] = None
 
 @dataclass
 class SyncResult:

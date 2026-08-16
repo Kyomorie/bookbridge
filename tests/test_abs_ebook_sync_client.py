@@ -349,6 +349,79 @@ class TestABSWritesMatchingLocatorShape(unittest.TestCase):
         self.mock_abs_client.update_ebook_progress.assert_called_with("dcc", 0, "")
 
 
+class TestLocatorShapeIsCarriedNotRefetched(unittest.TestCase):
+    """The write reuses the cycle's own read instead of asking ABS again.
+
+    `get_service_state` reads `ebookLocation` at the top of every cycle;
+    `_location_for_target` used to read the very same field again on every write
+    purely to decide CFI-vs-Readium, doubling ABS traffic per ebook push. The
+    shape now rides along on the ServiceState.
+    """
+
+    READIUM = ('{"href":"OEBPS/Text/part0014.xhtml","locations":'
+               '{"position":78,"progression":0.336}}')
+    CFI = "epubcfi(/6/14!/4/2/1:0)"
+
+    def setUp(self):
+        self.mock_abs_client = MagicMock()
+        self.mock_ebook_parser = MagicMock()
+        self.client = ABSEbookSyncClient(self.mock_abs_client, self.mock_ebook_parser)
+        self.book = Book(abs_id="dcc", ebook_filename="dcc.epub")
+        self.mock_abs_client.update_ebook_progress.return_value = True
+
+    def _state_for(self, existing_location):
+        """The real ServiceState this cycle would have produced."""
+        self.mock_abs_client.get_progress_with_status.return_value = (
+            {"ebookProgress": 0.2, "ebookLocation": existing_location}, 200,
+        )
+        return self.client.get_service_state(self.book, None)
+
+    def _push_with_state(self, state):
+        self.mock_abs_client.get_progress_with_status.reset_mock()
+        self.client.update_progress(self.book, UpdateProgressRequest(
+            LocatorResult(
+                percentage=0.35,
+                cfi="epubcfi(/6/32!/4/2/4/46/6:0)",
+                href="OEBPS/Text/part0014.xhtml",
+                chapter_progress=0.336,
+            ),
+            current_state=state,
+        ))
+        return self.mock_abs_client.update_ebook_progress.call_args[0][2]
+
+    def test_service_state_reports_the_readium_shape(self):
+        self.assertEqual(self._state_for(self.READIUM).locator_shape, 'readium')
+
+    def test_service_state_reports_the_cfi_shape(self):
+        self.assertEqual(self._state_for(self.CFI).locator_shape, 'cfi')
+        self.assertEqual(self._state_for("").locator_shape, 'cfi')
+
+    def test_readium_write_reuses_the_state_without_probing(self):
+        state = self._state_for(self.READIUM)
+        written = self._push_with_state(state)
+
+        self.mock_abs_client.get_progress_with_status.assert_not_called()
+        payload = json.loads(written)
+        self.assertEqual(payload["href"], "OEBPS/Text/part0014.xhtml")
+
+    def test_cfi_write_reuses_the_state_without_probing(self):
+        state = self._state_for(self.CFI)
+        written = self._push_with_state(state)
+
+        self.mock_abs_client.get_progress_with_status.assert_not_called()
+        self.assertEqual(written, "epubcfi(/6/32!/4/2/4/46/6:0)")
+
+    def test_without_a_carried_state_the_probe_still_runs(self):
+        """Resets and the ebook-only path have no prior read; they must still work."""
+        self.mock_abs_client.get_progress_with_status.return_value = (
+            {"ebookProgress": 0.2, "ebookLocation": self.READIUM}, 200,
+        )
+        written = self._push_with_state(None)
+
+        self.mock_abs_client.get_progress_with_status.assert_called_once()
+        self.assertEqual(json.loads(written)["href"], "OEBPS/Text/part0014.xhtml")
+
+
 class TestParseReadiumLocatorFragments(unittest.TestCase):
     """Tests for parse_readium_locator fragments handling."""
 
