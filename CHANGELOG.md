@@ -4,36 +4,64 @@
 
 All notable changes to BookBridge will be documented in this file.
 
-## [Unreleased]
+## [7.4.0] - 2026-08-17
 
 ### Added
 
-- **Public URL per integration.** Audiobookshelf, Grimmory, BookOrbit and CWA
-  each get an optional *Public URL* field next to their Server URL. The server
-  URL can stay on an internal address (a Docker hostname behind a reverse proxy
-  or tunnel) while the header library buttons and book-page links send your
-  browser somewhere it can actually reach. Leave it blank to keep using the
-  server URL, exactly as before. Contributed by
-  [@benjitobz](https://github.com/benjitobz). (#366)
-
-- **Reverse proxy auto-login.** If a trusted reverse proxy already
-  authenticates you — Authelia, Authentik, Cloudflare Access, PocketID and
-  friends — BookBridge can accept the username it sets in a header instead of
-  showing you a second login form. Off by default; enable it under
-  *Settings → System → Reverse Proxy Auto-Login* and set the header name
-  (default `Remote-User`). Only existing accounts match — unknown or disabled
-  usernames fall through to the normal login and nothing is auto-created. Only
-  turn this on when a trusted proxy sets the header *and* strips any copy sent
-  by the client. Contributed by [@benjitobz](https://github.com/benjitobz). (#366)
-
-- **Shared library: one setting to give everyone every book.** New opt-in
+- **Shared Library: one setting to give everyone every book.** New opt-in
   *Settings → Features → Shared Library*. With it on, every book anyone matches
   becomes visible to every user automatically, and a newly created account starts
   with the whole library — so nobody has to re-match a book someone else already
   processed. Only visibility is shared: reading progress, KOSync documents and
   reading stats stay per-user exactly as before, and removing a book still only
   removes it from your own library. Leave it off if each person curates their own
-  shelves.
+  shelves. (#361)
+
+- **Book links now survive editing a book in your library.** Changing a book's
+  metadata — genres, cover, anything that rewrites the file — changes the
+  fingerprint KOReader syncs by, and used to silently break the link until you
+  repaired it by hand. BookBridge now re-checks your books on a schedule and
+  re-links them automatically. On by default under *Settings → KOSync*, every
+  6 hours, and copies already delivered to a device keep working. Re-encoding an
+  audiobook, re-extracting a cover and re-reading an edited EPUB are all picked up
+  the same way, so a book you touch in your library no longer drifts out of sync
+  with what BookBridge remembers about it.
+
+- **A book a reader opens can now be identified against a BookOrbit library.**
+  If a KOReader device opens a book BookBridge doesn't recognize, it previously
+  searched only local files and Grimmory. It now searches BookOrbit as well.
+  Because BookOrbit has no local files, each candidate has to be downloaded, so a
+  *BookOrbit Search Limit* (default 40, 0 disables) caps how many are fetched per
+  lookup; already-cached books are checked for free.
+
+- **Public URL per integration.** Audiobookshelf, Grimmory, BookOrbit and CWA
+  each get an optional *Public URL* field next to their Server URL. The server
+  URL can stay on an internal address (a Docker hostname behind a reverse proxy
+  or tunnel) while the header library buttons and every book-page link send your
+  browser somewhere it can actually reach. Leave it blank to keep using the
+  server URL, exactly as before. Contributed by
+  [@benjitobz](https://github.com/benjitobz). (#366, #349)
+
+- **Reverse proxy auto-login.** If a trusted reverse proxy already authenticates
+  you — Authelia, Authentik, Cloudflare Access, PocketID and friends — BookBridge
+  can accept the username it sets in a header instead of showing you a second
+  login form. Off by default; enable it under *Settings → System → Reverse Proxy
+  Auto-Login*, set the header name (default `Remote-User`), and list the proxy
+  addresses allowed to send it. Only existing accounts match — unknown or disabled
+  usernames fall through to the normal login and nothing is auto-created. The
+  trusted-address list defaults to loopback only, so a request arriving from
+  anywhere else is ignored until you deliberately add your proxy. Contributed by
+  [@benjitobz](https://github.com/benjitobz). (#366)
+
+- **Choose which position format BookBridge writes to Audiobookshelf.**
+  Audiobookshelf keeps one ebook-position field that every reader shares, but the
+  readers disagree about its format. New *ABS Ebook Position Format* setting:
+  **CFI** (the default — every client can read it, and it is exact in the official
+  Audiobookshelf app and web reader), **Readium locator** (exact in third-party
+  readers such as Audiobooth, but the official app and web reader open at the
+  cover), or **Auto** (write back whichever format your reader last used, which is
+  the most precise option if you only ever use one reader and the wrong one if you
+  switch between them).
 
 - **Truncated audiobook downloads are now caught instead of silently accepted.**
   BookBridge verifies that a downloaded audio file is the size the server said it
@@ -41,87 +69,76 @@ All notable changes to BookBridge will be documented in this file.
   runtime your library reports. A new *Minimum Transcript Coverage* setting
   (default 85%) controls the tolerance; set it to 0 if you deliberately sync
   abridged audio. The check runs *before* transcription starts, so a bad download
-  fails in seconds instead of after hours of processing, and the job retries with
-  a fresh download rather than producing a book that syncs to the wrong place.
+  fails in seconds instead of after hours of processing, and it names which stage
+  lost the audio — the download itself or the conversion step — so a short book
+  reports its own cause.
 
-- **BridgeSync performance and resilience upgrade (plugin v0.6.1).** Highlight
-  exchanges now normalize and sort each book once, use indexed identity lookups,
-  omit unchanged complete key lists, and fit every batch to the real JSON byte
-  ceiling. Network requests run outside KOReader's UI thread, close-time
-  highlight snapshots survive offline periods and restarts, full-library sweeps
-  build in time-budgeted chunks and cancel safely on suspend, and device logs
-  rotate at 512 KiB. Book manifests now include actual artifact sizes so device
-  downloads can use stall detection, size-scaled total timeouts, byte ceilings,
-  exact-size checks, existing atomic `.part` publishing, and final hash
-  verification. The self-updater now supports KOReader's current
-  `ffi/archiver` API while retaining older extraction fallbacks; update archives
-  also have a 16 MiB ceiling, exact response-length validation, a server-provided
-  SHA-256 check, and strict staged plugin identity/version validation before the
-  live install is replaced. Re-download the plugin on each KOReader device to
-  receive these changes.
-
-- **BridgeSync plugin: "Max Downloads per Sync" setting (plugin v0.5.5).** When
-  the managed folder has many new books to fetch — say you just matched a few
-  hundred — the plugin used to download every one of them in a single marathon
-  sync. You can now cap how many books download per sync (0 = unlimited, the
-  default). Anything over the cap is reported as *Remaining* and continues
-  automatically on the next sync, so a big bulk match trickles onto the device
-  in comfortable chunks instead of needing to be hand-matched in small batches.
-  Update the plugin on your device to get the new setting.
+- **BridgeSync KOReader plugin 0.6.3 — faster, tougher, and safer to update.**
+  Highlight exchanges now normalize and sort each book once and send only what
+  changed, network requests run outside KOReader's UI thread, close-time highlight
+  snapshots survive offline periods and restarts, full-library sweeps build in
+  time-budgeted chunks and cancel safely on suspend, and device logs rotate at
+  512 KiB. Book downloads gained stall detection, size-scaled timeouts and exact
+  size and hash verification, and a new **Max Downloads per Sync** setting (0 =
+  unlimited, the default) lets a few hundred newly matched books trickle onto the
+  device in comfortable chunks instead of one marathon sync. The self-updater
+  supports KOReader's current archive API, verifies the update it downloaded
+  before installing it, and aborts cleanly rather than leaving a partial plugin
+  behind. Re-download the plugin on each KOReader device to receive these changes.
 
 ### Fixed
 
-- **BridgeSync now accepts numeric IPv4 server addresses (#367).** On Android
-  KOReader, the plugin could report `DNS lookup failed` for a server configured
-  as an IP address and port even though no DNS lookup was needed. BridgeSync
-  now connects directly to literal IPv4 addresses while retaining the existing
-  DNS preflight for hostnames. Update the plugin to v0.6.3 on each device.
-
-- **The private diagnostics report center no longer times out while loading its
-  overview.** Finding pages now aggregate linked user-report counts once per
-  request instead of re-scanning the fleet warning history for every displayed
-  finding.
-
-- **Several diagnostics-backed integration edge cases now fail cleanly or recover.**
-  Audiobookshelf 401 errors now point directly to the ABS key setting; BookOrbit
-  progress errors report the real HTTP status instead of calling every
-  4xx/5xx response "no response"; Audiobookshelf collection creation includes the
-  first book as required by current ABS releases instead of trying to create an
-  invalid empty collection; BridgeSync reading
-  sessions carrying only a linked KoSync document hash resolve to the correct
-  book instead of remaining in the device retry queue; and a JSON `null` response
-  from Storyteller's fallback details endpoint is rejected cleanly instead of
-  raising a `NoneType.get` error. Listening-stat recaps also skip malformed ABS
-  date keys with impossible month numbers instead of failing the entire stats API.
+- **Audiobookshelf mobile reading positions now work in both directions (#359).**
+  The Audiobookshelf web reader and its mobile apps record ebook positions in two
+  different formats, and BookBridge only understood the web reader's. A position
+  saved from the mobile app couldn't be read — it logged an
+  `Error resolving CFI->index` every sync cycle and fell back to matching by
+  percentage alone — and a position BookBridge pushed back couldn't be restored by
+  the app. Both formats are now read correctly and resolved to the exact spot in
+  the book rather than a whole-book percentage, the recurring error is gone, and
+  the format BookBridge writes is yours to choose (see *ABS Ebook Position Format*
+  above).
 
 - **Long audiobooks could be transcribed from only part of the audio, throwing
-  every synced position off.** If BookBridge only received part of an audiobook,
-  it transcribed and aligned what it got without complaining — the result looked
-  like a finished book, but every position it calculated was off by however much
-  audio was missing. One reported case turned a 28-hour audiobook into 21 hours,
-  putting the ebook roughly four hours ahead of where the listener actually was.
-  BookBridge now refuses to align audio that falls short of the runtime your
-  library reports, and re-checks any previously cached transcript, so an affected
-  book repairs itself on its next transcription attempt instead of staying wrong
-  forever. Books already aligned from short audio should be re-aligned.
+  every synced position off (#362).** If BookBridge only received part of an
+  audiobook, it transcribed and aligned what it got without complaining — the
+  result looked like a finished book, but every position it calculated was off by
+  however much audio was missing. One reported case turned a 28-hour audiobook
+  into 21 hours, putting the ebook roughly four hours ahead of where the listener
+  actually was. BookBridge now refuses to align audio that falls short of the
+  runtime your library reports, and re-checks any previously cached transcript, so
+  an affected book repairs itself on its next transcription attempt instead of
+  staying wrong forever. Books already aligned from short audio should be
+  re-aligned.
 
-- **Progress percentages shown for audio sources read too high.** When converting
-  an audiobook position into "how far through the book am I", BookBridge divided
-  by the last point its transcript matched rather than the length of the book.
-  On a healthy book that was a small over-estimate; on a book aligned from
-  incomplete audio it was large. Books get the corrected figure when they are
-  next aligned.
+- **Progress percentages shown for audio sources read too high (#362).** When
+  converting an audiobook position into "how far through the book am I",
+  BookBridge divided by the last point its transcript matched rather than the
+  length of the book. On a healthy book that was a small over-estimate; on a book
+  aligned from incomplete audio it was large. Existing books correct themselves as
+  they sync.
 
-- **Audiobookshelf mobile reading positions are now understood properly (#359).**
-  The Audiobookshelf web reader and its mobile apps record ebook positions in two
-  different formats. BookBridge only understood the web reader's, so a position
-  saved from the mobile app could not be resolved — it logged an
-  `Error resolving CFI->index` every sync cycle and fell back to matching by
-  percentage alone, which is much less precise. Both formats are now read
-  correctly, and the recurring error is gone.
+- **Deleting a mapping now clears its KOReader progress, so re-matching a book
+  starts clean (#358).** Removing a mapping only cleared the stored KOReader
+  position for ebook-only mappings; for everything else the position was left
+  behind, and because the KOReader document id is derived from the ebook file
+  itself, re-matching the same file picked the old position straight back up. A
+  book stuck at 100% came back at 100% no matter how many times you deleted and
+  re-added it — so the one obvious remedy was the one guaranteed to fail. All
+  mappings now clear their KOReader progress on delete. Books already stuck need
+  one manual pass: unlink and delete the document under *Settings → KOSync
+  Documents*, then re-match.
+
+- **A book can no longer be wrongly marked finished everywhere (#358).** If a
+  book's audio-to-ebook alignment was off, a position in the middle of the
+  audiobook could resolve to the very end of the ebook, and BookBridge would push
+  100% to KOReader, Grimmory, Hardcover and StoryGraph — where it fought back
+  against every reset you tried. BookBridge already refused to write a bogus 0%;
+  it now refuses a bogus 100% the same way. Genuinely finishing a book still syncs
+  as before.
 
 - **Adding a book someone else already matched no longer re-runs the whole
-  process (#360).** In a multi-user setup, the book catalog and its audio↔ebook
+  process (#360).** In a multi-user setup the book catalog and its audio↔ebook
   alignment are shared, but each person needs their own claim on a book for it to
   appear in their library. Submitting an already-matched book for a second user
   used to reset it and re-run transcription and alignment from scratch. It now
@@ -129,97 +146,110 @@ All notable changes to BookBridge will be documented in this file.
   ebook and audiobook are being paired — genuinely re-pairing a book to a
   different ebook still reprocesses, as it must.
 
-- **BridgeSync plugin: a failed book download is now retried on the next sync
-  (plugin v0.5.5).** Previously, if one download failed mid-sync (network blip,
-  server hiccup), the plugin still recorded the sync as up to date — so every
-  following sync said "no changes" and the missing book quietly never arrived
-  until something else changed in your library. A sync with any failed or
-  deferred downloads now stays marked incomplete, so the next sync (including a
-  manual Sync Now) re-checks and retries just the missing books.
+- **BridgeSync now accepts numeric IPv4 server addresses (#367).** On Android
+  KOReader, the plugin could report `DNS lookup failed` for a server configured as
+  an IP address and port even though no DNS lookup was needed. Update the plugin
+  to 0.6.3 on each device.
 
-- **Bulk matches no longer crawl through the activation queue.** Audio-only and
-  ebook-only matches need no transcription work, but they still waited in the
-  same one-per-minute background queue as full audiobook matches — matching a
-  large batch could leave books "pending" for hours. All pending audio-only
-  matches now activate immediately, and ebook-only matches are processed as one
-  continuous background batch. Audiobook+ebook matches that need transcript
-  alignment still process one at a time, as before.
-
-- **Normal startup no longer reports a KoSync progress-read error.** The sync
-  daemon can begin its first pass just before the integrated KoSync port is ready;
-  that expected local connection refusal is now treated like the existing startup
-  health-check race and retried naturally on the next cycle.
-
-- **Missing CWA book identifiers no longer produce bogus downloads.** CWA lookups
-  now reject empty and legacy `None` identifiers instead of requesting
-  `/opds/download/None/epub/` and repeating a 404.
-
-### Changed
-
-- **Deleting a mapping now clears its KOReader progress, so re-matching a book
-  starts clean.** Removing a mapping only cleared the stored KOReader position for
-  ebook-only mappings. For everything else the position was left behind — and
-  because the KOReader document id is derived from the ebook file itself,
-  re-matching the same file picked the old position straight back up. A book stuck
-  at 100% would come back at 100% no matter how many times you deleted and
-  re-added it. All mappings now clear their KOReader progress on delete.
-
-- **A book can no longer be wrongly marked finished everywhere.** If the
-  audio-to-ebook alignment for a book was off, a position in the middle of the
-  audiobook could resolve to the very end of the ebook. BookBridge would then push
-  100% to KOReader, Grimmory, Hardcover and StoryGraph. BookBridge already refused
-  to write a bogus 0%; it now refuses a bogus 100% the same way. Genuinely
-  finishing a book still syncs as before.
+- **A failed BridgeSync book download is retried on the next sync.** Previously,
+  if one download failed mid-sync (network blip, server hiccup), the plugin still
+  recorded the sync as up to date — so every following sync said "no changes" and
+  the missing book quietly never arrived. A sync with any failed or deferred
+  downloads now stays marked incomplete and the next sync retries just the missing
+  books.
 
 - **A book whose Audiobookshelf item has disappeared is now flagged instead of
   failing quietly.** If you reorganize your library and Audiobookshelf re-adds the
-  moved files as brand new items, the books BookBridge had matched to the old
-  items can never sync again. Previously that showed up only as a repeating error
-  buried in the logs. BookBridge now confirms with Audiobookshelf that the item is
-  really gone and marks the book **error** on the dashboard, so you know to
+  moved files as brand new items, the books BookBridge matched to the old items
+  can never sync again. Previously that showed up only as a repeating error buried
+  in the logs; the book is now marked **error** on the dashboard so you know to
   re-match it. A temporary Audiobookshelf outage will not flag anything — only a
   confirmed missing item does.
 
+- **Books from a library BookBridge only reaches over the network no longer go
+  stale.** Ebooks downloaded from BookOrbit, Grimmory, Audiobookshelf, CWA or
+  Kavita were cached once and served from that copy forever, so an edit upstream
+  never reached your reader. Cached copies are now revalidated on a schedule
+  (*Hosted Ebook Cache TTL*, default 6 hours, 0 = never expire), a refresh that
+  fails can no longer damage the copy you already had, and a briefly unreachable
+  library can't drop books off your device.
+
+- **Bulk matches no longer crawl through the activation queue.** Audio-only and
+  ebook-only matches need no transcription work, but they still waited in the same
+  one-per-minute background queue as full audiobook matches — matching a large
+  batch could leave books "pending" for hours. Those now activate immediately;
+  audiobook+ebook matches that need transcript alignment still process one at a
+  time, as before.
+
+- **Storyteller-only ebooks now appear in KOReader managed-folder sync.**
+  Ebook-only mappings whose only local EPUB is the downloaded Storyteller
+  ReadAloud artifact were rejected as if they had no ebook, producing a warning on
+  every manifest rebuild. The original publisher EPUB is still preferred whenever
+  one is available.
+
 - **Deleting one user's mapping no longer breaks another user's Storyteller sync.**
-  When two mappings reference the same Storyteller book, removing either mapping now
-  preserves the shared slim EPUB and Storyteller collection membership until the last
-  reference is gone.
+  When two mappings reference the same Storyteller book, removing either now
+  preserves the shared EPUB and collection membership until the last reference is
+  gone.
 
-- **Opt-in diagnostics are more private and easier to act on.** Email addresses
-  and bare IP addresses are now anonymized the same way URLs and file paths
-  already were. Warning reports that only differed by a random id — a book
-  hash, a device id — used to quietly split into a new entry every time; they
-  now dedupe into one, the same as any other repeated warning. Error reports
-  now travel with a short, scrubbed snippet of the surrounding stack trace and
-  a small note about your Python version, platform, and whether you're
-  running in a container, making it much easier to tell an environment quirk
-  from a real bug. Reports that would have been too large to send now trim
-  themselves down and still go out instead of failing silently, and stray
-  temporary files left behind by an interrupted send are cleaned up
-  automatically.
+- **Multi-user installs are properly isolated.** One user's stale Audiobookshelf
+  mapping could stop a shared book syncing for everybody; background book re-checks
+  ran with the administrator's credentials, so books belonging to another user
+  could never be revalidated; and the dashboard and status API could return a book
+  without confirming who was asking. Each of those is now scoped to the user it
+  belongs to, and a book is never taken out of service on the strength of a lookup
+  that failed for an unrelated reason.
 
-- **Error logs now carry full tracebacks.** Every error logged from a failure
-  path includes the stack trace on both the console and in log files, so
-  troubleshooting no longer starts with a bare one-line message; warnings stay
-  one-line, with their stack detail flowing only into the opt-in diagnostics
-  reports. Repeating warnings for a persistent condition — a service that stays
-  unreachable, for example — now log once, then quietly count repeats with a
-  checkpoint every 50th occurrence and a "recovered" note when the condition
-  clears, so logs stay readable during long outages instead of filling up with
-  the same line. Sync leader decisions now say why a leader was chosen and when
-  a safety guard blocked one, making sync behavior easier to follow from the
+- **Several integration edge cases now fail cleanly or recover.** Audiobookshelf
+  401 errors point directly to the ABS key setting; BookOrbit progress errors
+  report the real HTTP status instead of calling every failure "no response";
+  Audiobookshelf collections are created with their first book, as current ABS
+  releases require; CWA is no longer asked to download books that belong to a
+  different library; a reading session carrying only a linked document hash
+  resolves to the right book instead of sitting in the device retry queue; a
+  normal startup no longer reports a KOSync progress-read error; an EPUB with a
+  broken spine entry keeps parsing instead of being abandoned whole; and malformed
+  listening-stat dates no longer fail the entire stats API.
+
+- **Very long audiobooks are converted to a file format that can describe them.**
+  Past roughly 37 hours of audio, the standard WAV header can no longer state the
+  file's own size. BookBridge now writes an extended header at that point, so it no
+  longer depends on each ffmpeg build's tolerance of a file its own converter calls
+  broken.
+
+### Changed
+
+- **KOReader device sync is ready immediately after a restart.** The list of books
+  offered to a device lived only in memory, so the first device to sync after a
+  container start paid for the whole thing to be rebuilt from scratch — around ten
+  minutes on a 400-book library, with the reader waiting. That list is now saved to
+  disk and served instantly on a cold start while it refreshes in the background,
+  and background re-checking now yields to a device that is actively syncing. On
+  the same library, the first sync after a restart went from about ten minutes to
+  effectively instant.
+
+- **Opt-in diagnostics are more private and easier to act on.** Email addresses and
+  bare IP addresses are now anonymized the same way URLs and file paths already
+  were. Reports that only differed by a random id — a book hash, a device id — used
+  to quietly split into a new entry every time; they now dedupe into one. Error
+  reports travel with a short, scrubbed snippet of the surrounding stack trace and a
+  small note about your Python version and platform, making it much easier to tell
+  an environment quirk from a real bug. Oversized reports trim themselves down and
+  still go out instead of failing silently.
+
+- **Error logs now carry full tracebacks.** Every error logged from a failure path
+  includes the stack trace on both the console and in log files, so troubleshooting
+  no longer starts with a bare one-line message; warnings stay one-line. Repeating
+  warnings for a persistent condition — a service that stays unreachable, for
+  example — now log once, then quietly count repeats with a checkpoint every 50th
+  occurrence and a "recovered" note when the condition clears, so logs stay readable
+  during long outages. Sync leader decisions now say why a leader was chosen and
+  when a safety guard blocked one, making sync behavior easier to follow from the
   logs alone.
 
 ## [7.3.4] - 2026-08-04
 
 ### Fixed
-
-- **Storyteller-only ebooks now appear in KOReader managed-folder sync.** Ebook-only
-  mappings whose only local EPUB is the downloaded Storyteller ReadAloud artifact
-  were previously rejected as if they had no ebook, producing a warning on every
-  manifest rebuild. BookBridge now uses that artifact as the ebook-only fallback,
-  hashes the exact bytes it serves, and keeps preferring the original publisher EPUB
-  whenever one is available.
 
 - **Local transcription no longer crashes with `No module named 'nvidia'` on the
   standard image.** Since 7.3.0, the automatic GPU check that runs before local

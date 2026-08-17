@@ -4,6 +4,39 @@ For the full history of changes, please refer to the **[GitHub Releases](https:/
 
 ---
 
+## [7.4.0]
+
+The headline is **positions you can trust again**: an audiobook transcribed from a partial download used to align happily against the part it received, and a position saved by the Audiobookshelf mobile app couldn't be read at all. Both are fixed, along with the cases where a book got stuck at 100% and every reset came straight back. KOReader device sync is also usable immediately after a restart — the first sync on a 400-book library went from about ten minutes to effectively instant — and a book's link to your reader now survives editing its metadata.
+
+### What's New
+
+- **Shared Library.** One opt-in setting makes every book anyone matches visible to every user, and gives a new account the whole library at once. Progress, KOSync documents and stats stay strictly per-user. (#361)
+- **Book links survive editing a book.** Editing metadata rewrites the file and changes the fingerprint KOReader syncs by, which used to break the link until you repaired it by hand. BookBridge now re-checks and re-links your books on a schedule (on by default, every 6 hours), and copies already on a device keep working.
+- **A book your reader opens can be identified against a BookOrbit library**, not just local files and Grimmory, with a search limit so one lookup can't turn into a mass download.
+- **Public URL per integration.** Audiobookshelf, Grimmory, BookOrbit and CWA each get an optional public address, so the server URL can stay on an internal Docker hostname while every link sends your browser somewhere it can reach. Contributed by [@benjitobz](https://github.com/benjitobz). (#366, #349)
+- **Reverse proxy auto-login.** If Authelia, Authentik, Cloudflare Access or similar already authenticated you, BookBridge can accept that instead of showing a second login form. Off by default, existing accounts only, restricted to proxy addresses you list. Contributed by [@benjitobz](https://github.com/benjitobz). (#366)
+- **Choose the position format written to Audiobookshelf** — CFI (default, readable everywhere), Readium locator (exact in third-party readers such as Audiobooth), or Auto to match whatever your reader last wrote.
+- **BridgeSync plugin 0.6.3**: faster highlight sync, network work off KOReader's UI thread, resumable library sweeps, verified downloads and self-updates, and a **Max Downloads per Sync** cap for large bulk matches.
+
+### Fixed
+
+- **Audiobook positions no longer drift when only part of the audio arrived (#362).** Downloads are size-verified, coverage is checked before transcription starts (new **Minimum Transcript Coverage**, default 85%), and a cached bad transcript is re-checked instead of replayed forever. Books already aligned from short audio should be re-aligned.
+- **Progress percentages for audio sources read too high (#362)**; books correct themselves as they sync.
+- **Audiobookshelf mobile reading positions work in both directions (#359)**, and resolve to the exact spot in the book instead of a whole-book percentage.
+- **A book can no longer be wrongly marked finished everywhere (#358)** by a bad alignment resolving a mid-audiobook position to the end of the ebook.
+- **Deleting a mapping clears its KOReader progress (#358)**, so a book stuck at 100% no longer comes back at 100% after a delete and re-match.
+- **Re-adding a book someone else already matched finishes immediately (#360)** instead of re-running transcription and alignment.
+- **BridgeSync connects to numeric IPv4 server addresses (#367)**, and a failed book download is retried on the next sync.
+- **Books that live only behind a library API no longer go stale**, and a failed refresh can't damage the copy you already had.
+- **Multi-user installs are properly isolated**, and a missing Audiobookshelf item is flagged on the dashboard instead of retrying silently forever.
+- A batch of integration edge cases and log-noise fixes, plus diagnostics that are more private and carry the stack detail needed to act on them.
+
+### Upgrade Notes
+
+Run the database migration (automatic on container start) and re-download the BridgeSync plugin on each KOReader device. Books aligned from incomplete audio need a re-forge, and books already stuck at 100% need one manual pass: unlink and delete the document under *Settings → KOSync Documents*, then re-match.
+
+---
+
 ## [7.3.4]
 
 A single-fix release: **local transcription works again on the standard image.** Since 7.3.0, the automatic GPU check before local Whisper transcription crashed with `No module named 'nvidia'` on CPU-only installs, so every transcription failed before it began and books never finished syncing. Missing CUDA libraries now simply mean "use the CPU." Affected books were parked for retry, so they pick themselves back up after updating — no manual steps. The `-cuda` image, external transcription servers, and Deepgram were unaffected. Reported by [@ibrodebill](https://github.com/ibrodebill). (#355)
