@@ -11,7 +11,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import patch
 
-from diagnostics_receiver.app import create_receiver_app, init_db, rebuild_findings
+from diagnostics_receiver.app import (
+    _get_db,
+    _hash_token,
+    create_receiver_app,
+    init_db,
+    rebuild_findings,
+)
 
 
 def _valid_payload(**overrides: object) -> dict:
@@ -466,10 +472,13 @@ class TestIngestAuth(unittest.TestCase):
         with sqlite3.connect(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
-                "SELECT token FROM instances WHERE instance_id = ?",
+                "SELECT token, token_hash FROM instances WHERE instance_id = ?",
                 (_valid_payload()["instance_id"],),
             ).fetchone()
-            self.assertEqual(row["token"], data["token"])
+            # Tokens are stored hashed only (#part-C hardening); the plaintext
+            # is returned once in the response body and never persisted.
+            self.assertIsNone(row["token"])
+            self.assertEqual(row["token_hash"], _hash_token(data["token"]))
 
     def test_second_post_without_token_returns_401(self) -> None:
         os.environ["DIAG_MIN_BATCH_INTERVAL_HOURS"] = "0"
@@ -733,8 +742,9 @@ class TestFindings(unittest.TestCase):
             row = conn.execute("SELECT * FROM findings").fetchone()
             self.assertEqual(row["total_count"], 10)
             self.assertEqual(row["instance_count"], 2)
-            self.assertEqual(row["first_seen"], "2026-07-13T00:00:00Z")
-            self.assertEqual(row["last_seen"], "2026-07-15T00:00:00Z")
+            # Timestamps are normalized to UTC offset form on ingest.
+            self.assertEqual(row["first_seen"], "2026-07-13T00:00:00+00:00")
+            self.assertEqual(row["last_seen"], "2026-07-15T00:00:00+00:00")
             versions = json.loads(row["app_versions_json"])
             self.assertEqual(sorted(versions), ["7.2.0", "7.3.0"])
 
@@ -773,8 +783,15 @@ class TestFindings(unittest.TestCase):
             content_type="application/json",
         )
 
-        # Same template recurs
-        self._post(p)
+        # Same template recurs on a strictly newer build than the fix
+        # snapshot — a genuine regression, not a stale build catching up.
+        p_newer = _valid_payload(
+            app_version="7.9.0",
+            warnings=[{"template": "Foo #", "count": 1,
+                       "first_seen": "2026-07-16T00:00:00Z",
+                       "last_seen": "2026-07-16T00:00:00Z"}],
+        )
+        self._post(p_newer)
 
         with sqlite3.connect(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -832,13 +849,18 @@ class TestFindings(unittest.TestCase):
         data = resp.get_json()
         self.assertEqual(len(data["findings"]), 0)
 
-        # Reopen it — should reappear
+        # Reopen it (recurrence from a strictly newer build) — should reappear
         self._client.patch(
             f"/api/v1/findings/{fid}",
             data=json.dumps({"status": "fixed"}),
             content_type="application/json",
         )
-        self._post(p)
+        self._post(_valid_payload(
+            app_version="7.9.0",
+            warnings=[{"template": "Tri #", "count": 1,
+                       "first_seen": "2026-07-16T00:00:00Z",
+                       "last_seen": "2026-07-16T00:00:00Z"}],
+        ))
         resp = self._client.get("/api/v1/findings?needs_triage=1")
         data = resp.get_json()
         self.assertEqual(len(data["findings"]), 1)
@@ -1287,6 +1309,87 @@ class TestHygiene(unittest.TestCase):
                 "SELECT * FROM findings WHERE template = '[cardinality-overflow]' AND logger = 'src.sync_manager'"
             ).fetchone()
             self.assertEqual(overflow["total_count"], 3)
+
+    def test_cardinality_cap_ignores_resolved_findings(self) -> None:
+        """Resolved findings (fixed/ignored) do not count toward the cardinality cap."""
+        os.environ["DIAG_MAX_TEMPLATES_PER_LOGGER"] = "3"
+        self.addCleanup(
+            lambda: os.environ.pop("DIAG_MAX_TEMPLATES_PER_LOGGER", None)
+        )
+        instance = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        # Ingest 3 distinct templates — cap exactly reached
+        for i in range(3):
+            self._post(_valid_payload(
+                instance_id=instance,
+                warnings=[{"template": f"resolved-tpl-{i} #", "logger": "src.sync_manager",
+                           "level": "WARNING", "count": 2,
+                           "first_seen": "2026-07-15T00:00:00Z",
+                           "last_seen": "2026-07-15T00:00:00Z"}],
+            ))
+        # Mark all 3 as resolved: two fixed, one ignored
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                "UPDATE findings SET status = 'fixed' WHERE logger = 'src.sync_manager' AND template IN ('resolved-tpl-0 #', 'resolved-tpl-1 #')"
+            )
+            conn.execute(
+                "UPDATE findings SET status = 'ignored' WHERE logger = 'src.sync_manager' AND template = 'resolved-tpl-2 #'"
+            )
+            conn.commit()
+        # Ingest a 4th distinct template — should create its own finding row
+        self._post(_valid_payload(
+            instance_id=instance,
+            warnings=[{"template": "new-active-tpl #", "logger": "src.sync_manager",
+                       "level": "WARNING", "count": 5,
+                       "first_seen": "2026-07-15T00:00:00Z",
+                       "last_seen": "2026-07-15T00:00:00Z"}],
+        ))
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            new_finding = conn.execute(
+                "SELECT * FROM findings WHERE template = 'new-active-tpl #' AND logger = 'src.sync_manager'"
+            ).fetchone()
+            self.assertIsNotNone(new_finding)
+            self.assertEqual(new_finding["total_count"], 5)
+            overflow = conn.execute(
+                "SELECT * FROM findings WHERE template = '[cardinality-overflow]' AND logger = 'src.sync_manager'"
+            ).fetchone()
+            self.assertIsNone(overflow)
+
+    def test_cardinality_cap_still_collapses_active_findings(self) -> None:
+        """Active findings (open/triaged) still count toward the cardinality cap."""
+        os.environ["DIAG_MAX_TEMPLATES_PER_LOGGER"] = "3"
+        self.addCleanup(
+            lambda: os.environ.pop("DIAG_MAX_TEMPLATES_PER_LOGGER", None)
+        )
+        instance = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        # Ingest 3 distinct templates — cap exactly reached, all stay 'open'
+        for i in range(3):
+            self._post(_valid_payload(
+                instance_id=instance,
+                warnings=[{"template": f"active-tpl-{i} #", "logger": "src.sync_manager",
+                           "level": "WARNING", "count": 2,
+                           "first_seen": "2026-07-15T00:00:00Z",
+                           "last_seen": "2026-07-15T00:00:00Z"}],
+            ))
+        # Ingest a 4th distinct template — should collapse into overflow
+        self._post(_valid_payload(
+            instance_id=instance,
+            warnings=[{"template": "excess-active-tpl #", "logger": "src.sync_manager",
+                       "level": "WARNING", "count": 7,
+                       "first_seen": "2026-07-15T00:00:00Z",
+                       "last_seen": "2026-07-15T00:00:00Z"}],
+        ))
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            excess_finding = conn.execute(
+                "SELECT * FROM findings WHERE template = 'excess-active-tpl #' AND logger = 'src.sync_manager'"
+            ).fetchone()
+            self.assertIsNone(excess_finding)
+            overflow = conn.execute(
+                "SELECT * FROM findings WHERE template = '[cardinality-overflow]' AND logger = 'src.sync_manager'"
+            ).fetchone()
+            self.assertIsNotNone(overflow)
+            self.assertEqual(overflow["total_count"], 7)
 
     def test_cardinality_disabled_allows_unlimited(self) -> None:
         """DIAG_MAX_TEMPLATES_PER_LOGGER=0 creates all findings."""
@@ -2309,6 +2412,45 @@ class TestManualSubmissions(unittest.TestCase):
         self.assertEqual(summary["submissions"]["awaiting_response"], 0)
         self.assertEqual(summary["submissions"]["responded"], 1)
 
+    def test_finding_list_aggregates_feedback_once_per_page(self) -> None:
+        os.environ["DIAG_READ_TOKEN"] = "maintainer-token"
+        statements: list[str] = []
+
+        @self._app.before_request
+        def trace_queries() -> None:
+            _get_db().set_trace_callback(statements.append)
+
+        warnings = [
+            {
+                "template": f"Manual feedback pattern {index}",
+                "logger": "sync",
+                "level": "ERROR",
+                "count": 1,
+            }
+            for index in range(25)
+        ]
+        self._post(_valid_payload(
+            manual=True,
+            user_message="Please investigate these failures",
+            warnings=warnings,
+        ))
+
+        statements.clear()
+        response = self._client.get(
+            "/api/v1/findings?status=all&limit=200",
+            headers=self._admin_headers(),
+        )
+        findings = response.get_json()["findings"]
+        feedback_queries = [
+            statement for statement in statements
+            if "AS feedback_count" in statement
+        ]
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(findings), 25)
+        self.assertTrue(all(row["feedback_count"] == 1 for row in findings))
+        self.assertEqual(len(feedback_queries), 1)
+
 
 class TestInjectionSanitization(unittest.TestCase):
     """Prompt-injection defense tests (Phase 10)."""
@@ -2467,6 +2609,871 @@ class TestInjectionSanitization(unittest.TestCase):
             warn = conn.execute("SELECT template FROM warnings").fetchone()
             finding = conn.execute("SELECT template FROM findings").fetchone()
             self.assertEqual(warn["template"], finding["template"])
+
+
+class TestIngestHardening(unittest.TestCase):
+    """Part A: timestamp normalization, count clamping, whitelists, traceback."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.mkdtemp()
+        self._db_path = os.path.join(self._tmpdir, "test.db")
+        self._app = create_receiver_app(db_path=self._db_path)
+        self._client = self._app.test_client()
+        self._tokens: dict[str, str] = {}
+        self._orig_interval: str | None = os.environ.get("DIAG_MIN_BATCH_INTERVAL_HOURS")
+        os.environ["DIAG_MIN_BATCH_INTERVAL_HOURS"] = "0"
+        self.addCleanup(
+            lambda: os.environ.pop("DIAG_MIN_BATCH_INTERVAL_HOURS", None)
+            if self._orig_interval is None
+            else os.environ.update({"DIAG_MIN_BATCH_INTERVAL_HOURS": self._orig_interval})
+        )
+
+    def tearDown(self) -> None:
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _post(self, payload: dict) -> dict:
+        iid = payload.get("instance_id", "")
+        headers: dict[str, str] = {}
+        if iid in self._tokens:
+            headers["Authorization"] = f"Bearer {self._tokens[iid]}"
+        resp = self._client.post(
+            "/api/v1/diagnostics",
+            data=json.dumps(payload),
+            content_type="application/json",
+            headers=headers,
+        )
+        data = resp.get_json()
+        if data and data.get("token"):
+            self._tokens[iid] = data["token"]
+        return data
+
+    def test_malformed_first_seen_and_non_str_last_seen_normalized(self) -> None:
+        payload = _valid_payload(warnings=[{
+            "template": "Bad TS #",
+            "message": "msg",
+            "logger": "test",
+            "level": "WARNING",
+            "count": 1,
+            "first_seen": "garbage",
+            "last_seen": 12345,
+        }])
+        self._post(payload)
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            warn = conn.execute(
+                "SELECT first_seen, last_seen FROM warnings WHERE template = ?",
+                ("Bad TS #",),
+            ).fetchone()
+            finding = conn.execute(
+                "SELECT first_seen, last_seen FROM findings WHERE template = ?",
+                ("Bad TS #",),
+            ).fetchone()
+        for value in (
+            warn["first_seen"], warn["last_seen"],
+            finding["first_seen"], finding["last_seen"],
+        ):
+            self.assertGreaterEqual(len(value), 19)
+            datetime.fromisoformat(value)  # must not raise
+
+    def test_z_suffix_timestamp_accepted_and_normalized(self) -> None:
+        payload = _valid_payload(warnings=[{
+            "template": "Z TS #",
+            "message": "msg",
+            "logger": "test",
+            "level": "WARNING",
+            "count": 1,
+            "first_seen": "2026-07-15T00:00:00Z",
+            "last_seen": "2026-07-15T01:00:00Z",
+        }])
+        self._post(payload)
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            warn = conn.execute(
+                "SELECT first_seen, last_seen FROM warnings WHERE template = ?",
+                ("Z TS #",),
+            ).fetchone()
+        self.assertEqual(warn["first_seen"], "2026-07-15T00:00:00+00:00")
+        self.assertEqual(warn["last_seen"], "2026-07-15T01:00:00+00:00")
+
+    def test_count_clamping(self) -> None:
+        payload = _valid_payload(warnings=[
+            {"template": "Cnt A #", "count": "abc",
+             "first_seen": "2026-07-15T00:00:00Z", "last_seen": "2026-07-15T00:00:00Z"},
+            {"template": "Cnt B #", "count": -5,
+             "first_seen": "2026-07-15T00:00:00Z", "last_seen": "2026-07-15T00:00:00Z"},
+            {"template": "Cnt C #", "count": 99999999999,
+             "first_seen": "2026-07-15T00:00:00Z", "last_seen": "2026-07-15T00:00:00Z"},
+        ])
+        self._post(payload)
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            counts = {
+                row["template"]: row["count"]
+                for row in conn.execute("SELECT template, count FROM warnings").fetchall()
+            }
+            finding_counts = {
+                row["template"]: row["total_count"]
+                for row in conn.execute("SELECT template, total_count FROM findings").fetchall()
+            }
+        self.assertEqual(counts["Cnt A #"], 1)
+        self.assertEqual(counts["Cnt B #"], 1)
+        self.assertEqual(counts["Cnt C #"], 10_000_000)
+        self.assertEqual(finding_counts["Cnt A #"], 1)
+        self.assertEqual(finding_counts["Cnt B #"], 1)
+        self.assertEqual(finding_counts["Cnt C #"], 10_000_000)
+
+    def test_services_whitelist_and_non_dict_services(self) -> None:
+        payload = _valid_payload(
+            warnings=[],
+            services={
+                "abs": True,
+                "kosync": False,
+                "evil_service": True,
+                "another_bad_key": "yes",
+            },
+        )
+        self._post(payload)
+        payload2 = _valid_payload(
+            instance_id="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            warnings=[],
+            services="not-a-dict",
+        )
+        self._post(payload2)
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            batch1 = conn.execute(
+                "SELECT services_json FROM batches WHERE instance_id = ?",
+                (payload["instance_id"],),
+            ).fetchone()
+            batch2 = conn.execute(
+                "SELECT services_json FROM batches WHERE instance_id = ?",
+                ("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",),
+            ).fetchone()
+        services1 = json.loads(batch1["services_json"])
+        self.assertEqual(services1, {"abs": True, "kosync": False})
+        self.assertNotIn("evil_service", services1)
+        self.assertNotIn("another_bad_key", services1)
+        self.assertEqual(batch2["services_json"], "null")
+
+    def test_traceback_stored_and_exposed_in_recent_evidence(self) -> None:
+        os.environ["DIAG_READ_TOKEN"] = "read-tok"
+        self.addCleanup(lambda: os.environ.pop("DIAG_READ_TOKEN", None))
+        payload = _valid_payload(warnings=[{
+            "template": "TB #",
+            "message": "boom",
+            "logger": "test",
+            "level": "ERROR",
+            "count": 1,
+            "first_seen": "2026-07-15T00:00:00Z",
+            "last_seen": "2026-07-15T00:00:00Z",
+            "traceback": "Traceback (most recent call last):\n  File \"x.py\", line 1\nValueError: boom",
+        }])
+        self._post(payload)
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            warn = conn.execute(
+                "SELECT traceback_text FROM warnings WHERE template = ?", ("TB #",),
+            ).fetchone()
+            fid = conn.execute(
+                "SELECT id FROM findings WHERE template = ?", ("TB #",),
+            ).fetchone()["id"]
+        self.assertIn("ValueError: boom", warn["traceback_text"])
+
+        resp = self._client.get(
+            f"/api/v1/findings/{fid}",
+            headers={"Authorization": "Bearer read-tok"},
+        )
+        data = resp.get_json()
+        self.assertEqual(len(data["recent_evidence"]), 1)
+        self.assertIn("ValueError: boom", data["recent_evidence"][0]["traceback_text"])
+
+    def test_env_whitelisted_capped_and_exposed(self) -> None:
+        os.environ["DIAG_READ_TOKEN"] = "read-tok2"
+        self.addCleanup(lambda: os.environ.pop("DIAG_READ_TOKEN", None))
+        long_value = "x" * 200
+        payload = _valid_payload(
+            env={
+                "python": "3.11.4",
+                "platform": long_value,
+                "container": True,
+                "evil_key": "should be dropped",
+                "machine": "x86_64",
+                "journal_override": "DELETE",
+            },
+            warnings=[{"template": "Env #", "count": 1,
+                       "first_seen": "2026-07-15T00:00:00Z",
+                       "last_seen": "2026-07-15T00:00:00Z"}],
+        )
+        self._post(payload)
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            batch = conn.execute(
+                "SELECT env_json FROM batches WHERE instance_id = ?",
+                (payload["instance_id"],),
+            ).fetchone()
+            fid = conn.execute(
+                "SELECT id FROM findings WHERE template = ?", ("Env #",),
+            ).fetchone()["id"]
+        env = json.loads(batch["env_json"])
+        self.assertNotIn("evil_key", env)
+        self.assertEqual(env["python"], "3.11.4")
+        self.assertEqual(env["container"], True)
+        self.assertLessEqual(len(env["platform"]), 60)
+
+        resp = self._client.get(
+            f"/api/v1/findings/{fid}",
+            headers={"Authorization": "Bearer read-tok2"},
+        )
+        data = resp.get_json()
+        evidence_env = json.loads(data["recent_evidence"][0]["env_json"])
+        self.assertNotIn("evil_key", evidence_env)
+        self.assertEqual(evidence_env["python"], "3.11.4")
+
+
+class TestVersionAwareReopen(unittest.TestCase):
+    """Part B: stale (pre-fix build) recurrences stay fixed; genuine
+    regressions reopen."""
+
+    def setUp(self) -> None:
+        self._orig_read_token = os.environ.get("DIAG_READ_TOKEN")
+        os.environ["DIAG_READ_TOKEN"] = "test-read-token"
+        self._tmpdir = tempfile.mkdtemp()
+        self._db_path = os.path.join(self._tmpdir, "test.db")
+        self._app = create_receiver_app(db_path=self._db_path)
+        self._client = self._app.test_client()
+        # Findings-admin PATCH calls in this class rely on this default;
+        # ingest POSTs always override it with the instance's real token
+        # via _post once one has been issued (see below).
+        self._client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-read-token"
+        self._tokens: dict[str, str] = {}
+        self._orig_interval: str | None = os.environ.get("DIAG_MIN_BATCH_INTERVAL_HOURS")
+        os.environ["DIAG_MIN_BATCH_INTERVAL_HOURS"] = "0"
+        self.addCleanup(
+            lambda: os.environ.pop("DIAG_MIN_BATCH_INTERVAL_HOURS", None)
+            if self._orig_interval is None
+            else os.environ.update({"DIAG_MIN_BATCH_INTERVAL_HOURS": self._orig_interval})
+        )
+
+    def tearDown(self) -> None:
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+        if self._orig_read_token is None:
+            os.environ.pop("DIAG_READ_TOKEN", None)
+        else:
+            os.environ["DIAG_READ_TOKEN"] = self._orig_read_token
+
+    def _post(self, payload: dict) -> dict:
+        iid = payload.get("instance_id", "")
+        headers: dict[str, str] = {}
+        if iid in self._tokens:
+            headers["Authorization"] = f"Bearer {self._tokens[iid]}"
+        resp = self._client.post(
+            "/api/v1/diagnostics",
+            data=json.dumps(payload),
+            content_type="application/json",
+            headers=headers,
+        )
+        data = resp.get_json()
+        if data and data.get("token"):
+            self._tokens[iid] = data["token"]
+        return data
+
+    def _fixed_finding_id(self, template: str, *, category: str | None = None) -> int:
+        """Post one warning, then PATCH the resulting finding to 'fixed'."""
+        self._post(_valid_payload(
+            app_version="7.2.0",
+            warnings=[{"template": template, "count": 1,
+                       "first_seen": "2026-07-14T00:00:00Z",
+                       "last_seen": "2026-07-14T00:00:00Z"}],
+        ))
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            fid = conn.execute(
+                "SELECT id FROM findings WHERE template = ?", (template,),
+            ).fetchone()["id"]
+        body: dict[str, str] = {"status": "fixed"}
+        if category is not None:
+            body["category"] = category
+        self._client.patch(
+            f"/api/v1/findings/{fid}",
+            data=json.dumps(body),
+            content_type="application/json",
+        )
+        return fid
+
+    def test_patch_fixed_records_fixed_at_and_versions_snapshot(self) -> None:
+        fid = self._fixed_finding_id("Snap #")
+
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM findings WHERE id = ?", (fid,)).fetchone()
+        self.assertEqual(row["status"], "fixed")
+        self.assertIsNotNone(row["fixed_at"])
+        self.assertEqual(json.loads(row["versions_at_fix_json"]), ["7.2.0"])
+
+    def test_other_status_values_leave_fixed_columns_untouched(self) -> None:
+        self._post(_valid_payload(
+            app_version="7.2.0",
+            warnings=[{"template": "NoFix #", "count": 1,
+                       "first_seen": "2026-07-14T00:00:00Z",
+                       "last_seen": "2026-07-14T00:00:00Z"}],
+        ))
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            fid = conn.execute(
+                "SELECT id FROM findings WHERE template = ?", ("NoFix #",),
+            ).fetchone()["id"]
+        self._client.patch(
+            f"/api/v1/findings/{fid}",
+            data=json.dumps({"status": "triaged"}),
+            content_type="application/json",
+        )
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM findings WHERE id = ?", (fid,)).fetchone()
+        self.assertIsNone(row["fixed_at"])
+        self.assertIsNone(row["versions_at_fix_json"])
+
+    def test_recurrence_from_version_in_snapshot_stays_fixed_and_counts_stale(self) -> None:
+        fid = self._fixed_finding_id("Stale #")
+
+        self._post(_valid_payload(
+            app_version="7.2.0",
+            warnings=[{"template": "Stale #", "count": 3,
+                       "first_seen": "2026-07-20T00:00:00Z",
+                       "last_seen": "2026-07-20T00:00:00Z"}],
+        ))
+
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM findings WHERE id = ?", (fid,)).fetchone()
+        self.assertEqual(row["status"], "fixed")
+        self.assertIsNone(row["reopened_at"])
+        self.assertEqual(row["stale_recurrence_count"], 3)
+        self.assertIsNotNone(row["last_stale_at"])
+        self.assertEqual(row["total_count"], 4)
+        self.assertEqual(row["last_seen"], "2026-07-20T00:00:00+00:00")
+
+    def test_recurrence_from_strictly_newer_version_reopens(self) -> None:
+        fid = self._fixed_finding_id("Newer #")
+
+        self._post(_valid_payload(
+            app_version="7.3.0",
+            warnings=[{"template": "Newer #", "count": 1,
+                       "first_seen": "2026-07-21T00:00:00Z",
+                       "last_seen": "2026-07-21T00:00:00Z"}],
+        ))
+
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM findings WHERE id = ?", (fid,)).fetchone()
+        self.assertEqual(row["status"], "open")
+        self.assertIsNotNone(row["reopened_at"])
+        self.assertEqual(row["stale_recurrence_count"], 0)
+
+    def test_recurrence_from_older_unseen_version_is_stale(self) -> None:
+        fid = self._fixed_finding_id("Older #")
+
+        self._post(_valid_payload(
+            app_version="7.1.0",
+            warnings=[{"template": "Older #", "count": 1,
+                       "first_seen": "2026-07-21T00:00:00Z",
+                       "last_seen": "2026-07-21T00:00:00Z"}],
+        ))
+
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM findings WHERE id = ?", (fid,)).fetchone()
+        self.assertEqual(row["status"], "fixed")
+        self.assertEqual(row["stale_recurrence_count"], 1)
+
+    def test_recurrence_from_unparseable_version_reopens(self) -> None:
+        fid = self._fixed_finding_id("DevBuild #")
+
+        self._post(_valid_payload(
+            app_version="dev 999",
+            warnings=[{"template": "DevBuild #", "count": 1,
+                       "first_seen": "2026-07-21T00:00:00Z",
+                       "last_seen": "2026-07-21T00:00:00Z"}],
+        ))
+
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM findings WHERE id = ?", (fid,)).fetchone()
+        self.assertEqual(row["status"], "open")
+        self.assertIsNotNone(row["reopened_at"])
+
+    def test_legacy_fixed_row_falls_back_to_app_versions_json(self) -> None:
+        iid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                """\
+                INSERT INTO findings
+                    (template, logger, level, category, status,
+                     first_seen, last_seen, total_count, instance_count,
+                     app_versions_json, versions_at_fix_json)
+                VALUES (?, '', '', 'code-bug', 'fixed', ?, ?, 1, 0, ?, NULL)
+                """,
+                ("Legacy #", "2026-07-01T00:00:00+00:00", "2026-07-01T00:00:00+00:00",
+                 json.dumps(["7.2.0"])),
+            )
+            conn.commit()
+
+        self._post(_valid_payload(
+            instance_id=iid,
+            app_version="7.2.0",
+            warnings=[{"template": "Legacy #", "count": 1,
+                       "first_seen": "2026-07-21T00:00:00Z",
+                       "last_seen": "2026-07-21T00:00:00Z"}],
+        ))
+
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM findings WHERE template = 'Legacy #'"
+            ).fetchone()
+        self.assertEqual(row["status"], "fixed")
+        self.assertEqual(row["stale_recurrence_count"], 1)
+
+    def test_non_code_bug_category_reopens_only_for_new_instance(self) -> None:
+        iid_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        iid_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        self._post(_valid_payload(
+            instance_id=iid_a,
+            app_version="7.2.0",
+            warnings=[{"template": "Cfg #", "count": 1,
+                       "first_seen": "2026-07-14T00:00:00Z",
+                       "last_seen": "2026-07-14T00:00:00Z"}],
+        ))
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            fid = conn.execute(
+                "SELECT id FROM findings WHERE template = ?", ("Cfg #",),
+            ).fetchone()["id"]
+        self._client.patch(
+            f"/api/v1/findings/{fid}",
+            data=json.dumps({"status": "fixed", "category": "config-issue"}),
+            content_type="application/json",
+        )
+
+        # Same instance recurs on the same version — stays fixed (stale).
+        self._post(_valid_payload(
+            instance_id=iid_a,
+            app_version="7.2.0",
+            warnings=[{"template": "Cfg #", "count": 1,
+                       "first_seen": "2026-07-21T00:00:00Z",
+                       "last_seen": "2026-07-21T00:00:00Z"}],
+        ))
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM findings WHERE id = ?", (fid,)).fetchone()
+        self.assertEqual(row["status"], "fixed")
+
+        # A NEW instance hits the same (already-fixed) config finding — reopens.
+        self._post(_valid_payload(
+            instance_id=iid_b,
+            app_version="7.2.0",
+            warnings=[{"template": "Cfg #", "count": 1,
+                       "first_seen": "2026-07-22T00:00:00Z",
+                       "last_seen": "2026-07-22T00:00:00Z"}],
+        ))
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM findings WHERE id = ?", (fid,)).fetchone()
+        self.assertEqual(row["status"], "open")
+        self.assertIsNotNone(row["reopened_at"])
+
+    def test_ignored_never_reopens_and_no_stale_accounting(self) -> None:
+        self._post(_valid_payload(
+            app_version="7.2.0",
+            warnings=[{"template": "Ign #", "count": 1,
+                       "first_seen": "2026-07-14T00:00:00Z",
+                       "last_seen": "2026-07-14T00:00:00Z"}],
+        ))
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            fid = conn.execute(
+                "SELECT id FROM findings WHERE template = ?", ("Ign #",),
+            ).fetchone()["id"]
+        self._client.patch(
+            f"/api/v1/findings/{fid}",
+            data=json.dumps({"status": "ignored"}),
+            content_type="application/json",
+        )
+
+        self._post(_valid_payload(
+            app_version="9.9.9",
+            warnings=[{"template": "Ign #", "count": 1,
+                       "first_seen": "2026-07-21T00:00:00Z",
+                       "last_seen": "2026-07-21T00:00:00Z"}],
+        ))
+
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM findings WHERE id = ?", (fid,)).fetchone()
+        self.assertEqual(row["status"], "ignored")
+        self.assertIsNone(row["reopened_at"])
+        self.assertEqual(row["stale_recurrence_count"], 0)
+        self.assertIsNone(row["last_stale_at"])
+
+
+class TestAdminAuthSplit(unittest.TestCase):
+    """Part C: DIAG_READ_TOKEN vs DIAG_ADMIN_TOKEN split for write endpoints."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.mkdtemp()
+        self._db_path = os.path.join(self._tmpdir, "test.db")
+        self._app = create_receiver_app(db_path=self._db_path)
+        self._client = self._app.test_client()
+        self._saved: dict[str, str | None] = {}
+        for key in ("DIAG_MIN_BATCH_INTERVAL_HOURS", "DIAG_READ_TOKEN", "DIAG_ADMIN_TOKEN"):
+            self._saved[key] = os.environ.pop(key, None)
+        os.environ["DIAG_MIN_BATCH_INTERVAL_HOURS"] = "0"
+        self.addCleanup(self._restore_env)
+        self.addCleanup(
+            lambda: __import__("shutil").rmtree(self._tmpdir, ignore_errors=True)
+        )
+
+    def _restore_env(self) -> None:
+        for key, val in self._saved.items():
+            if val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = val
+
+    def _seed_finding(self) -> int:
+        self._client.post(
+            "/api/v1/diagnostics",
+            data=json.dumps(_valid_payload(
+                warnings=[{"template": "Auth #", "count": 1,
+                           "first_seen": "2026-07-15T00:00:00Z",
+                           "last_seen": "2026-07-15T00:00:00Z"}],
+            )),
+            content_type="application/json",
+        )
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            return conn.execute("SELECT id FROM findings").fetchone()["id"]
+
+    def test_read_token_only_allows_get_and_patch_compat(self) -> None:
+        os.environ["DIAG_READ_TOKEN"] = "readtok"
+        fid = self._seed_finding()
+
+        get_resp = self._client.get(
+            f"/api/v1/findings/{fid}", headers={"Authorization": "Bearer readtok"},
+        )
+        self.assertEqual(get_resp.status_code, 200)
+
+        patch_resp = self._client.patch(
+            f"/api/v1/findings/{fid}",
+            data=json.dumps({"status": "triaged"}),
+            content_type="application/json",
+            headers={"Authorization": "Bearer readtok"},
+        )
+        self.assertEqual(patch_resp.status_code, 200)
+
+    def test_admin_token_configured_read_token_rejected_for_patch(self) -> None:
+        os.environ["DIAG_READ_TOKEN"] = "readtok"
+        os.environ["DIAG_ADMIN_TOKEN"] = "admintok"
+        fid = self._seed_finding()
+
+        patch_with_read = self._client.patch(
+            f"/api/v1/findings/{fid}",
+            data=json.dumps({"status": "triaged"}),
+            content_type="application/json",
+            headers={"Authorization": "Bearer readtok"},
+        )
+        self.assertEqual(patch_with_read.status_code, 401)
+
+        patch_with_admin = self._client.patch(
+            f"/api/v1/findings/{fid}",
+            data=json.dumps({"status": "triaged"}),
+            content_type="application/json",
+            headers={"Authorization": "Bearer admintok"},
+        )
+        self.assertEqual(patch_with_admin.status_code, 200)
+
+        get_with_read = self._client.get(
+            f"/api/v1/findings/{fid}", headers={"Authorization": "Bearer readtok"},
+        )
+        self.assertEqual(get_with_read.status_code, 200)
+        get_with_admin = self._client.get(
+            f"/api/v1/findings/{fid}", headers={"Authorization": "Bearer admintok"},
+        )
+        self.assertEqual(get_with_admin.status_code, 200)
+
+    def test_submission_detail_patch_requires_admin_when_configured(self) -> None:
+        os.environ["DIAG_READ_TOKEN"] = "readtok"
+        os.environ["DIAG_ADMIN_TOKEN"] = "admintok"
+        resp = self._client.post(
+            "/api/v1/diagnostics",
+            json=_valid_payload(manual=True, user_message="help please", warnings=[]),
+        )
+        submission_id = resp.get_json()["batch_id"]
+
+        get_resp = self._client.get(
+            f"/api/v1/submissions/{submission_id}",
+            headers={"Authorization": "Bearer readtok"},
+        )
+        self.assertEqual(get_resp.status_code, 200)
+
+        patch_with_read = self._client.patch(
+            f"/api/v1/submissions/{submission_id}",
+            json={"response_md": "should fail"},
+            headers={"Authorization": "Bearer readtok"},
+        )
+        self.assertEqual(patch_with_read.status_code, 401)
+
+        patch_with_admin = self._client.patch(
+            f"/api/v1/submissions/{submission_id}",
+            json={"response_md": "ok"},
+            headers={"Authorization": "Bearer admintok"},
+        )
+        self.assertEqual(patch_with_admin.status_code, 200)
+
+    def test_update_comment_requires_admin_when_configured(self) -> None:
+        os.environ["DIAG_READ_TOKEN"] = "readtok"
+        os.environ["DIAG_ADMIN_TOKEN"] = "admintok"
+        iid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        resp = self._client.post(
+            "/api/v1/diagnostics",
+            json=_valid_payload(
+                instance_id=iid,
+                warnings=[{"template": "Cmt #", "count": 1,
+                           "first_seen": "2026-07-15T00:00:00Z",
+                           "last_seen": "2026-07-15T00:00:00Z"}],
+            ),
+        )
+        token = resp.get_json()["token"]
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            fid = conn.execute("SELECT id FROM findings").fetchone()["id"]
+        comment_resp = self._client.post(
+            f"/api/v1/findings/{fid}/comments",
+            json={"body": "hello"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        cid = comment_resp.get_json()["id"]
+
+        patch_with_read = self._client.patch(
+            f"/api/v1/findings/{fid}/comments/{cid}",
+            json={"hidden": True},
+            headers={"Authorization": "Bearer readtok"},
+        )
+        self.assertEqual(patch_with_read.status_code, 401)
+
+        patch_with_admin = self._client.patch(
+            f"/api/v1/findings/{fid}/comments/{cid}",
+            json={"hidden": True},
+            headers={"Authorization": "Bearer admintok"},
+        )
+        self.assertEqual(patch_with_admin.status_code, 200)
+
+
+class TestInstanceTokenHashing(unittest.TestCase):
+    """Part C: instance tokens are stored hashed; legacy plaintext migrates."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.mkdtemp()
+        self._db_path = os.path.join(self._tmpdir, "test.db")
+        self._app = create_receiver_app(db_path=self._db_path)
+        self._client = self._app.test_client()
+        self._orig_interval: str | None = os.environ.get("DIAG_MIN_BATCH_INTERVAL_HOURS")
+        os.environ["DIAG_MIN_BATCH_INTERVAL_HOURS"] = "0"
+        self.addCleanup(
+            lambda: os.environ.pop("DIAG_MIN_BATCH_INTERVAL_HOURS", None)
+            if self._orig_interval is None
+            else os.environ.update({"DIAG_MIN_BATCH_INTERVAL_HOURS": self._orig_interval})
+        )
+
+    def tearDown(self) -> None:
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_new_token_stored_hashed_and_authenticates_my_submissions(self) -> None:
+        iid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        resp = self._client.post(
+            "/api/v1/diagnostics",
+            json=_valid_payload(instance_id=iid, warnings=[]),
+        )
+        token = resp.get_json()["token"]
+
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT token, token_hash FROM instances WHERE instance_id = ?", (iid,),
+            ).fetchone()
+        self.assertIsNone(row["token"])
+        self.assertEqual(row["token_hash"], _hash_token(token))
+
+        my_resp = self._client.get(
+            "/api/v1/my/submissions",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(my_resp.status_code, 200)
+
+    def test_legacy_plaintext_row_authenticates_and_migrates_via_my_endpoint(self) -> None:
+        iid = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                "INSERT INTO instances (instance_id, first_seen, last_seen, token) "
+                "VALUES (?, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', 'legacy-plain-token')",
+                (iid,),
+            )
+            conn.commit()
+
+        resp = self._client.get(
+            "/api/v1/my/submissions",
+            headers={"Authorization": "Bearer legacy-plain-token"},
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT token, token_hash FROM instances WHERE instance_id = ?", (iid,),
+            ).fetchone()
+        self.assertIsNone(row["token"])
+        self.assertEqual(row["token_hash"], _hash_token("legacy-plain-token"))
+
+        # Migrated row keeps authenticating on subsequent requests.
+        resp2 = self._client.get(
+            "/api/v1/my/submissions",
+            headers={"Authorization": "Bearer legacy-plain-token"},
+        )
+        self.assertEqual(resp2.status_code, 200)
+
+    def test_legacy_plaintext_row_authenticates_and_migrates_via_ingest(self) -> None:
+        iid = "c" * 32
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                "INSERT INTO instances (instance_id, first_seen, last_seen, token) "
+                "VALUES (?, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', 'legacy-ingest-token')",
+                (iid,),
+            )
+            conn.commit()
+
+        resp = self._client.post(
+            "/api/v1/diagnostics",
+            json=_valid_payload(instance_id=iid, warnings=[]),
+            headers={"Authorization": "Bearer legacy-ingest-token"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("token", resp.get_json())
+
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT token, token_hash FROM instances WHERE instance_id = ?", (iid,),
+            ).fetchone()
+        self.assertIsNone(row["token"])
+        self.assertEqual(row["token_hash"], _hash_token("legacy-ingest-token"))
+
+    def test_wrong_token_401_for_hashed_and_legacy_rows(self) -> None:
+        iid = "d" * 32
+        resp = self._client.post(
+            "/api/v1/diagnostics",
+            json=_valid_payload(instance_id=iid, warnings=[]),
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        wrong = self._client.get(
+            "/api/v1/my/submissions",
+            headers={"Authorization": "Bearer completely-wrong-token"},
+        )
+        self.assertEqual(wrong.status_code, 401)
+
+        wrong_ingest = self._client.post(
+            "/api/v1/diagnostics",
+            json=_valid_payload(instance_id=iid, warnings=[]),
+            headers={"Authorization": "Bearer also-wrong"},
+        )
+        self.assertEqual(wrong_ingest.status_code, 401)
+
+
+class TestSurfaceFields(unittest.TestCase):
+    """Part D: sample_message/stale_recurrence_count/fixed_at surfaced."""
+
+    def setUp(self) -> None:
+        self._orig_read_token = os.environ.get("DIAG_READ_TOKEN")
+        os.environ["DIAG_READ_TOKEN"] = "test-read-token"
+        self._tmpdir = tempfile.mkdtemp()
+        self._db_path = os.path.join(self._tmpdir, "test.db")
+        self._app = create_receiver_app(db_path=self._db_path)
+        self._client = self._app.test_client()
+        # Findings-admin GET/PATCH calls rely on this default; ingest POSTs
+        # go through _post below, which overrides it with each instance's
+        # real TOFU token once one has been issued.
+        self._client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-read-token"
+        self._tokens: dict[str, str] = {}
+        self._orig_interval: str | None = os.environ.get("DIAG_MIN_BATCH_INTERVAL_HOURS")
+        os.environ["DIAG_MIN_BATCH_INTERVAL_HOURS"] = "0"
+        self.addCleanup(
+            lambda: os.environ.pop("DIAG_MIN_BATCH_INTERVAL_HOURS", None)
+            if self._orig_interval is None
+            else os.environ.update({"DIAG_MIN_BATCH_INTERVAL_HOURS": self._orig_interval})
+        )
+
+    def tearDown(self) -> None:
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+        if self._orig_read_token is None:
+            os.environ.pop("DIAG_READ_TOKEN", None)
+        else:
+            os.environ["DIAG_READ_TOKEN"] = self._orig_read_token
+
+    def _post(self, payload: dict) -> dict:
+        iid = payload.get("instance_id", "")
+        headers: dict[str, str] = {}
+        if iid in self._tokens:
+            headers["Authorization"] = f"Bearer {self._tokens[iid]}"
+        resp = self._client.post(
+            "/api/v1/diagnostics",
+            data=json.dumps(payload),
+            content_type="application/json",
+            headers=headers,
+        )
+        data = resp.get_json()
+        if data and data.get("token"):
+            self._tokens[iid] = data["token"]
+        return data
+
+    def test_list_findings_includes_new_surface_fields(self) -> None:
+        self._post(_valid_payload(
+            warnings=[{"template": "Surf #", "message": "surface msg", "count": 1,
+                       "first_seen": "2026-07-15T00:00:00Z",
+                       "last_seen": "2026-07-15T00:00:00Z"}],
+        ))
+        resp = self._client.get("/api/v1/findings")
+        data = resp.get_json()
+        finding = data["findings"][0]
+        self.assertEqual(finding["sample_message"], "surface msg")
+        self.assertEqual(finding["stale_recurrence_count"], 0)
+        self.assertIsNone(finding["fixed_at"])
+
+    def test_summary_includes_stale_recurrences(self) -> None:
+        self._post(_valid_payload(
+            warnings=[{"template": "SumStale #", "count": 1,
+                       "first_seen": "2026-07-15T00:00:00Z",
+                       "last_seen": "2026-07-15T00:00:00Z"}],
+        ))
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            fid = conn.execute("SELECT id FROM findings").fetchone()["id"]
+        self._client.patch(
+            f"/api/v1/findings/{fid}",
+            json={"status": "fixed"},
+        )
+        # Recurrence from the same (already-seen) version stays fixed/stale.
+        self._post(_valid_payload(
+            warnings=[{"template": "SumStale #", "count": 4,
+                       "first_seen": "2026-07-16T00:00:00Z",
+                       "last_seen": "2026-07-16T00:00:00Z"}],
+        ))
+        resp = self._client.get("/api/v1/summary?days=30")
+        data = resp.get_json()
+        self.assertEqual(data["findings"]["stale_recurrences"], 4)
 
 
 if __name__ == "__main__":

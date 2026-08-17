@@ -9,6 +9,7 @@ from ebooklib import epub
 from bs4 import BeautifulSoup, Tag
 from lxml import html
 import hashlib
+import json
 import logging
 import os
 import re
@@ -107,6 +108,22 @@ class EbookParser:
             f"xpath_fallback={self.useXpathSegmentFallback}, extra_dirs={len(self.extra_book_dirs)}, "
             f"path_cache={self._path_cache_max})"
         )
+
+    @staticmethod
+    def _file_cache_key(filepath) -> str:
+        """Cache key for a parsed file: path plus its mtime and size.
+
+        Keying on the path alone means replacing a file in place — which is what
+        editing metadata in Calibre/CWA does — keeps serving the old text and spine
+        until the entry is evicted or the process restarts. Falls back to the bare
+        path when the file cannot be stat'ed, preserving the previous behavior.
+        """
+        path_str = str(filepath)
+        try:
+            stat = Path(filepath).stat()
+        except OSError:
+            return path_str
+        return f"{path_str}|{stat.st_mtime_ns}|{stat.st_size}"
 
     @staticmethod
     def _parse_extra_book_dirs(raw: str) -> list:
@@ -280,7 +297,7 @@ class EbookParser:
         try:
             book = epub.read_epub(str(path))
         except Exception as e:
-            logger.warning(f"⚠️ Could not read EPUB metadata for '{filename}': {e}")
+            logger.warning(f"⚠️ Could not read EPUB metadata for '{filename}': {e}", exc_info=True)
             return result
 
         return self._extract_epub_metadata(book)
@@ -303,7 +320,7 @@ class EbookParser:
                 tmp_path = tmp.name
             book = epub.read_epub(tmp_path)
         except Exception as e:
-            logger.warning(f"⚠️ Could not read EPUB metadata from bytes for '{filename}': {e}")
+            logger.warning(f"⚠️ Could not read EPUB metadata from bytes for '{filename}': {e}", exc_info=True)
             return result
         finally:
             if tmp_path:
@@ -334,7 +351,7 @@ class EbookParser:
                     md5.update(chunk)
             return md5.hexdigest()
         except Exception as e:
-            logger.error(f"❌ Error computing hash for {filepath}: {e}")
+            logger.error(f"❌ Error computing hash for {filepath}: {e}", exc_info=True)
             return None
 
     def _compute_koreader_hash_from_bytes(self, content):
@@ -350,7 +367,7 @@ class EbookParser:
                 md5.update(chunk)
             return md5.hexdigest()
         except Exception as e:
-            logger.error(f"❌ Error computing KOReader hash from bytes: {e}")
+            logger.error(f"❌ Error computing KOReader hash from bytes: {e}", exc_info=True)
             return None
 
     def get_kosync_id_from_bytes(self, filename, content):
@@ -400,7 +417,7 @@ class EbookParser:
             return False
 
         except Exception as e:
-            logger.error(f"❌ Error extracting cover from '{filepath}': {e}")
+            logger.error(f"❌ Error extracting cover from '{filepath}': {e}", exc_info=True)
             return False
 
     def _build_href_resolver(self, str_path):
@@ -449,8 +466,9 @@ class EbookParser:
         if not filepath.exists():
             filepath = self.resolve_book_path(filepath.name)
         str_path = str(filepath)
+        cache_key = self._file_cache_key(filepath)
 
-        cached = self.cache.get(str_path)
+        cached = self.cache.get(cache_key)
         if cached:
             if progress_callback: progress_callback(1.0)
             return cached['text'], cached['map']
@@ -471,6 +489,18 @@ class EbookParser:
                     progress_callback(i / total_spine)
 
                 item = book.get_item_with_id(item_ref[0])
+                if item is None:
+                    # A spine entry can reference an idref that isn't in the
+                    # manifest (malformed EPUB). ebooklib returns None rather
+                    # than raising, so calling get_type() on it threw
+                    # AttributeError, hit the except below, and abandoned the
+                    # WHOLE book as ("", []) -- which then surfaced downstream
+                    # as misleading "Could not resolve XPath" warnings.
+                    logger.debug(
+                        "Skipping spine entry %s: no manifest item with that id",
+                        item_ref[0],
+                    )
+                    continue
                 if item.get_type() == ebooklib.ITEM_DOCUMENT:
                     soup = BeautifulSoup(item.get_content(), 'html.parser')
                     text = soup.get_text(separator=' ', strip=True)
@@ -492,11 +522,11 @@ class EbookParser:
                     current_idx = end + 1
 
             combined_text = " ".join(full_text_parts)
-            self.cache.put(str_path, {'text': combined_text, 'map': spine_map})
+            self.cache.put(cache_key, {'text': combined_text, 'map': spine_map})
             return combined_text, spine_map
 
         except Exception as e:
-            logger.error(f"❌ Failed to parse EPUB '{filepath}': {e}")
+            logger.error(f"❌ Failed to parse EPUB '{filepath}': {e}", exc_info=True)
             return "", []
 
     def get_text_at_percentage(self, filename, percentage):
@@ -515,7 +545,7 @@ class EbookParser:
 
             return full_text[start:end]
         except Exception as e:
-            logger.error(f"❌ Error getting text at percentage: {e}")
+            logger.error(f"❌ Error getting text at percentage: {e}", exc_info=True)
             return None
 
     def bookfusion_reading_anchor(self, filename, percentage) -> Optional[dict]:
@@ -579,7 +609,7 @@ class EbookParser:
             total_len = len(full_text)
             return abs(int(total_len * percentage_prev) - int(total_len * percentage_new))
         except Exception as e:
-            logger.error(f"❌ Error calculating character delta: {e}")
+            logger.error(f"❌ Error calculating character delta: {e}", exc_info=True)
             return None
 
     # =========================================================================
@@ -644,7 +674,72 @@ class EbookParser:
             return full_text[start:end]
 
         except Exception as e:
-            logger.error(f"❌ Error resolving locator ID '{fragment_id}' in '{filename}': {e}")
+            logger.error(f"❌ Error resolving locator ID '{fragment_id}' in '{filename}': {e}", exc_info=True)
+            return None
+
+    def resolve_href_progression(self, filename, href, chapter_progress) -> Optional[str]:
+        """Return text at a Readium href + in-chapter progression (no fragment needed).
+
+        :meth:`resolve_locator_id` requires a fragment id, but real Audiobookshelf
+        ecosystem locators carry none — they store only ``href`` plus
+        ``locations.progression``. Those positions therefore fell through to the
+        whole-book percentage, which lands somewhere else entirely: measured on a live
+        position, 6725 characters away, 0.99% of the book and a different scene. The
+        chapter's own span answers it exactly.
+
+        ``char_len`` is the chapter's EXTRACTED-TEXT length. ``content`` is raw HTML
+        and runs materially longer (~1.17x on a real book), so it must never be used
+        for this arithmetic — mixing the two spaces is what makes the naive version of
+        this calculation wrong.
+
+        Returns None when the href matches no spine item, mirroring the "not found"
+        convention of its sibling.
+        """
+        try:
+            if not href:
+                logger.debug(f"resolve_href_progression: missing href for '{filename}'")
+                return None
+
+            try:
+                progression = float(chapter_progress) if chapter_progress is not None else 0.0
+            except (TypeError, ValueError):
+                progression = 0.0
+            # A locator may legitimately omit progression; the chapter's start is still
+            # far closer than the whole-book percentage.
+            progression = max(0.0, min(1.0, progression))
+
+            book_path = self.resolve_book_path(filename)
+            full_text, spine_map = self.extract_text_and_map(book_path)
+            if not full_text or not spine_map:
+                return None
+
+            target_item = None
+            for item in spine_map:
+                if href in item['href'] or item['href'] in href:
+                    target_item = item
+                    break
+
+            if not target_item:
+                logger.debug(
+                    f"resolve_href_progression: href='{href}' matches no spine item in '{filename}'"
+                )
+                return None
+
+            start = int(target_item['start'])
+            char_len = int(target_item.get('char_len') or 0)
+            offset = start + int(progression * char_len)
+            offset = max(start, min(offset, start + char_len))
+
+            logger.debug(
+                "resolve_href_progression: '%s' href='%s' progression=%.4f -> char %d "
+                "(chapter %d..%d)", filename, href, progression, offset, start, start + char_len,
+            )
+            return full_text[offset: min(len(full_text), offset + 500)] or None
+
+        except Exception as e:
+            logger.error(
+                f"❌ Error resolving href progression '{href}' in '{filename}': {e}", exc_info=True
+            )
             return None
 
     def _generate_css_selector(self, target_tag):
@@ -947,7 +1042,7 @@ class EbookParser:
 
             return None
         except Exception as e:
-            logger.error(f"❌ Error finding text in '{filename}': {e}")
+            logger.error(f"❌ Error finding text in '{filename}': {e}", exc_info=True)
             return None
 
     def get_media_overlay_fragment_ids(self, book_path) -> set:
@@ -958,7 +1053,8 @@ class EbookParser:
         start of the chapter. Returns an empty set for books without overlays.
         """
         str_path = str(book_path)
-        cached = self._media_overlay_ids_cache.get(str_path)
+        cache_key = self._file_cache_key(book_path)
+        cached = self._media_overlay_ids_cache.get(cache_key)
         if cached is not None:
             return cached
 
@@ -973,7 +1069,7 @@ class EbookParser:
         except Exception as e:
             logger.debug(f"Media overlay scan failed for '{str_path}': {e}")
 
-        self._media_overlay_ids_cache.put(str_path, ids)
+        self._media_overlay_ids_cache.put(cache_key, ids)
         return ids
 
     def get_fragment_for_tag(self, tag, valid_ids: Optional[set] = None):
@@ -1078,7 +1174,7 @@ class EbookParser:
                 chapter_progress=chapter_progress,
             )
         except Exception as e:
-            logger.error(f"❌ Error resolving locator from char offset in '{filename}': {e}")
+            logger.error(f"❌ Error resolving locator from char offset in '{filename}': {e}", exc_info=True)
             return None
 
     def _normalize_with_map(self, text):
@@ -1308,7 +1404,7 @@ class EbookParser:
 
             return xpath
         except Exception as e:
-            logger.error(f"Error generating sentence-level KOReader XPath: {e}")
+            logger.error(f"Error generating sentence-level KOReader XPath: {e}", exc_info=True)
             return None
 
     def get_perfect_ko_xpath(self, filename, position=0) -> Optional[str]:
@@ -1331,7 +1427,7 @@ class EbookParser:
                 book_path=book_path, full_text=full_text, spine_map=spine_map,
             )
         except Exception as e:
-            logger.error(f"❌ Error generating KOReader XPath: {e}")
+            logger.error(f"❌ Error generating KOReader XPath: {e}", exc_info=True)
             return None
 
     def _compute_xpath_at_position(self, filename, position,
@@ -1519,7 +1615,7 @@ class EbookParser:
             return f"/body/DocFragment[{target_item['spine_index']}]/{xpath}/text().0"
 
         except Exception as e:
-            logger.error(f"❌ Error generating KOReader XPath: {e}")
+            logger.error(f"❌ Error generating KOReader XPath: {e}", exc_info=True)
             return None
 
     def _has_text_content(self, element):
@@ -1782,7 +1878,7 @@ class EbookParser:
                 return None
 
         except Exception as e:
-            logger.error(f"❌ Error resolving XPath '{xpath_str}': {e}")
+            logger.error(f"❌ Error resolving XPath '{xpath_str}': {e}", exc_info=True)
             return None
 
     def resolve_xpath_to_index(self, filename, xpath_str) -> Optional[int]:
@@ -1998,7 +2094,7 @@ class EbookParser:
             return None
 
         except Exception as e:
-            logger.error(f"Error resolving XPath->index '{xpath_str}': {e}")
+            logger.error(f"Error resolving XPath->index '{xpath_str}': {e}", exc_info=True)
             return None
 
     def _parse_cfi_components(self, cfi):
@@ -2072,6 +2168,9 @@ class EbookParser:
 
         Example supported CFI: epubcfi(/6/16[chapter_6]!/4/2[book-columns]/2[book-inner]/268/4/2[kobo.134.3]/1:11)
         """
+        if not is_epub_cfi(cfi):
+            logger.debug("Skipping CFI text lookup for non-CFI locator: %.120s", str(cfi))
+            return None
         try:
             spine_step, element_steps, char_offset = self._parse_cfi_components(cfi)
 
@@ -2185,7 +2284,7 @@ class EbookParser:
             return snippet
 
         except Exception as e:
-            logger.error(f"❌ Error using epubcfi library for '{cfi}': {e}")
+            logger.error(f"❌ Error using epubcfi library for '{cfi}': {e}", exc_info=True)
             return None
 
     def resolve_cfi_to_index(self, filename, cfi) -> Optional[int]:
@@ -2193,6 +2292,11 @@ class EbookParser:
         Resolve CFI to canonical global character offset using the same parsing
         approach as get_text_around_cfi().
         """
+        if not is_epub_cfi(cfi):
+            # A reader that stores a Readium JSON locator (or anything else) in the
+            # same field used to reach the CFI parser and log an ERROR every cycle.
+            logger.debug("Skipping CFI->index for non-CFI locator: %.120s", str(cfi))
+            return None
         try:
             spine_step, element_steps, char_offset = self._parse_cfi_components(cfi)
             if not spine_step:
@@ -2268,8 +2372,140 @@ class EbookParser:
             return item['start'] + local_offset
 
         except Exception as e:
-            logger.error(f"Error resolving CFI->index '{cfi}': {e}")
+            logger.error(f"Error resolving CFI->index '{cfi}': {e}", exc_info=True)
             return None
+
+
+def is_epub_cfi(value) -> bool:
+    """Whether a stored position string is an EPUB CFI rather than some other locator."""
+    return str(value or "").strip().startswith("epubcfi(")
+
+
+def parse_readium_locator(raw) -> Optional[dict]:
+    """Parse a Readium locator into the fields the sync pipeline understands.
+
+    Readium-based readers (the Audiobookshelf mobile apps among them) store a JSON
+    locator where CFI-based readers store an ``epubcfi(...)`` string — the same
+    field carries either shape. Feeding the JSON to the CFI parser produced a
+    per-cycle ``Error resolving CFI->index`` and dropped position resolution to a
+    plain percentage.
+
+    Returns ``{'href', 'chapter_progress', 'position', 'cfi', 'total_progression',
+    'fragment'}`` with absent fields omitted, or ``None`` when *raw* is not a JSON
+    locator (a plain CFI, empty, or anything else).
+    """
+    if isinstance(raw, dict):
+        payload = raw
+    else:
+        text = str(raw or "").strip()
+        if not text.startswith("{"):
+            return None
+        try:
+            payload = json.loads(text)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+    locations = payload.get("locations")
+    if not isinstance(locations, dict):
+        locations = {}
+
+    def _as_float(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _as_int(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    href = str(payload.get("href") or "").strip()
+    # Readium calls the in-chapter fraction "progression" and the whole-book one
+    # "totalProgression"; the bridge's normalization reads chapter_progress.
+    chapter_progress = _as_float(locations.get("progression"))
+    total_progression = _as_float(locations.get("totalProgression"))
+    position = _as_int(locations.get("position"))
+    cfi = str(locations.get("partialCfi") or locations.get("cfi") or "").strip()
+
+    fragment = None
+    fragments = locations.get("fragments")
+    if isinstance(fragments, list) and fragments:
+        first = fragments[0]
+        if isinstance(first, str):
+            stripped = first.strip()
+            if stripped:
+                fragment = stripped
+
+    locator = {}
+    if href:
+        locator["href"] = href
+    if chapter_progress is not None:
+        locator["chapter_progress"] = chapter_progress
+    if total_progression is not None:
+        locator["total_progression"] = total_progression
+    if position is not None:
+        locator["position"] = position
+    if is_epub_cfi(cfi):
+        locator["cfi"] = cfi
+    if fragment is not None:
+        locator["fragment"] = fragment
+
+    return locator or None
+
+
+def build_readium_locator(locator, total_progression=None) -> Optional[str]:
+    """Render a locator as a Readium JSON string, or None when it can't be.
+
+    The inverse of :func:`parse_readium_locator`. A Readium-based reader stores
+    and restores this shape; handing it an ``epubcfi(...)`` string in the same
+    field leaves it with nothing it can resolve. Requires an href — without one
+    there is no anchor and the caller should fall back to a CFI.
+    """
+    href = str(getattr(locator, "href", "") or "").strip()
+    if not href:
+        return None
+
+    locations = {}
+
+    chapter_progress = getattr(locator, "chapter_progress", None)
+    if chapter_progress is not None:
+        try:
+            locations["progression"] = max(0.0, min(float(chapter_progress), 1.0))
+        except (TypeError, ValueError):
+            pass
+
+    if total_progression is None:
+        total_progression = getattr(locator, "percentage", None)
+    if total_progression is not None:
+        try:
+            locations["totalProgression"] = max(0.0, min(float(total_progression), 1.0))
+        except (TypeError, ValueError):
+            pass
+
+    css_selector = getattr(locator, "css_selector", None)
+    if css_selector:
+        locations["cssSelector"] = css_selector
+
+    # Keep the CFI alongside as partialCfi: harmless to Readium, and it means a
+    # CFI-capable reader can still resolve the same position.
+    cfi = getattr(locator, "cfi", None)
+    if is_epub_cfi(cfi):
+        locations["partialCfi"] = cfi
+
+    if not locations:
+        return None
+
+    payload = {"href": href, "type": "application/xhtml+xml", "locations": locations}
+
+    fragment = getattr(locator, "fragment", None)
+    if fragment:
+        payload["locations"]["fragments"] = [fragment]
+
+    return json.dumps(payload, separators=(",", ":"))
 
 
 def resolve_ebook_identifiers(ebook_parser, book, booklore_client=None, bookorbit_client=None) -> dict:
@@ -2291,7 +2527,7 @@ def resolve_ebook_identifiers(ebook_parser, book, booklore_client=None, bookorbi
         try:
             meta = ebook_parser.get_book_metadata(filename) or meta
         except Exception as exc:
-            logger.warning("Local EPUB metadata read failed for '%s': %s", filename, exc)
+            logger.warning("Local EPUB metadata read failed for '%s': %s", filename, exc, exc_info=True)
 
     # A precise identifier (ISBN/ASIN) from the local read is enough — skip the
     # network round-trip. An author alone is NOT precise: fall through to the
@@ -2318,7 +2554,7 @@ def resolve_ebook_identifiers(ebook_parser, book, booklore_client=None, bookorbi
     try:
         content = client.download_book(source_id)
     except Exception as exc:
-        logger.warning("Library download for ebook metadata failed (%s/%s): %s", source, source_id, exc)
+        logger.warning("Library download for ebook metadata failed (%s/%s): %s", source, source_id, exc, exc_info=True)
         return meta
     if not content:
         return meta
@@ -2326,7 +2562,7 @@ def resolve_ebook_identifiers(ebook_parser, book, booklore_client=None, bookorbi
     try:
         byte_meta = ebook_parser.get_book_metadata_from_bytes(filename or "", content)
     except Exception as exc:
-        logger.warning("EPUB metadata-from-bytes failed for '%s': %s", filename, exc)
+        logger.warning("EPUB metadata-from-bytes failed for '%s': %s", filename, exc, exc_info=True)
         return meta
 
     # Prefer the byte-derived fields, but keep any local title the bytes lacked.

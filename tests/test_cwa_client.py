@@ -50,3 +50,10 @@ class TestCWAClient(unittest.TestCase):
                  success = self.client.download_ebook('http://url', 'test.epub')
                  self.assertTrue(success)
                  mock_file.assert_called_with('test.epub', 'wb')
+
+    def test_get_book_by_id_rejects_missing_identifier(self):
+        with patch.object(self.client.session, 'get') as mock_get:
+            self.assertIsNone(self.client.get_book_by_id(None))
+            self.assertIsNone(self.client.get_book_by_id('None'))
+
+        mock_get.assert_not_called()

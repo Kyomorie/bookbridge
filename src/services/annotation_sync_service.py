@@ -447,7 +447,7 @@ class AnnotationSyncService:
         try:
             cache_path.write_bytes(content)
         except Exception as e:
-            logger.warning("Grimmory annotation sync could not cache EPUB %s: %s", filename, e)
+            logger.warning("Grimmory annotation sync could not cache EPUB %s: %s", filename, e, exc_info=True)
             return None
         return cache_path if cache_path.exists() and cache_path.stat().st_size > 0 else None
 
@@ -467,7 +467,7 @@ class AnnotationSyncService:
         try:
             pos0, pos1 = resolver.cfi_range_to_xpointers(note.get("cfi"))
         except Exception as e:
-            logger.warning("Grimmory note CFI conversion failed for id %s: %s", note.get("id"), e)
+            logger.warning("Grimmory note CFI conversion failed for id %s: %s", note.get("id"), e, exc_info=True)
             return None
         created = self._ko_datetime_from_iso(note.get("createdAt"))
         updated = self._ko_datetime_from_iso(note.get("updatedAt")) if note.get("updatedAt") else None
@@ -491,7 +491,7 @@ class AnnotationSyncService:
         try:
             pos0, pos1 = resolver.cfi_range_to_xpointers(annotation.get("cfi"))
         except Exception as e:
-            logger.warning("Grimmory annotation CFI conversion failed for id %s: %s", annotation.get("id"), e)
+            logger.warning("Grimmory annotation CFI conversion failed for id %s: %s", annotation.get("id"), e, exc_info=True)
             return None
         created = self._ko_datetime_from_iso(annotation.get("createdAt"))
         updated = self._ko_datetime_from_iso(annotation.get("updatedAt")) if annotation.get("updatedAt") else None
@@ -526,7 +526,7 @@ class AnnotationSyncService:
         try:
             resolver = GrimmoryCFIResolver(self.ebook_parser, book_path)
         except Exception as e:
-            logger.warning("Grimmory annotation resolver failed for %s: %s", candidate["filename"], e)
+            logger.warning("Grimmory annotation resolver failed for %s: %s", candidate["filename"], e, exc_info=True)
             return False
 
         doc_md5 = candidate["doc_md5"]
@@ -571,7 +571,7 @@ class AnnotationSyncService:
             try:
                 payload = self._booklore_payload_from_change(resolver, book_id, change)
             except Exception as e:
-                logger.warning("Grimmory annotation xpointer conversion failed for local id %s: %s", annotation_id, e)
+                logger.warning("Grimmory annotation xpointer conversion failed for local id %s: %s", annotation_id, e, exc_info=True)
                 continue
 
             remote_id = int(remote_id) if remote_id is not None else None

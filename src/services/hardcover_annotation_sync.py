@@ -252,6 +252,6 @@ class HardcoverAnnotationSync:
             except Exception as e:
                 logger.error(
                     "Hardcover annotation sync error user %s book %s: %s",
-                    user_id, getattr(book, "abs_id", "?"), e,
+                    user_id, getattr(book, "abs_id", "?"), e, exc_info=True,
                 )
         return did_work

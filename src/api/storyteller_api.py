@@ -128,7 +128,7 @@ class StorytellerAPIClient:
                 elif response.status_code not in (400, 404, 405, 422):
                     logger.debug(f"Storyteller login via {endpoint} returned {response.status_code}")
             except Exception as e:
-                logger.error(f"Storyteller login error via {endpoint}: {e}")
+                logger.error(f"Storyteller login error via {endpoint}: {e}", exc_info=True)
         return None
 
     def _make_request(self, method: str, endpoint: str, json_data: dict = None) -> Optional[requests.Response]:
@@ -162,7 +162,7 @@ class StorytellerAPIClient:
                     response = self.session.delete(url, headers=headers, json=json_data, timeout=10)
             return response
         except Exception as e:
-            logger.error(f"❌ Storyteller API request failed ('{method}' '{endpoint}'): {e}")
+            logger.error(f"❌ Storyteller API request failed ('{method}' '{endpoint}'): {e}", exc_info=True)
             return None
 
     def check_connection(self) -> bool:
@@ -778,6 +778,9 @@ class StorytellerAPIClient:
                 raise Exception("API download failed and could not fetch details for fallback.")
 
             book_data = r_details.json()
+            if not isinstance(book_data, dict):
+                logger.error("❌ Invalid book details response for fallback: expected an object")
+                return False
             # Check readaloud object first, then root filepath
             readaloud = book_data.get('readaloud', {})
             source_path = readaloud.get('filepath')
@@ -822,7 +825,7 @@ class StorytellerAPIClient:
             if polling:
                 logger.debug(f"Storyteller poll: download not ready for '{book_uuid[:8]}...': {e}")
                 return False
-            logger.error(f"❌ Failed to download Storyteller book '{book_uuid}' (API & Fallback): {e}")
+            logger.error(f"❌ Failed to download Storyteller book '{book_uuid}' (API & Fallback): {e}", exc_info=True)
             raise e
 
     @classmethod
@@ -871,7 +874,7 @@ class StorytellerAPIClient:
         try:
             cache_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
-            logger.warning(f"⚠️ Could not create epub cache dir '{cache_dir}': {e}")
+            logger.warning(f"⚠️ Could not create epub cache dir '{cache_dir}': {e}", exc_info=True)
             return False
 
         tmp_full = cache_path.with_name(cache_path.name + ".full.tmp")
@@ -891,7 +894,7 @@ class StorytellerAPIClient:
                 return True
             return False
         except Exception as e:
-            logger.warning(f"⚠️ Failed to materialize slim ReadAloud EPUB for '{book_uuid[:8]}...': {e}")
+            logger.warning(f"⚠️ Failed to materialize slim ReadAloud EPUB for '{book_uuid[:8]}...': {e}", exc_info=True)
             try:
                 if cache_path.exists():
                     cache_path.unlink()
@@ -916,7 +919,7 @@ class StorytellerAPIClient:
                 logger.warning(f"⚠️ Failed to trigger processing: {response.status_code if response else 'No Resp'}")
                 return False
         except Exception as e:
-            logger.error(f"❌ Error triggering processing: {e}")
+            logger.error(f"❌ Error triggering processing: {e}", exc_info=True)
             return False
 
     def get_book_details(self, book_uuid: str) -> Optional[Dict]:
@@ -926,7 +929,7 @@ class StorytellerAPIClient:
             if response and response.status_code == 200:
                 return response.json()
         except Exception as e:
-            logger.error(f"❌ Error fetching book details: {e}")
+            logger.error(f"❌ Error fetching book details: {e}", exc_info=True)
         return None
 
     def get_progress(self, ebook_filename: str) -> Tuple[Optional[float], Optional[int]]:
@@ -1034,7 +1037,7 @@ class StorytellerAPIClient:
             return True
 
         except Exception as e:
-            logger.error(f"TUS upload error for '{filename}': {e}")
+            logger.error(f"TUS upload error for '{filename}': {e}", exc_info=True)
             return False
 
     def upload_epub(self, file_path: str, book_uuid: str) -> bool:

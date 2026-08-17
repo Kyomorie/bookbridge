@@ -53,7 +53,7 @@ class BookMappingService:
             else:
                 return getattr(bundle, 'booklore_client', None)
         except Exception as exc:
-            logger.warning("Shelf-watch: could not resolve %s client for user %s: %s", source_name, user_id, exc)
+            logger.warning("Shelf-watch: could not resolve %s client for user %s: %s", source_name, user_id, exc, exc_info=True)
             return None
 
     def _compute_kosync_id(self, ebook_filename: str, source_ebook_id: Optional[str],
@@ -77,14 +77,14 @@ class BookMappingService:
         try:
             content = client.download_book(source_ebook_id)
         except Exception as e:
-            logger.warning(f"Shelf-watch: {source_name} download failed for kosync hash: {e}")
+            logger.warning(f"Shelf-watch: {source_name} download failed for kosync hash: {e}", exc_info=True)
             return None
         if not content:
             return None
         try:
             return self.ebook_parser.get_kosync_id_from_bytes(ebook_filename, content)
         except Exception as e:
-            logger.warning(f"Shelf-watch: ebook parser failed to compute kosync hash: {e}")
+            logger.warning(f"Shelf-watch: ebook parser failed to compute kosync hash: {e}", exc_info=True)
             return None
 
     def _automatch_progress_trackers(self, book: Book, user_id: Optional[int] = None) -> None:
@@ -102,13 +102,13 @@ class BookMappingService:
             try:
                 hardcover._automatch_hardcover(book)
             except Exception as e:
-                logger.warning(f"Shelf-watch: Hardcover automatch failed for '{book.abs_id}': {e}")
+                logger.warning(f"Shelf-watch: Hardcover automatch failed for '{book.abs_id}': {e}", exc_info=True)
         storygraph = sync_clients.get('StoryGraph')
         if storygraph and storygraph.is_configured():
             try:
                 storygraph._automatch_storygraph(book)
             except Exception as e:
-                logger.warning(f"Shelf-watch: StoryGraph automatch failed for '{book.abs_id}': {e}")
+                logger.warning(f"Shelf-watch: StoryGraph automatch failed for '{book.abs_id}': {e}", exc_info=True)
 
     def create_audio_mapping_from_match(
         self,
@@ -226,7 +226,7 @@ class BookMappingService:
                 if abs_client is not None:
                     abs_client.add_to_collection(saved_book.abs_id, abs_collection)
             except Exception as e:
-                logger.warning(f"Shelf-watch: failed to add '{saved_book.abs_id}' to ABS collection: {e}")
+                logger.warning(f"Shelf-watch: failed to add '{saved_book.abs_id}' to ABS collection: {e}", exc_info=True)
 
         # Persist per-user BookOrbit link when an explicit user context exists
         if user_id is not None and (

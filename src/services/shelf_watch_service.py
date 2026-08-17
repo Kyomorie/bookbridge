@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from src.db.models import PendingSuggestion
+from src.utils.logging_utils import get_persistent_condition_logger
 from src.utils.time_utils import utcnow
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,20 @@ class ShelfWatchService:
         key for the library displayed to users as 'Grimmory'."""
         return 'Grimmory' if self._source_name == 'BookLore' else self._source_name
 
+    def _missing_shelf_key(self, shelf_name: str) -> str:
+        """Persistent-condition key for a watch shelf that doesn't exist yet."""
+        return f"shelf_watch_missing_shelf:{self._source_name}:{shelf_name}"
+
+    def _resolve_missing_shelf(self, shelf_name: str) -> None:
+        """Announce recovery once the watch shelf exists again (no-op if it
+        never went missing)."""
+        get_persistent_condition_logger().resolve(
+            logger,
+            self._missing_shelf_key(shelf_name),
+            "✅ Shelf-watch: shelf '%s' now exists in %s — resuming scans.",
+            shelf_name, self._display_name(),
+        )
+
     def _resolve_user_bundle(self, user_id=None):
         """Return the explicit user's client bundle when one is available."""
         if user_id is None or self._user_client_registry is None:
@@ -117,7 +132,7 @@ class ShelfWatchService:
         try:
             return self._user_client_registry.get_clients(user_id)
         except Exception as exc:
-            logger.warning("Shelf-watch: could not build client bundle for user %s: %s", user_id, exc)
+            logger.warning("Shelf-watch: could not build client bundle for user %s: %s", user_id, exc, exc_info=True)
             return None
 
     def _resolve_client_for_user(self, user_id=None, bundle=None):
@@ -237,29 +252,38 @@ class ShelfWatchService:
         try:
             books = active_client.list_books_on_shelf(shelf_name) or []
         except Exception as e:
-            logger.error(f"Shelf-watch: failed to list books on '{shelf_name}': {e}")
+            logger.error(f"Shelf-watch: failed to list books on '{shelf_name}': {e}", exc_info=True)
             stats['errors'] += 1
             return stats
 
         # If the shelf doesn't exist in the library, list_books_on_shelf returns [].
-        # We log a one-time-per-run actionable warning so the user knows what to
-        # do; we don't try to auto-create because the POST /shelves endpoint has
-        # been unreliable across server versions, and the user can set the icon
-        # they want via the library UI directly.
+        # We log an actionable warning so the user knows what to do; we don't try
+        # to auto-create because the POST /shelves endpoint has been unreliable
+        # across server versions, and the user can set the icon they want via the
+        # library UI directly.  The condition holds until the user acts, and this
+        # runs once per poll tick, so it goes through the persistent-condition
+        # logger — the first occurrence is verbatim, repeats drop to DEBUG.
         if not books:
             try:
                 shelves = active_client.get_all_shelves() or []
                 shelf_names = {s.get('name') for s in shelves if isinstance(s, dict)}
                 if shelf_name not in shelf_names:
                     display = self._display_name()
-                    logger.warning(
+                    get_persistent_condition_logger().warn(
+                        logger,
+                        self._missing_shelf_key(shelf_name),
                         "Shelf-watch: shelf '%s' does not exist in %s yet. "
                         "Create it in the %s UI (and pick an icon) — the watcher "
                         "will start scanning books placed on it on the next cycle.",
                         shelf_name, display, display,
                     )
+                else:
+                    self._resolve_missing_shelf(shelf_name)
             except Exception:
                 pass
+        else:
+            # A non-empty listing proves the shelf exists.
+            self._resolve_missing_shelf(shelf_name)
 
         if not books:
             return stats
@@ -558,5 +582,6 @@ class ShelfWatchService:
         except Exception as e:
             logger.warning(
                 f"Shelf-watch: move_between_shelves raised for '{filename}' "
-                f"({from_shelf} -> {to_shelf}): {e}"
+                f"({from_shelf} -> {to_shelf}): {e}",
+                exc_info=True
             )

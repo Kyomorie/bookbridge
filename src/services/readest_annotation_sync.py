@@ -99,7 +99,7 @@ class ReadestAnnotationSync:
             if self._watermark_path.exists():
                 self._watermarks = json.loads(self._watermark_path.read_text())
         except Exception as e:
-            logger.warning("Readest: could not load watermarks: %s", e)
+            logger.warning("Readest: could not load watermarks: %s", e, exc_info=True)
             self._watermarks = {}
 
     def _save_watermarks(self) -> None:
@@ -107,7 +107,7 @@ class ReadestAnnotationSync:
             self._watermark_path.parent.mkdir(parents=True, exist_ok=True)
             self._watermark_path.write_text(json.dumps(self._watermarks))
         except Exception as e:
-            logger.warning("Readest: could not save watermarks: %s", e)
+            logger.warning("Readest: could not save watermarks: %s", e, exc_info=True)
 
     @staticmethod
     def _watermark_key(user_id, book_hash: str) -> str:
@@ -331,7 +331,7 @@ class ReadestAnnotationSync:
                         "deletedAt": int(time.time() * 1000),
                     })
         except Exception as e:
-            logger.error("Readest push: DB query failed for user %s book %s: %s", user_id, book_hash, e)
+            logger.error("Readest push: DB query failed for user %s book %s: %s", user_id, book_hash, e, exc_info=True)
             return 0
 
         if not notes:
@@ -358,7 +358,7 @@ class ReadestAnnotationSync:
                     row.readest_deleted_at = now_dt
                 session.commit()
         except Exception as e:
-            logger.error("Readest push: DB update failed for user %s: %s", user_id, e)
+            logger.error("Readest push: DB update failed for user %s: %s", user_id, e, exc_info=True)
 
         self._db.ack_annotation_versions(
             user_id,
@@ -495,7 +495,7 @@ class ReadestAnnotationSync:
                     applied += 1
                 session.commit()
         except Exception as e:
-            logger.error("Readest pull: DB apply failed for user %s book %s: %s", user_id, book_hash, e)
+            logger.error("Readest pull: DB apply failed for user %s book %s: %s", user_id, book_hash, e, exc_info=True)
             return applied
 
         if acked_versions:

@@ -31,6 +31,7 @@ def _repair_bookorbit_links(database_service, admin) -> dict:
             "Multi-user bootstrap: BookOrbit ownership repair failed for admin '%s': %s",
             admin.username,
             exc,
+            exc_info=True,
         )
         return {}
     if counts.get("created"):
@@ -149,7 +150,7 @@ def bootstrap_admin_user(database_service) -> None:
         _prefill_admin_integrations_from_global(database_service, admin)
         _warn_on_credential_divergence(database_service, admin)
     except Exception as e:
-        logger.error("Multi-user bootstrap failed: %s", e)
+        logger.error("Multi-user bootstrap failed: %s", e, exc_info=True)
 
 
 def create_initial_admin_user(database_service, username: str, password: str):

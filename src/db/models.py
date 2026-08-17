@@ -478,14 +478,21 @@ class BookAlignment(Base):
     # How the map was built: 'lexical', 'llm_anchor', 'linear', 'storyteller',
     # 'storyteller_linear'. NULL = pre-provenance (built before LLM alignment shipped).
     align_method = Column(String(32), nullable=True)
+    # Length of the ebook text the map was built against. The denominator for
+    # converting an audio timestamp to a text fraction: the map's last anchor is
+    # not the end of the book, so using it over-reports every position. NULL =
+    # built before this was recorded; callers fall back to the last anchor.
+    total_chars = Column(Integer, nullable=True)
 
     # Relationship
     book = relationship("Book", back_populates="alignment")
 
-    def __init__(self, abs_id: str, alignment_map_json: str, align_method: str = None):
+    def __init__(self, abs_id: str, alignment_map_json: str, align_method: str = None,
+                 total_chars: int = None):
         self.abs_id = abs_id
         self.alignment_map_json = alignment_map_json
         self.align_method = align_method
+        self.total_chars = total_chars
 
 
 class ReadingSession(Base):

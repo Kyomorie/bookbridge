@@ -3,16 +3,20 @@
 Phase 1 core: warning collection, PII scrubbing, persistence, and snapshot/clear
 API.  Phase 2: payload builder, daily sender, and admin send-now endpoint.
 """
+import atexit
 import collections
 import copy
 import hashlib
 import json
 import logging
 import os
+import platform
 import re
+import sys
 import tempfile
 import threading
 import time
+import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +34,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _URL_RE = re.compile(r'https?://[^\s"\'<>]+')
+_EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
+_IPV4_RE = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b')
 _QUOTED_SINGLE = re.compile(r"(?<!\w)'([^']{12,})'(?!\w)")
 _QUOTED_DOUBLE = re.compile(r'(?<!\w)"([^"]{12,})"(?!\w)')
 _TRANSCRIPT_FAILURE_SUFFIX = \
@@ -41,12 +47,38 @@ _HTTP_STATUS_RE = re.compile(
 _HARDCOVER_NO_MATCH_RE = re.compile(
     r"^(?:\S+\s+)?Hardcover: No match found for '.+'$"
 )
-# Matches scrub placeholder tokens: t:<8hex>, path:<8hex><ext>, url:<8hex>
-# Captures the prefix (t|path|url) so we can collapse the hash to a single #.
-_SCRUB_TOKEN_RE = re.compile(r'\b(t|path|url):[0-9a-f]{8}')
+# Matches scrub placeholder tokens: t:<8hex>, path:<8hex><ext>, url:<8hex>,
+# ip:<8hex>[:port], email:<8hex>.
+# Captures the prefix (t|path|url|ip|email) so we can collapse the hash to
+# a single #.
+_SCRUB_TOKEN_RE = re.compile(r'\b(t|path|url|ip|email):[0-9a-f]{8}')
+# KOReader/DOM xpointers, exempted from the filesystem-path rule below.  Both
+# halves are required: the leading-slash test alone would exempt ordinary POSIX
+# paths, and the marker (text(), DocFragment, @id=) is what no filesystem path
+# ever carries.  A bare "[<digits>]" predicate is deliberately NOT a marker --
+# "/data/books/file[1].epub" is a real path and must still be hashed.
+_XPATH_TOKEN_RE = re.compile(
+    r'^\.{0,1}/{1,2}(?=.*(?:text\(\)|DocFragment|@id=))'
+)
 _SHORT_QUOTED_RE = re.compile(
-    r'''(?:"(?!\b(?:t|path|url):#)[^"]{0,11}"|'''
-    r'''(?<!\w)'(?!\b(?:t|path|url):#)[^']{0,11}'(?!\w))'''
+    r'''(?:"(?!\b(?:t|path|url|ip|email):#)[^"]{0,11}"|'''
+    r'''(?<!\w)'(?!\b(?:t|path|url|ip|email):#)[^']{0,11}'(?!\w))'''
+)
+# Per-value id collapses used by _make_template (template only -- never
+# applied to the persisted message/context text).  UUIDs first so a
+# dash-delimited UUID collapses as one unit before the hex-run rule below
+# would otherwise see its individual 8/4/4/4/12 segments.
+_UUID_RE = re.compile(
+    r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b'
+)
+# Hex-looking runs of >= 6 chars that contain at least one digit -- the
+# digit requirement lets English words spelled entirely with a-f letters
+# (e.g. "decade", "efface") survive untouched.
+_HEX_RUN_RE = re.compile(r'\b(?=[0-9a-fA-F]*\d)[0-9a-fA-F]{6,}\b')
+# Long alnum/underscore ids (>= 14 chars, >= 2 digits), e.g. database
+# primary keys or slugs like "li_4nrp2qhewiqe3xdi2q".
+_LONG_ID_RE = re.compile(
+    r'(?<![A-Za-z0-9_])(?=(?:[A-Za-z_]*\d){2})[A-Za-z0-9_]{14,}(?![A-Za-z0-9_])'
 )
 
 
@@ -70,9 +102,12 @@ def scrub_diagnostic_text(text: str) -> str:
     """Deterministically scrub PII from *text*.
 
     Processing order:
-    1. URLs  → ``url:<sha1(host)[:8]>``
-    2. Filesystem paths (>= 2 path separators) → ``path:<sha1(full)[:8]><ext>``
-    3. Quoted spans >= 12 chars → ``t:<sha1(inner)[:8]>`` (quotes preserved)
+    1. URLs → ``url:<sha1(host)[:8]>``
+    2. Emails → ``email:<sha1(email)[:8]>``
+    3. Bare IPv4 addresses → ``ip:<sha1(ip)[:8]>`` (a trailing ``:port`` is
+       preserved verbatim; only the address itself is hashed)
+    4. Filesystem paths (>= 2 path separators) → ``path:<sha1(full)[:8]><ext>``
+    5. Quoted spans >= 12 chars → ``t:<sha1(inner)[:8]>`` (quotes preserved)
     """
     result = text
 
@@ -84,7 +119,23 @@ def scrub_diagnostic_text(text: str) -> str:
 
     result = _URL_RE.sub(_replace_url, result)
 
-    # 2. Filesystem paths (tokens with >= 2 path separators)
+    # 2. Emails
+    def _replace_email(m: re.Match) -> str:
+        return f"email:{_sha1_prefix(m.group(0))}"
+
+    result = _EMAIL_RE.sub(_replace_email, result)
+
+    # 3. Bare IPv4 addresses (hash the address only; a :port suffix stays
+    # in place so port-specific behavior remains visible after scrubbing).
+    def _replace_ipv4(m: re.Match) -> str:
+        token = m.group(0)
+        ip, sep, port = token.partition(':')
+        h = _sha1_prefix(ip)
+        return f"ip:{h}:{port}" if sep else f"ip:{h}"
+
+    result = _IPV4_RE.sub(_replace_ipv4, result)
+
+    # 4. Filesystem paths (tokens with >= 2 path separators)
     def _replace_path(m: re.Match) -> str:
         token = m.group(0)
         p = Path(token)
@@ -92,16 +143,33 @@ def scrub_diagnostic_text(text: str) -> str:
         h = _sha1_prefix(token)
         return f"path:{h}{ext}"
 
-    # Match tokens containing at least two '/' or '\'
-    result = re.sub(
-        r'[^\s"\'<>]+',
-        lambda m: _replace_path(m) if m.group(0).count('/') + m.group(0).count('\\') >= 2 else m.group(0),
-        result,
-    )
+    # Match tokens containing at least two '/' or '\', except xpointers.
+    # An XPath carries no user data -- the element names in an EPUB are
+    # structural (body, div, p, section, DocFragment) -- and it IS the whole
+    # diagnostic payload for an XPath-resolution failure, so hashing it left
+    # fleet findings unactionable.  Cardinality still holds: _make_template's
+    # digit collapse turns "p[42]/text().0" into "p[#]/text().#", so distinct
+    # templates track distinct document shapes, not distinct positions.
+    def _replace_path_token(m: re.Match) -> str:
+        token = m.group(0)
+        if _XPATH_TOKEN_RE.match(token):
+            return token
+        if token.count('/') + token.count('\\') >= 2:
+            return _replace_path(m)
+        return token
 
-    # 3. Quoted spans (>= 12 inner chars)
+    result = re.sub(r'[^\s"\'<>]+', _replace_path_token, result)
+
+    # 5. Quoted spans (>= 12 inner chars)
     def _replace_quoted_inner(m: re.Match, quote_char: str) -> str:
         inner = m.group(1)
+        # An xpointer exempted by rule 4 is almost always QUOTED at the emitting
+        # site (e.g. "Error resolving XPath '<xpath>'"), so hashing it here would
+        # undo that exemption and leave the finding unactionable again. Carries no
+        # user data -- EPUB element names are structural -- and _make_template's
+        # digit collapse still bounds cardinality.
+        if _XPATH_TOKEN_RE.match(inner.strip()):
+            return m.group(0)
         h = _sha1_prefix(inner)
         return f"{quote_char}t:{h}{quote_char}"
 
@@ -119,14 +187,29 @@ def _make_template(message: str) -> str:
     if _HARDCOVER_NO_MATCH_RE.fullmatch(normalized):
         return "Hardcover: No match found for '<book>'"
 
-    # Collapse scrub placeholder tokens (t:<hash>, path:<hash><ext>, url:<hash>)
-    # to a single canonical form (t:#, path:#<ext>, url:#) so that distinct
-    # per-value hashes don't create distinct templates and exhaust the 500-cap.
+    # Collapse scrub placeholder tokens (t:<hash>, path:<hash><ext>,
+    # url:<hash>, ip:<hash>[:port], email:<hash>) to a single canonical form
+    # (t:#, path:#<ext>, url:#, ip:#, email:#) so that distinct per-value
+    # hashes don't create distinct templates and exhaust the 500-cap.
     # This must run BEFORE the digit-collapse loop below, otherwise the hex
     # hash gets partially mangled and remains distinct per value.
     # Only the 8-hex hash is matched, so a path's trailing extension (".epub")
     # stays in the surrounding text and survives as "path:#.epub".
     normalized = _SCRUB_TOKEN_RE.sub(lambda m: f"{m.group(1)}:#", normalized)
+
+    # Collapse per-value ids (UUIDs, hex ids, long alnum ids) that reach
+    # here unscrubbed -- e.g. a bare hex hash with no surrounding quotes
+    # never goes through scrub_diagnostic_text's quoted-span rule, so
+    # without this step each fleet install's own random id would mint its
+    # own template and blow the 500-template cap.  Must run BEFORE the
+    # short-quoted-span pass below so a quoted id collapses the same way as
+    # a bare one instead of falling through to the generic "<value>" form.
+    # Operates on the template only; the persisted message/context text is
+    # never touched by these three substitutions.
+    normalized = _UUID_RE.sub('#', normalized)
+    normalized = _HEX_RUN_RE.sub('#', normalized)
+    normalized = _LONG_ID_RE.sub('#', normalized)
+
     normalized = _SHORT_QUOTED_RE.sub(
         lambda m: f"{m.group(0)[0]}<value>{m.group(0)[-1]}",
         normalized,
@@ -184,6 +267,7 @@ class DiagnosticsLogHandler(logging.Handler):
         self._buffer_lines = buffer_lines
 
         self._lock = threading.Lock()
+        self._io_lock = threading.Lock()
         self._ring: collections.deque = collections.deque(maxlen=buffer_lines)
         self._entries: Dict[tuple, Dict[str, Any]] = {}
         self._dropped: int = 0
@@ -201,8 +285,31 @@ class DiagnosticsLogHandler(logging.Handler):
 
     def _try_load_existing(self) -> None:
         """Attempt to load a previously persisted buffer file and merge."""
+        data_dir = self._resolve_data_dir()
+
+        # Best-effort sweep of orphaned mkstemp .tmp files left behind by a
+        # flush that never finished (e.g. a container restart mid-write).
+        # These accumulate silently across restarts since nothing else ever
+        # cleans them up.  Every step is individually guarded so a single
+        # unreadable/unremovable file never blocks the rest of the sweep or
+        # the buffer load below.
         try:
-            buf_path = self._resolve_data_dir() / 'diagnostics_buffer.json'
+            now = time.time()
+            for p in data_dir.glob('diagnostics_*.tmp'):
+                try:
+                    stale = (now - p.stat().st_mtime) > 3600
+                except OSError:
+                    continue
+                if stale:
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass
+        except Exception:
+            logger.debug("Diagnostics tmp-file sweep failed", exc_info=True)
+
+        try:
+            buf_path = data_dir / 'diagnostics_buffer.json'
             if not buf_path.exists():
                 return
             with open(buf_path, 'r', encoding='utf-8') as f:
@@ -251,6 +358,14 @@ class DiagnosticsLogHandler(logging.Handler):
             level = record.levelname
             line = f"{ts} {level} {name}: {scrubbed}"
 
+            tb_text: Optional[str] = None
+            if record.exc_info and record.exc_info[0] is not None:
+                tb_lines = ''.join(traceback.format_exception(*record.exc_info)).splitlines()[-12:]
+                tb_text = _truncate(
+                    '\n'.join(scrub_diagnostic_text(tb_line) for tb_line in tb_lines), 1200
+                )
+
+            flush_text: Optional[str] = None
             with self._lock:
                 self._ring.append(line)
 
@@ -278,6 +393,8 @@ class DiagnosticsLogHandler(logging.Handler):
                         'last_seen': _utc_iso(),
                         'context': [_truncate(c) for c in context_snapshot],
                     }
+                    if tb_text is not None:
+                        entry['traceback'] = tb_text
                     self._entries[key] = entry
                 else:
                     self._dropped += 1
@@ -285,45 +402,64 @@ class DiagnosticsLogHandler(logging.Handler):
                 now_mono = time.monotonic()
                 if now_mono - self._last_flush_mono >= self._FLUSH_INTERVAL:
                     self._last_flush_mono = now_mono
-                    self._flush_locked()
+                    flush_text = self._serialize_locked()
+
+            if flush_text is not None:
+                self._write_buffer(flush_text)
         except Exception:
             pass
 
     # -- persistence --------------------------------------------------------
 
-    def _flush_locked(self) -> None:
-        """Write the current state to disk atomically.  Caller must hold lock."""
-        try:
-            data_dir = self._resolve_data_dir()
-            data_dir.mkdir(parents=True, exist_ok=True)
-            buf_path = data_dir / 'diagnostics_buffer.json'
+    def _serialize_locked(self) -> str:
+        """Build the current-state payload and return it as compact JSON.
 
-            payload = {
-                'entries': list(self._entries.values()),
-                'dropped': self._dropped,
-                'window_start': self._window_start,
-            }
+        Caller must hold ``self._lock``.  Serialization happens here, while
+        the lock is held, so the (comparatively slow) disk write in
+        ``_write_buffer`` can safely happen after the lock is released.
+        """
+        payload = {
+            'entries': list(self._entries.values()),
+            'dropped': self._dropped,
+            'window_start': self._window_start,
+        }
+        return json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
 
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(data_dir), suffix='.tmp', prefix='diagnostics_'
-            )
+    def _write_buffer(self, text: str) -> None:
+        """Atomically write *text* to the buffer file.
+
+        Performs disk I/O and is meant to be called WITHOUT holding
+        ``self._lock`` -- only ``self._io_lock`` serializes concurrent
+        writers, so a slow write (e.g. on a network filesystem) never
+        blocks ``emit()`` on other threads.
+        """
+        with self._io_lock:
             try:
-                with os.fdopen(fd, 'w', encoding='utf-8') as tmp_f:
-                    json.dump(payload, tmp_f, ensure_ascii=False, indent=2)
-                os.replace(tmp_path, str(buf_path))
-            except Exception:
+                data_dir = self._resolve_data_dir()
+                data_dir.mkdir(parents=True, exist_ok=True)
+                buf_path = data_dir / 'diagnostics_buffer.json'
+
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=str(data_dir), suffix='.tmp', prefix='diagnostics_'
+                )
                 try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
-        except Exception:
-            logger.debug("Failed to flush diagnostics buffer", exc_info=True)
+                    with os.fdopen(fd, 'w', encoding='utf-8') as tmp_f:
+                        tmp_f.write(text)
+                    os.replace(tmp_path, str(buf_path))
+                except Exception:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise
+            except Exception:
+                logger.debug("Failed to flush diagnostics buffer", exc_info=True)
 
     def flush_now(self) -> None:
         """Public flush: write current state to disk immediately."""
         with self._lock:
-            self._flush_locked()
+            text = self._serialize_locked()
+        self._write_buffer(text)
 
     # -- snapshot / clear API for Phase-2 sender ----------------------------
 
@@ -368,7 +504,9 @@ class DiagnosticsLogHandler(logging.Handler):
             if not self._entries:
                 self._window_start = _utc_iso()
 
-            self._flush_locked()
+            text = self._serialize_locked()
+
+        self._write_buffer(text)
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +534,11 @@ def setup_diagnostics_logging() -> DiagnosticsLogHandler:
     handler.setLevel(logging.INFO)
     logging.getLogger().addHandler(handler)
     _diagnostics_handler = handler
+    # Best-effort flush on interpreter shutdown so the last few minutes of
+    # buffered warnings (since the last periodic flush) aren't lost.  Only
+    # reachable on first creation -- the early-return above guarantees this
+    # never registers a second atexit callback for the same process.
+    atexit.register(handler.flush_now)
     return handler
 
 
@@ -425,6 +568,38 @@ def ensure_instance_id(database_service: Any) -> str:
     except Exception:
         pass
     return value
+
+
+def collect_env_facts() -> Dict[str, Any]:
+    """Collect coarse, non-identifying environment facts for diagnostics.
+
+    Each field is read independently, guarded by its own try/except, so a
+    single unusual environment never blocks the others from being reported.
+    """
+    facts: Dict[str, Any] = {}
+    try:
+        facts['python'] = platform.python_version()
+    except Exception:
+        pass
+    try:
+        facts['platform'] = sys.platform
+    except Exception:
+        pass
+    try:
+        facts['machine'] = platform.machine()
+    except Exception:
+        pass
+    try:
+        facts['container'] = os.path.exists('/.dockerenv')
+    except Exception:
+        pass
+    try:
+        journal_override = os.environ.get('DB_JOURNAL_MODE', '')
+        if journal_override:
+            facts['journal_override'] = journal_override
+    except Exception:
+        pass
+    return facts
 
 
 def build_diagnostics_payload(
@@ -457,11 +632,121 @@ def build_diagnostics_payload(
         },
         'dropped': snapshot.get('dropped', 0),
         'warnings': warnings,
+        'env': collect_env_facts(),
     }
     if manual:
         payload['manual'] = True
         payload['user_message'] = user_message
         payload['recent_logs'] = list(snapshot.get('recent_logs', []))
+    return payload
+
+
+_DEFAULT_MAX_PAYLOAD_BYTES = 800_000
+
+
+def _resolve_max_payload_bytes() -> int:
+    """Resolve the diagnostics payload byte budget from the environment.
+
+    Reads ``DIAGNOSTICS_MAX_PAYLOAD_BYTES`` per call.  An unset or
+    non-integer value falls back to :data:`_DEFAULT_MAX_PAYLOAD_BYTES`; a
+    value of ``0`` disables shedding entirely (see ``_shed_to_budget``).
+    """
+    raw = os.environ.get('DIAGNOSTICS_MAX_PAYLOAD_BYTES', '').strip()
+    if not raw:
+        return _DEFAULT_MAX_PAYLOAD_BYTES
+    try:
+        return int(raw)
+    except ValueError:
+        return _DEFAULT_MAX_PAYLOAD_BYTES
+
+
+def _shed_to_budget(
+    payload: Dict[str, Any], snapshot: Dict[str, Any], max_bytes: int
+) -> Dict[str, Any]:
+    """Shrink *payload* in place until it serializes within *max_bytes*.
+
+    The receiver rejects request bodies over its own byte cap with HTTP 413,
+    and a 413 never clears the sender's snapshot — so an oversized payload
+    would otherwise wedge the instance into resending (and re-failing) the
+    same oversized body forever.  This trims ``payload['warnings']`` in two
+    passes, cheapest and least-lossy first:
+
+    1. Strip the bulky ``context``/``traceback`` fields from entries,
+       lowest-``count`` first, 25 entries at a time, re-measuring the
+       serialized size between chunks.
+    2. If still over budget, drop whole low-count entries outright, 10 at a
+       time.  Every dropped entry's key is also removed from
+       ``snapshot['_snapshot_key_counts']`` and its dict from
+       ``snapshot['entries']`` so that a later ``clear_snapshot(snapshot)``
+       call leaves it un-cleared in the live handler — deferred to the next
+       send rather than silently lost.
+
+    Both *payload* and *snapshot* are mutated in place; *payload* is also
+    returned for convenience.  When ``max_bytes <= 0`` shedding is disabled
+    and *payload* is returned unchanged.
+
+    This is a deliberately imperfect scheme under sustained overload: the
+    same perpetually-low-count entries can be deferred send after send
+    while higher-count entries keep getting through.
+    """
+    if max_bytes <= 0:
+        return payload
+
+    def _size() -> int:
+        return len(json.dumps(payload))
+
+    if _size() <= max_bytes:
+        return payload
+
+    context_stripped = 0
+    entries_deferred = 0
+
+    # Pass 1: strip bulky context/traceback fields, lowest-count first.
+    by_count = sorted(payload.get('warnings', []), key=lambda e: e.get('count', 0))
+    for start in range(0, len(by_count), 25):
+        if _size() <= max_bytes:
+            break
+        for entry in by_count[start:start + 25]:
+            had_bulk = 'context' in entry or 'traceback' in entry
+            entry.pop('context', None)
+            entry.pop('traceback', None)
+            if had_bulk:
+                context_stripped += 1
+
+    # Pass 2: still over budget -- drop whole low-count entries, deferring
+    # them to the next send by keeping them out of the snapshot's clear set.
+    if _size() > max_bytes:
+        by_count = sorted(payload.get('warnings', []), key=lambda e: e.get('count', 0))
+        snapshot_key_counts = snapshot.get('_snapshot_key_counts', {})
+        for start in range(0, len(by_count), 10):
+            if _size() <= max_bytes:
+                break
+            chunk = by_count[start:start + 10]
+            chunk_keys = {
+                (e.get('logger', ''), e.get('level', ''), e.get('template', ''))
+                for e in chunk
+            }
+            payload['warnings'] = [
+                e for e in payload['warnings']
+                if (e.get('logger', ''), e.get('level', ''), e.get('template', ''))
+                not in chunk_keys
+            ]
+            for key in chunk_keys:
+                snapshot_key_counts.pop(key, None)
+            if 'entries' in snapshot:
+                snapshot['entries'] = [
+                    e for e in snapshot['entries']
+                    if (e.get('logger', ''), e.get('level', ''), e.get('template', ''))
+                    not in chunk_keys
+                ]
+            entries_deferred += len(chunk)
+
+    if context_stripped or entries_deferred:
+        payload['shed'] = {
+            'context_stripped': context_stripped,
+            'entries_deferred': entries_deferred,
+        }
+
     return payload
 
 
@@ -539,6 +824,8 @@ def _maybe_send_diagnostics_locked(
         manual=manual,
         user_message=user_message,
     )
+    max_payload_bytes = _resolve_max_payload_bytes()
+    payload = _shed_to_budget(payload, snapshot, max_payload_bytes)
     warning_count = len(payload.get('warnings', []))
 
     try:

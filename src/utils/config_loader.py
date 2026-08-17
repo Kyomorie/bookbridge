@@ -21,16 +21,20 @@ def env_truthy(key: str, default: str = "false") -> bool:
 # Full list of settings to manage
 ALL_SETTINGS = [
     # Required ABS
-    'ABS_SERVER', 'ABS_KEY', 'ABS_LIBRARY_ID',
+    'ABS_SERVER', 'ABS_WEB_URL', 'ABS_KEY', 'ABS_LIBRARY_ID',
     
     # Optional ABS
     'ABS_COLLECTION_NAME', 'ABS_PROGRESS_OFFSET_SECONDS', 'ABS_ONLY_SEARCH_IN_ABS_LIBRARY_ID',
     'ABS_SOCKET_ENABLED', 'ABS_SOCKET_DEBOUNCE_SECONDS',
     
+    'REMOTE_AUTH_ENABLED', 'REMOTE_AUTH_HEADER', 'REMOTE_AUTH_TRUSTED_PROXIES',
+
     # KOSync
     'KOSYNC_ENABLED', 'KOSYNC_SERVER', 'KOSYNC_USER', 'KOSYNC_KEY', 'KOSYNC_AUTH_METHOD',
     'KOSYNC_HASH_METHOD', 'KOSYNC_USE_PERCENTAGE_FROM_SERVER',
     'KOSYNC_RECENT_EXTERNAL_PUT_SECONDS', 'KOSYNC_AUTO_MAP_ON_AGREEMENT',
+    'KOSYNC_HASH_RECONCILE_ENABLED', 'KOSYNC_HASH_RECONCILE_MINUTES',
+    'KOSYNC_BOOKORBIT_DISCOVERY_LIMIT',
     'KOREADER_COMBINE_DEVICE_STATS',
     'KOREADER_ANNOTATION_SYNC',
 
@@ -38,16 +42,16 @@ ALL_SETTINGS = [
     'STORYTELLER_ENABLED', 'STORYTELLER_API_URL', 'STORYTELLER_USER', 'STORYTELLER_PASSWORD',
     
     # Grimmory
-    'BOOKLORE_ENABLED', 'BOOKLORE_SERVER', 'BOOKLORE_USER', 'BOOKLORE_PASSWORD', 'BOOKLORE_SHELF_NAME', 'BOOKLORE_LIBRARY_ID',
+    'BOOKLORE_ENABLED', 'BOOKLORE_SERVER', 'BOOKLORE_WEB_URL', 'BOOKLORE_USER', 'BOOKLORE_PASSWORD', 'BOOKLORE_SHELF_NAME', 'BOOKLORE_LIBRARY_ID',
     'GRIMMORY_READING_SESSIONS', 'BOOKLORE_ANNOTATION_SYNC', 'BOOKLORE_ANNOTATION_SYNC_MINUTES',
     'DEVICE_SYNC_COLLECTION_SOURCE', 'DEVICE_SYNC_COLLECTIONS',
     'DEVICE_SYNC_EXCLUDED_SHELVES', 'DEVICE_SYNC_HARDCOVER_LISTS',
-    'DEVICE_SYNC_HARDCOVER_LIST_NAMES',
+    'DEVICE_SYNC_HARDCOVER_LIST_NAMES', 'DEVICE_SYNC_EBOOK_CACHE_TTL_MINUTES',
     'BOOKLORE_SHELF_WATCH_ENABLED', 'BOOKLORE_SHELF_WATCH_NAME',
     'BOOKLORE_SHELF_WATCH_THRESHOLD', 'BOOKLORE_SHELF_WATCH_RESCAN_HOURS',
 
     # BookOrbit
-    'BOOKORBIT_ENABLED', 'BOOKORBIT_SERVER', 'BOOKORBIT_USER', 'BOOKORBIT_PASSWORD',
+    'BOOKORBIT_ENABLED', 'BOOKORBIT_SERVER', 'BOOKORBIT_WEB_URL', 'BOOKORBIT_USER', 'BOOKORBIT_PASSWORD',
     'BOOKORBIT_SHELF_NAME', 'BOOKORBIT_POLL_MODE', 'BOOKORBIT_POLL_SECONDS',
     'BOOKORBIT_READING_SESSIONS',
     'BOOKORBIT_SHELF_WATCH_ENABLED', 'BOOKORBIT_SHELF_WATCH_NAME',
@@ -61,7 +65,7 @@ ALL_SETTINGS = [
     'BOOKFUSION_POLL_WAIT_FOR_SETTLE',
 
     # CWA (Calibre-Web Automated)
-    'CWA_ENABLED', 'CWA_SERVER', 'CWA_USERNAME', 'CWA_PASSWORD',
+    'CWA_ENABLED', 'CWA_SERVER', 'CWA_WEB_URL', 'CWA_USERNAME', 'CWA_PASSWORD',
     'CWA_SYNC_ENABLED', 'CWA_SYNC_TOKEN',
     'CWA_SYNC_POLL_MODE', 'CWA_SYNC_POLL_SECONDS',
     'CALIBRE_USE_ABS_IDENTIFIER', 'CALIBRE_LIBRARY_PATH',
@@ -113,7 +117,8 @@ ALL_SETTINGS = [
     'SYNC_PERIOD_MINS', 'SYNC_DELTA_ABS_SECONDS', 'SYNC_DELTA_KOSYNC_PERCENT',
     'SYNC_DELTA_BETWEEN_CLIENTS_PERCENT', 'SYNC_DELTA_KOSYNC_WORDS',
     'SYNC_FRESHNESS_GUARDS', 'SYNC_ROLLBACK_VETO_SECONDS',
-    'XPATH_FALLBACK_TO_PREVIOUS_SEGMENT', 'SYNC_ABS_EBOOK', 'REPROCESS_ON_CLEAR_IF_NO_ALIGNMENT',
+    'XPATH_FALLBACK_TO_PREVIOUS_SEGMENT', 'SYNC_ABS_EBOOK', 'ABS_EBOOK_LOCATOR_FORMAT',
+    'REPROCESS_ON_CLEAR_IF_NO_ALIGNMENT',
     'FUZZY_MATCH_THRESHOLD', 'SUGGESTIONS_ENABLED',
     'INSTANT_SYNC_ENABLED', 'KOREADER_SESSION_GAP_MINUTES',
     'STORYTELLER_POLL_MODE', 'STORYTELLER_POLL_SECONDS', 'STORYTELLER_POLL_WAIT_FOR_SETTLE',
@@ -130,7 +135,9 @@ ALL_SETTINGS = [
     'WHISPER_DEVICE', 'WHISPER_COMPUTE_TYPE',
     'TRANSCRIPTION_PROVIDER', 'DEEPGRAM_API_KEY', 'DEEPGRAM_MODEL', 'WHISPER_CPP_URL', 'WHISPER_CPP_TIMEOUT', 'WHISPER_CPP_SEND_ORIGINAL', 'WHISPER_CPP_CHUNK_MINUTES',
     'AUDIO_SPLIT_DURATION_MINUTES',
-    'SMIL_VALIDATION_THRESHOLD',
+    'SMIL_VALIDATION_THRESHOLD', 'TRANSCRIPT_MIN_COVERAGE',
+    'DIAGNOSTICS_MAX_PAYLOAD_BYTES',
+    'SHARE_ALL_BOOKS_WITH_ALL_USERS',
 ]
 
 # Default values
@@ -160,6 +167,12 @@ DEFAULT_CONFIG = {
     'WHISPER_CPP_SEND_ORIGINAL': 'false',
     'WHISPER_CPP_CHUNK_MINUTES': '0',
     'AUDIO_SPLIT_DURATION_MINUTES': '45',
+    'TRANSCRIPT_MIN_COVERAGE': '0.85',
+    # Byte budget for a diagnostics upload. The receiver rejects larger bodies with
+    # HTTP 413 and a 413 never clears the sender's snapshot, so an oversized payload
+    # would resend and re-fail forever. 0 disables shedding.
+    'DIAGNOSTICS_MAX_PAYLOAD_BYTES': '800000',
+    'SHARE_ALL_BOOKS_WITH_ALL_USERS': 'false',
     'DEEPGRAM_API_KEY': '',
     'DEEPGRAM_MODEL': 'nova-2',
     'JOB_MAX_RETRIES': '5',
@@ -191,6 +204,9 @@ DEFAULT_CONFIG = {
     'SHELFMARK_URL': '',
     'SHELFMARK_ENABLED': 'false',
     'KOSYNC_ENABLED': 'false',
+    'KOSYNC_HASH_RECONCILE_ENABLED': 'true',
+    'KOSYNC_HASH_RECONCILE_MINUTES': '360',
+    'KOSYNC_BOOKORBIT_DISCOVERY_LIMIT': '40',
     'STORYTELLER_ENABLED': 'false',
     'BOOKLORE_ENABLED': 'false',
     'BOOKLORE_LIBRARY_ID': '',
@@ -202,12 +218,17 @@ DEFAULT_CONFIG = {
     'DEVICE_SYNC_EXCLUDED_SHELVES': '',
     'DEVICE_SYNC_HARDCOVER_LISTS': 'all',
     'DEVICE_SYNC_HARDCOVER_LIST_NAMES': '',
+    'DEVICE_SYNC_EBOOK_CACHE_TTL_MINUTES': '360',
     'BOOKLORE_SHELF_WATCH_ENABLED': 'false',
     'BOOKLORE_SHELF_WATCH_NAME': 'Up Next',
     'BOOKLORE_SHELF_WATCH_THRESHOLD': '95',
     'BOOKLORE_SHELF_WATCH_RESCAN_HOURS': '24',
     'BOOKORBIT_ENABLED': 'false',
     'BOOKORBIT_SERVER': '',
+    'ABS_WEB_URL': '',
+    'BOOKLORE_WEB_URL': '',
+    'BOOKORBIT_WEB_URL': '',
+    'CWA_WEB_URL': '',
     'BOOKORBIT_USER': '',
     'BOOKORBIT_PASSWORD': '',
     'BOOKORBIT_SHELF_NAME': 'Kobo',
@@ -289,10 +310,24 @@ DEFAULT_CONFIG = {
     'SUGGESTIONS_ENABLED': 'false',
     'KOSYNC_USE_PERCENTAGE_FROM_SERVER': 'false',
     'SYNC_ABS_EBOOK': 'false',
+    # cfi | readium | auto. Measured on real devices: a CFI is readable by every ABS
+    # client (exact in the official app), while a Readium locator opens at the cover
+    # in the official app and web reader. 'cfi' is therefore the safe default and
+    # matches main's long-standing behaviour; 'auto' mirrors whatever shape the reader
+    # already stored, which is more precise for Readium-only readers but strands
+    # anyone who also opens the official app.
+    'ABS_EBOOK_LOCATOR_FORMAT': 'cfi',
     'REPROCESS_ON_CLEAR_IF_NO_ALIGNMENT': 'true',
     'XPATH_FALLBACK_TO_PREVIOUS_SEGMENT': 'false',
     'ABS_ONLY_SEARCH_IN_ABS_LIBRARY_ID': 'false',
     'ABS_SOCKET_ENABLED': 'true',
+    'REMOTE_AUTH_ENABLED': 'false',
+    'REMOTE_AUTH_HEADER': 'Remote-User',
+    # Empty means loopback only. Deliberately fail-closed: the header is a full
+    # authentication bypass for anything that can reach the port, so a permissive
+    # default (e.g. all RFC1918) would not protect the common threat — another
+    # machine on the same LAN as the published port.
+    'REMOTE_AUTH_TRUSTED_PROXIES': '',
     'ABS_SOCKET_DEBOUNCE_SECONDS': '30',
     'INSTANT_SYNC_ENABLED': 'true',
     'STORYTELLER_POLL_MODE': 'global',
@@ -351,7 +386,7 @@ class ConfigLoader:
             logger.info(f"✅ Bootstrapped {count} settings to database")
 
         except Exception as e:
-            logger.error(f"❌ Error bootstrapping config: {e}")
+            logger.error(f"❌ Error bootstrapping config: {e}", exc_info=True)
 
     @staticmethod
     def load_settings(db_service: DatabaseService):
@@ -380,5 +415,5 @@ class ConfigLoader:
             logger.info(f"⚙️  Loaded {count} settings from database")
             
         except Exception as e:
-            logger.error(f"❌ Error loading settings from database: {e}")
+            logger.error(f"❌ Error loading settings from database: {e}", exc_info=True)
             # Do not re-raise, fall back to existing env vars

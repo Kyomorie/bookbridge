@@ -139,7 +139,8 @@ def _get_fernet():
             logger.error(
                 "🔓 Credential encryption UNAVAILABLE: the 'cryptography' package "
                 "is not installed. Secrets are being stored in PLAINTEXT. Rebuild "
-                "the container (docker compose up -d --build) to fix this."
+                "the container (docker compose up -d --build) to fix this.",
+                exc_info=True
             )
             _init_done = True
             return None
@@ -151,7 +152,8 @@ def _get_fernet():
             _unavailable_reason = str(e)
             logger.error(
                 f"🔓 Credential encryption UNAVAILABLE ({e}). Secrets are being "
-                f"stored in PLAINTEXT."
+                f"stored in PLAINTEXT.",
+                exc_info=True
             )
             _fernet = None
         _init_done = True
@@ -194,7 +196,7 @@ def encrypt(value: Optional[str]) -> Optional[str]:
         token = fernet.encrypt(str(value).encode("utf-8")).decode("utf-8")
         return f"{SECRET_PREFIX}{token}"
     except Exception as e:
-        logger.error(f"🔓 Failed to encrypt credential value: {e}")
+        logger.error(f"🔓 Failed to encrypt credential value: {e}", exc_info=True)
         return value
 
 
@@ -222,6 +224,7 @@ def decrypt(value: Optional[str], label: str = "credential") -> Optional[str]:
         logger.error(
             f"🔐 Could not decrypt {label} — the encryption key does not match "
             f"the stored value. If you restored a backup, restore "
-            f"{_key_file_path()} alongside it or re-enter this credential."
+            f"{_key_file_path()} alongside it or re-enter this credential.",
+            exc_info=True
         )
         return ""

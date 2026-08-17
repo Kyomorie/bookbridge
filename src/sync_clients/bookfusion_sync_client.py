@@ -69,7 +69,7 @@ class BookFusionSyncClient(SyncClient):
         try:
             removed = self._db.delete_user_bookfusion_link(self._user_id, book.abs_id)
         except Exception as exc:
-            logger.warning("Could not remove stale BookFusion link for '%s': %s", book.abs_id, exc)
+            logger.warning("Could not remove stale BookFusion link for '%s': %s", book.abs_id, exc, exc_info=True)
             return
         if removed:
             logger.info(
@@ -167,7 +167,7 @@ class BookFusionSyncClient(SyncClient):
         try:
             content = self.client.download_book(book_id)
         except Exception as exc:
-            logger.warning("⚠️ BookFusion EPUB download failed for '%s': %s", book_id, exc)
+            logger.warning("⚠️ BookFusion EPUB download failed for '%s': %s", book_id, exc, exc_info=True)
             return None
         if not content or cache_dir is None:
             return None
@@ -176,7 +176,7 @@ class BookFusionSyncClient(SyncClient):
             (cache_dir / filename).write_bytes(content)
             self.ebook_parser.invalidate_path_cache(filename)
         except Exception as exc:
-            logger.warning("⚠️ Could not cache BookFusion EPUB '%s': %s", filename, exc)
+            logger.warning("⚠️ Could not cache BookFusion EPUB '%s': %s", filename, exc, exc_info=True)
             return None
         return filename
 

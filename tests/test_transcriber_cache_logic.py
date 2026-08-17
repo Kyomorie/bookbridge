@@ -64,6 +64,9 @@ class TestTranscriberCacheLogic(unittest.TestCase):
             # Mock requests response
             mock_response = MagicMock()
             mock_response.iter_content.return_value = [b"audio data"]
+            # Real responses carry string headers; model that so the download
+            # integrity check (issue #362) sees a complete body rather than a mock.
+            mock_response.headers = {"Content-Length": str(len(b"audio data"))}
             mock_requests_get.return_value.__enter__.return_value = mock_response
             
             # Mock normalize: return a path that exists (we can just return the input path if we say it's wav)

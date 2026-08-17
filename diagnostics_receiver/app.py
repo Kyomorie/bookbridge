@@ -5,6 +5,7 @@ plain SQLite database.  Designed to run in its own Docker container on
 port 20129.
 """
 
+import hashlib
 import hmac
 import json
 import logging
@@ -30,6 +31,10 @@ _FINDING_RESPONSE_CAP = 10000
 _MANUAL_REPORTS_PER_DAY = 5
 _RECENT_LOGS_CAP = 200
 _RECENT_LOG_LINE_CAP = 400
+_TRACEBACK_CAP = 1600
+_ENV_VALUE_CAP = 60
+_KNOWN_SERVICE_KEYS = {"abs", "kosync", "storyteller", "booklore", "bookfusion", "book_orbit", "cwa", "hardcover", "storygraph", "slash_books"}
+_ENV_KEYS = {"python", "platform", "machine", "container", "journal_override"}
 
 
 def _sanitize_text(value: Any, max_len: int) -> str:
@@ -58,6 +63,24 @@ def _sanitize_text(value: Any, max_len: int) -> str:
         s = s[:max_len]
     return s
 
+
+def _normalize_iso_ts(value: Any, fallback: Optional[str]) -> Optional[str]:
+    """Normalize an ISO timestamp string to UTC with timezone offset."""
+    if not isinstance(value, str):
+        return fallback
+    s = value.strip()
+    if not s or len(s) > 40:
+        return fallback
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except (ValueError, TypeError):
+        return fallback
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
 # ---------------------------------------------------------------------------
 # Database helpers
 # ---------------------------------------------------------------------------
@@ -71,6 +94,7 @@ CREATE TABLE IF NOT EXISTS instances (
     last_services_json   TEXT,
     last_total_books     INTEGER,
     token                TEXT,
+    token_hash           TEXT,
     banned               INTEGER NOT NULL DEFAULT 0
 );
 
@@ -88,6 +112,7 @@ CREATE TABLE IF NOT EXISTS batches (
     is_manual     INTEGER NOT NULL DEFAULT 0,
     user_message  TEXT,
     recent_logs_json TEXT,
+    env_json      TEXT,
     response_md   TEXT,
     response_at   TEXT
 );
@@ -103,7 +128,8 @@ CREATE TABLE IF NOT EXISTS warnings (
     count        INTEGER NOT NULL DEFAULT 1,
     first_seen   TEXT,
     last_seen    TEXT,
-    context_text TEXT
+    context_text TEXT,
+    traceback_text TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_warnings_template    ON warnings(template);
@@ -132,6 +158,10 @@ CREATE TABLE IF NOT EXISTS findings (
     reopened_at        TEXT,
     response_md        TEXT,
     response_at        TEXT,
+    fixed_at           TEXT,
+    versions_at_fix_json TEXT,
+    stale_recurrence_count INTEGER NOT NULL DEFAULT 0,
+    last_stale_at      TEXT,
     UNIQUE(template, logger, level)
 );
 
@@ -179,6 +209,7 @@ def _ensure_columns(db_path: str) -> None:
         "instances": {
             "token": "TEXT",
             "banned": "INTEGER NOT NULL DEFAULT 0",
+            "token_hash": "TEXT",
         },
         "batches": {
             "is_manual": "INTEGER NOT NULL DEFAULT 0",
@@ -186,10 +217,18 @@ def _ensure_columns(db_path: str) -> None:
             "recent_logs_json": "TEXT",
             "response_md": "TEXT",
             "response_at": "TEXT",
+            "env_json": "TEXT",
+        },
+        "warnings": {
+            "traceback_text": "TEXT",
         },
         "findings": {
             "response_md": "TEXT",
             "response_at": "TEXT",
+            "fixed_at": "TEXT",
+            "versions_at_fix_json": "TEXT",
+            "stale_recurrence_count": "INTEGER NOT NULL DEFAULT 0",
+            "last_stale_at": "TEXT",
         },
     }
     with closing(sqlite3.connect(db_path, timeout=10)) as conn, conn:
@@ -306,33 +345,73 @@ def _bearer_token() -> str:
 
 
 def _read_authorized() -> bool:
-    """Check whether the request is authorised for read/PATCH endpoints.
+    """Check whether the request is authorised for read-only endpoints.
 
-    ``DIAG_READ_TOKEN`` is mandatory.  Requests fail closed when it is unset
-    and otherwise must carry a matching ``Authorization: Bearer <token>``
-    header.
+    Accepts a Bearer token matching either ``DIAG_READ_TOKEN`` or
+    ``DIAG_ADMIN_TOKEN`` (whichever are configured).  Requests fail closed
+    when neither is set.
     """
-    required = os.environ.get("DIAG_READ_TOKEN", "").strip()
-    if not required:
-        return False
-    return hmac.compare_digest(_bearer_token(), required)
+    presented = _bearer_token()
+    read_token = os.environ.get("DIAG_READ_TOKEN", "").strip()
+    admin_token = os.environ.get("DIAG_ADMIN_TOKEN", "").strip()
+    if read_token and hmac.compare_digest(presented, read_token):
+        return True
+    if admin_token and hmac.compare_digest(presented, admin_token):
+        return True
+    return False
+
+
+def _admin_authorized() -> bool:
+    """Check whether the request is authorised for admin (write) endpoints.
+
+    When ``DIAG_ADMIN_TOKEN`` is configured, only a Bearer token matching it
+    is accepted.  Otherwise falls back to :func:`_read_authorized` for
+    backward compatibility until a deployment configures the new variable.
+    """
+    admin_token = os.environ.get("DIAG_ADMIN_TOKEN", "").strip()
+    if admin_token:
+        return hmac.compare_digest(_bearer_token(), admin_token)
+    return _read_authorized()
+
+
+def _hash_token(token: str) -> str:
+    """Return the SHA-256 hex digest of an instance auth token."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def _authenticate_instance_token(
     db: sqlite3.Connection,
 ) -> Optional[sqlite3.Row]:
-    """Authenticate the request via Bearer token against ``instances.token``.
+    """Authenticate the request via Bearer token against ``instances``.
 
-    Returns the matching instance row, or *None* if no/invalid token.
-    Uses a direct parameterized lookup.
+    Looks up the hashed token first.  On a legacy plaintext match, the row
+    is migrated in place (``token_hash`` populated, ``token`` cleared)
+    before being returned.  Returns the matching instance row, or *None*
+    if no/invalid token.
     """
     token = _bearer_token()
     if not token:
         return None
     row = db.execute(
+        "SELECT * FROM instances WHERE token_hash = ?", (_hash_token(token),)
+    ).fetchone()
+    if row is not None:
+        return row
+
+    row = db.execute(
         "SELECT * FROM instances WHERE token = ?", (token,)
     ).fetchone()
-    return row
+    if row is None:
+        return None
+
+    db.execute(
+        "UPDATE instances SET token_hash = ?, token = NULL WHERE instance_id = ?",
+        (_hash_token(token), row["instance_id"]),
+    )
+    db.commit()
+    return db.execute(
+        "SELECT * FROM instances WHERE instance_id = ?", (row["instance_id"],)
+    ).fetchone()
 
 
 def _linked_findings(
@@ -395,6 +474,63 @@ def _admin_submission(
 _VALID_CATEGORIES = {"code-bug", "config-issue", "docs-gap", "environment", "unknown"}
 _VALID_STATUSES = {"open", "triaged", "fixed", "ignored"}
 _VALID_SEVERITIES = {"low", "medium", "high"}
+_VERSION_PREFIX_RE = re.compile(r"^v?(\d+(?:\.\d+)*)")
+
+
+def _parse_version_tuple(value: Any) -> Optional[tuple]:
+    """Parse a leading dotted-integer version, e.g. ``"7.2.0"`` or ``"v7.2"``.
+
+    Returns ``None`` for values with no parseable version prefix (e.g. a
+    dev build string like ``"dev 1234"``).
+    """
+    if not isinstance(value, str):
+        return None
+    match = _VERSION_PREFIX_RE.match(value.strip())
+    if not match:
+        return None
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def _recurrence_is_stale(
+    existing: sqlite3.Row,
+    incoming_version: str,
+    already_linked_instance: bool,
+) -> bool:
+    """Decide whether a recurrence against a ``'fixed'`` finding is stale.
+
+    Only meaningful when ``existing["status"] == "fixed"``.  A stale
+    recurrence is an old build catching up and leaves the finding fixed; a
+    non-stale recurrence means a build at or after the fix is hitting it
+    again, so the finding is reopened.
+    """
+    snapshot: list = []
+    try:
+        parsed = json.loads(existing["versions_at_fix_json"] or "null")
+        if isinstance(parsed, list):
+            snapshot = parsed
+    except (json.JSONDecodeError, TypeError):
+        snapshot = []
+    if not snapshot:
+        try:
+            parsed = json.loads(existing["app_versions_json"] or "null")
+            if isinstance(parsed, list):
+                snapshot = parsed
+        except (json.JSONDecodeError, TypeError):
+            snapshot = []
+
+    if existing["category"] != "code-bug" and not already_linked_instance:
+        return False
+    if not incoming_version:
+        return False
+    if incoming_version in snapshot:
+        return True
+
+    incoming_tuple = _parse_version_tuple(incoming_version)
+    known_tuples = [t for t in (_parse_version_tuple(s) for s in snapshot) if t]
+    if incoming_tuple and known_tuples:
+        return incoming_tuple <= max(known_tuples)
+
+    return False
 
 
 def _upsert_finding(
@@ -413,9 +549,12 @@ def _upsert_finding(
 ) -> None:
     """Upsert a findings row from a single warning entry.
 
-    Merges counts, timestamps, and app-version list.  Regression rule:
-    if the existing finding is status ``'fixed'`` it is reopened.
-    Status ``'ignored'`` is never auto-reopened.
+    Merges counts, timestamps, and app-version list.  Regression rule: a
+    recurrence against a ``'fixed'`` finding reopens it unless
+    ``_recurrence_is_stale`` decides the recurrence is from a build that
+    predates (or coexists with) the fix, in which case it is recorded as a
+    stale recurrence and the finding stays fixed.  Status ``'ignored'`` is
+    never auto-reopened.
     """
     key = (template or "", logger_name or "", level or "")
     first_seen = w_first_seen or now_iso
@@ -427,14 +566,17 @@ def _upsert_finding(
     ).fetchone()
 
     if existing is None:
-        # Cardinality guard: cap distinct templates per logger
+        # Cardinality guard: cap distinct templates per logger.
+        # Findings are never purged, so only count actionable statuses
+        # ('open','triaged') — otherwise the cap becomes a one-way ratchet
+        # that permanently blinds a busy logger.
         try:
             cap = int(os.environ.get("DIAG_MAX_TEMPLATES_PER_LOGGER", "100"))
         except ValueError:
             cap = 100
         if cap > 0:
             tpl_count = db.execute(
-                "SELECT COUNT(*) FROM findings WHERE logger = ?",
+                "SELECT COUNT(*) FROM findings WHERE logger = ? AND status IN ('open','triaged')",
                 (logger_name,),
             ).fetchone()[0]
             if tpl_count >= cap:
@@ -476,6 +618,12 @@ def _upsert_finding(
                     new_first = first_seen if first_seen < overflow_existing["first_seen"] else overflow_existing["first_seen"]
                     new_last = last_seen if last_seen > overflow_existing["last_seen"] else overflow_existing["last_seen"]
                     new_total = overflow_existing["total_count"] + count
+
+                    overflow_already_linked = db.execute(
+                        "SELECT 1 FROM finding_instances WHERE finding_id = ? AND instance_id = ?",
+                        (overflow_existing["id"], instance_id),
+                    ).fetchone() is not None
+
                     try:
                         vers: list[str] = json.loads(overflow_existing["app_versions_json"])
                     except (json.JSONDecodeError, TypeError):
@@ -485,18 +633,27 @@ def _upsert_finding(
                     vers.sort()
                     new_status = overflow_existing["status"]
                     new_reopened = overflow_existing["reopened_at"]
+                    overflow_stale_inc = 0
+                    overflow_last_stale: Optional[str] = None
                     if overflow_existing["status"] == "fixed":
-                        new_status = "open"
-                        new_reopened = now_iso
+                        if _recurrence_is_stale(overflow_existing, app_version or "", overflow_already_linked):
+                            overflow_stale_inc = count
+                            overflow_last_stale = now_iso
+                        else:
+                            new_status = "open"
+                            new_reopened = now_iso
                     db.execute(
                         """\
                         UPDATE findings SET
                             first_seen = ?, last_seen = ?, total_count = ?,
-                            app_versions_json = ?, status = ?, reopened_at = ?
+                            app_versions_json = ?, status = ?, reopened_at = ?,
+                            stale_recurrence_count = stale_recurrence_count + ?,
+                            last_stale_at = COALESCE(?, last_stale_at)
                         WHERE id = ?
                         """,
                         (new_first, new_last, new_total, json.dumps(vers),
-                         new_status, new_reopened, overflow_existing["id"]),
+                         new_status, new_reopened, overflow_stale_inc, overflow_last_stale,
+                         overflow_existing["id"]),
                     )
                     finding_id = overflow_existing["id"]
 
@@ -544,7 +701,14 @@ def _upsert_finding(
         new_first = first_seen if first_seen < existing["first_seen"] else existing["first_seen"]
         new_last = last_seen if last_seen > existing["last_seen"] else existing["last_seen"]
         new_total = existing["total_count"] + count
-        # merge app versions
+
+        already_linked = db.execute(
+            "SELECT 1 FROM finding_instances WHERE finding_id = ? AND instance_id = ?",
+            (existing["id"], instance_id),
+        ).fetchone() is not None
+
+        # merge app versions (existing["app_versions_json"] is the pre-merge
+        # snapshot used by _recurrence_is_stale's fallback below)
         try:
             vers: list[str] = json.loads(existing["app_versions_json"])
         except (json.JSONDecodeError, TypeError):
@@ -555,20 +719,28 @@ def _upsert_finding(
 
         new_status = existing["status"]
         new_reopened = existing["reopened_at"]
+        stale_inc = 0
+        last_stale: Optional[str] = None
         if existing["status"] == "fixed":
-            new_status = "open"
-            new_reopened = now_iso
-        # 'ignored' is never auto-reopened — no change
+            if _recurrence_is_stale(existing, app_version or "", already_linked):
+                stale_inc = count
+                last_stale = now_iso
+            else:
+                new_status = "open"
+                new_reopened = now_iso
+        # 'ignored' is never auto-reopened — no change, no stale accounting
 
         db.execute(
             """\
             UPDATE findings SET
                 first_seen = ?, last_seen = ?, total_count = ?,
-                app_versions_json = ?, status = ?, reopened_at = ?
+                app_versions_json = ?, status = ?, reopened_at = ?,
+                stale_recurrence_count = stale_recurrence_count + ?,
+                last_stale_at = COALESCE(?, last_stale_at)
             WHERE id = ?
             """,
             (new_first, new_last, new_total, json.dumps(vers),
-             new_status, new_reopened, existing["id"]),
+             new_status, new_reopened, stale_inc, last_stale, existing["id"]),
         )
         finding_id = existing["id"]
 
@@ -592,7 +764,8 @@ def rebuild_findings(db_path: str) -> int:
     """Wipe and rebuild the findings tables from the warnings/batches data.
 
     This is a bootstrap/repair tool.  **All** analysis_md, analysis_at,
-    reopened_at, category, status, and severity values are lost on rebuild
+    reopened_at, category, status, severity, fixed_at, versions_at_fix_json,
+    stale_recurrence_count, and last_stale_at values are lost on rebuild
     — findings revert to their default (``'unknown'`` category,
     ``'open'`` status).
 
@@ -749,7 +922,39 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
 
         now_iso = datetime.now(timezone.utc).isoformat()
         now_dt = datetime.now(timezone.utc)
-        services_json = json.dumps(payload.get("services"), separators=(",", ":"))
+        raw_services = payload.get("services")
+        if isinstance(raw_services, dict):
+            services_json = json.dumps(
+                {k: bool(v) for k, v in raw_services.items() if k in _KNOWN_SERVICE_KEYS},
+                separators=(",", ":"),
+            )
+        else:
+            services_json = json.dumps(None)
+
+        raw_env = payload.get("env")
+        if isinstance(raw_env, dict):
+            env_clean = {}
+            for k, v in raw_env.items():
+                if k not in _ENV_KEYS:
+                    continue
+                if isinstance(v, bool):
+                    env_clean[k] = v
+                elif isinstance(v, str):
+                    env_clean[k] = _sanitize_text(v, _ENV_VALUE_CAP)
+            env_json = (
+                json.dumps(env_clean, separators=(",", ":"))
+                if env_clean
+                else None
+            )
+        else:
+            env_json = None
+
+        try:
+            total_books_val = int(payload.get("total_books"))
+        except (TypeError, ValueError):
+            total_books_val = None
+        if total_books_val is not None:
+            total_books_val = min(max(total_books_val, 0), 10_000_000)
 
         try:
             db = _get_db()
@@ -766,10 +971,20 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
             if row is not None and row["banned"]:
                 return jsonify({"ok": False, "error": "banned"}), 403
 
-            # Token check for known instances that already have a token
-            if row is not None and row["token"]:
-                if not hmac.compare_digest(_bearer_token(), row["token"]):
-                    return jsonify({"ok": False, "error": "invalid token"}), 401
+            # Token check for known instances that already have credentials
+            if row is not None and (row["token"] or row["token_hash"]):
+                presented = _bearer_token()
+                if row["token_hash"]:
+                    if not hmac.compare_digest(_hash_token(presented), row["token_hash"]):
+                        return jsonify({"ok": False, "error": "invalid token"}), 401
+                else:
+                    if not hmac.compare_digest(presented, row["token"]):
+                        return jsonify({"ok": False, "error": "invalid token"}), 401
+                    # Legacy plaintext match — migrate within this open transaction.
+                    db.execute(
+                        "UPDATE instances SET token_hash = ?, token = NULL WHERE instance_id = ?",
+                        (_hash_token(presented), instance_id),
+                    )
 
             if manual:
                 cutoff = (now_dt - timedelta(hours=24)).isoformat()
@@ -849,7 +1064,7 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
 
             # Token issuance (TOFU)
             new_token: Optional[str] = None
-            if row is None or not row["token"]:
+            if row is None or not (row["token"] or row["token_hash"]):
                 new_token = secrets.token_hex(24)
 
             # Sanitize all user-tainted fields before storage
@@ -861,14 +1076,15 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
                     """\
                     INSERT INTO instances (instance_id, first_seen, last_seen,
                                            last_version, last_services_json,
-                                           last_total_books, token)
+                                           last_total_books, token_hash)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(instance_id) DO UPDATE SET
                         last_seen            = excluded.last_seen,
                         last_version         = excluded.last_version,
                         last_services_json   = excluded.last_services_json,
                         last_total_books     = excluded.last_total_books,
-                        token                = excluded.token
+                        token_hash           = excluded.token_hash,
+                        token                = NULL
                     """,
                     (
                         instance_id,
@@ -876,8 +1092,8 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
                         now_iso,
                         sanitized_app_version,
                         services_json,
-                        payload.get("total_books"),
-                        new_token,
+                        total_books_val,
+                        _hash_token(new_token),
                     ),
                 )
             else:
@@ -899,7 +1115,7 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
                         now_iso,
                         sanitized_app_version,
                         services_json,
-                        payload.get("total_books"),
+                        total_books_val,
                     ),
                 )
             # Insert batch
@@ -909,28 +1125,30 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
                 INSERT INTO batches
                     (instance_id, received_at, sent_at, app_version, services_json,
                      total_books, window_start, window_end, dropped, is_manual,
-                     user_message, recent_logs_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     user_message, recent_logs_json, env_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     instance_id,
                     now_iso,
-                    payload.get("sent_at"),
+                    _normalize_iso_ts(payload.get("sent_at"), now_iso),
                     sanitized_app_version,
                     services_json,
-                    payload.get("total_books"),
-                    window.get("start"),
-                    window.get("end"),
+                    total_books_val,
+                    _normalize_iso_ts(window.get("start"), None),
+                    _normalize_iso_ts(window.get("end"), None),
                     payload.get("dropped", 0),
                     1 if manual else 0,
                     user_message,
                     recent_logs_json,
+                    env_json,
                 ),
             )
             batch_id = cur.lastrowid
 
             # Insert warnings
             warning_rows: List[Tuple] = []
+            warning_norms: List[Tuple[int, str, str]] = []
             for w in warnings_raw:
                 s_template = _sanitize_text(w.get("template", ""), 400)
                 s_message = _sanitize_text(w.get("message", ""), 400)
@@ -942,6 +1160,19 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
                     context_text = "\n".join(str(_sanitize_text(c, 400)) for c in ctx_capped)
                 else:
                     context_text = None
+                w_first = _normalize_iso_ts(w.get("first_seen"), now_iso)
+                w_last = _normalize_iso_ts(w.get("last_seen"), now_iso)
+                try:
+                    c = int(w.get("count", 1))
+                except (TypeError, ValueError):
+                    c = 1
+                c = min(max(c, 1), 10_000_000)
+                raw_tb = w.get("traceback")
+                s_traceback = (
+                    _sanitize_text(raw_tb, _TRACEBACK_CAP)
+                    if isinstance(raw_tb, str) and raw_tb
+                    else None
+                )
                 warning_rows.append((
                     batch_id,
                     instance_id,
@@ -949,18 +1180,21 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
                     s_level,
                     s_template,
                     s_message,
-                    w.get("count", 1),
-                    w.get("first_seen"),
-                    w.get("last_seen"),
+                    c,
+                    w_first,
+                    w_last,
                     context_text,
+                    s_traceback,
                 ))
+                warning_norms.append((c, w_first, w_last))
             if warning_rows:
                 db.executemany(
                     """\
                     INSERT INTO warnings
                         (batch_id, instance_id, logger, level, template,
-                         message, count, first_seen, last_seen, context_text)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         message, count, first_seen, last_seen, context_text,
+                         traceback_text)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     warning_rows,
                 )
@@ -977,14 +1211,15 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
                     ctx_text = "\n".join(str(_sanitize_text(c, 400)) for c in ctx_capped)
                 else:
                     ctx_text = None
+                c, w_first, w_last = warning_norms[i]
                 _upsert_finding(
                     db,
                     template=s_template,
                     logger_name=s_logger,
                     level=s_level,
-                    count=w.get("count", 1),
-                    w_first_seen=w.get("first_seen") or now_iso,
-                    w_last_seen=w.get("last_seen") or now_iso,
+                    count=c,
+                    w_first_seen=w_first,
+                    w_last_seen=w_last,
                     sample_message=s_message,
                     sample_context=ctx_text,
                     instance_id=instance_id,
@@ -1146,6 +1381,9 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
                                AND reopened_at > COALESCE(analysis_at, '')))
                     """
                 ).fetchone()[0],
+                "stale_recurrences": db.execute(
+                    "SELECT COALESCE(SUM(stale_recurrence_count), 0) FROM findings"
+                ).fetchone()[0],
             },
         })
 
@@ -1182,7 +1420,8 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
             SELECT f.id, f.template, f.logger, f.level, f.category,
                    f.status, f.severity, f.first_seen, f.last_seen,
                    f.total_count, f.instance_count, f.app_versions_json,
-                   f.analysis_md, f.analysis_at, f.reopened_at
+                   f.analysis_md, f.analysis_at, f.reopened_at,
+                   f.sample_message, f.stale_recurrence_count, f.fixed_at
             FROM findings f
             {where_sql}
             ORDER BY f.instance_count DESC, f.total_count DESC, f.last_seen DESC
@@ -1190,6 +1429,37 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
         """
         params.append(limit)
         rows = db.execute(query, params).fetchall()
+
+        # Feedback belongs to the handful of manual batches, not the millions of
+        # fleet warning rows. Aggregate it once, starting from batches so SQLite
+        # can use idx_warnings_batch, instead of rescanning warnings for every
+        # finding in this page.
+        feedback_by_key = {
+            (row["template"], row["logger"], row["level"]): {
+                "feedback_count": row["feedback_count"],
+                "unanswered_feedback_count": row["unanswered_feedback_count"],
+            }
+            for row in db.execute(
+                """\
+                SELECT COALESCE(w.template, '') AS template,
+                       COALESCE(w.logger, '') AS logger,
+                       COALESCE(w.level, '') AS level,
+                       COUNT(DISTINCT b.id) AS feedback_count,
+                       COUNT(DISTINCT CASE
+                           WHEN TRIM(COALESCE(b.response_md, '')) = '' THEN b.id
+                       END) AS unanswered_feedback_count
+                FROM batches b
+                CROSS JOIN warnings w INDEXED BY idx_warnings_batch
+                WHERE w.batch_id = b.id
+                  AND b.is_manual = 1
+                  AND TRIM(COALESCE(b.user_message, '')) <> ''
+                GROUP BY COALESCE(w.template, ''),
+                         COALESCE(w.logger, ''),
+                         COALESCE(w.level, '')
+                """
+            ).fetchall()
+        }
+        no_feedback = {"feedback_count": 0, "unanswered_feedback_count": 0}
 
         findings_list: list[dict[str, Any]] = []
         for r in rows:
@@ -1199,23 +1469,10 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
             except (json.JSONDecodeError, TypeError):
                 rd["app_versions"] = []
             rd["has_analysis"] = rd["analysis_md"] is not None
-            feedback = db.execute(
-                """\
-                SELECT COUNT(DISTINCT b.id) AS feedback_count,
-                       COUNT(DISTINCT CASE
-                           WHEN TRIM(COALESCE(b.response_md, '')) = '' THEN b.id
-                       END) AS unanswered_feedback_count
-                FROM batches b
-                JOIN warnings w ON w.batch_id = b.id
-                WHERE b.is_manual = 1
-                  AND TRIM(COALESCE(b.user_message, '')) <> ''
-                  AND COALESCE(w.template, '') = ?
-                  AND COALESCE(w.logger, '') = ?
-                  AND COALESCE(w.level, '') = ?
-                """,
+            rd.update(feedback_by_key.get(
                 (rd["template"], rd["logger"], rd["level"]),
-            ).fetchone()
-            rd.update(dict(feedback))
+                no_feedback,
+            ))
             findings_list.append(rd)
 
         return jsonify({
@@ -1243,8 +1500,9 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
         recent = db.execute(
             """\
             SELECT w.template, w.logger, w.level, w.message, w.context_text,
-                   w.count, w.first_seen, w.last_seen,
-                   b.instance_id, b.app_version, b.received_at, b.services_json
+                   w.count, w.first_seen, w.last_seen, w.traceback_text,
+                   b.instance_id, b.app_version, b.received_at, b.services_json,
+                   b.env_json
             FROM warnings w
             JOIN batches b ON w.batch_id = b.id
             WHERE w.template = ?
@@ -1293,7 +1551,7 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
     # -- findings update ------------------------------------------------------
     @app.route("/api/v1/findings/<int:finding_id>", methods=["PATCH"])
     def update_finding(finding_id: int) -> Any:
-        if not _read_authorized():
+        if not _admin_authorized():
             return jsonify({"ok": False, "error": "unauthorized"}), 401
 
         db = _get_db()
@@ -1313,6 +1571,12 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
                 return jsonify({"ok": False, "error": f"invalid status: {body['status']}"}), 400
             set_clauses.append("status = ?")
             params.append(body["status"])
+            if body["status"] == "fixed":
+                fixed_now_iso = datetime.now(timezone.utc).isoformat()
+                set_clauses.append("fixed_at = ?")
+                params.append(fixed_now_iso)
+                set_clauses.append("versions_at_fix_json = ?")
+                params.append(row["app_versions_json"])
 
         if "category" in body:
             if body["category"] not in _VALID_CATEGORIES:
@@ -1399,7 +1663,10 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
     # -- maintainer submission detail / response ----------------------------
     @app.route("/api/v1/submissions/<int:submission_id>", methods=["GET", "PATCH"])
     def submission_detail(submission_id: int) -> Any:
-        if not _read_authorized():
+        if request.method == "PATCH":
+            if not _admin_authorized():
+                return jsonify({"ok": False, "error": "unauthorized"}), 401
+        elif not _read_authorized():
             return jsonify({"ok": False, "error": "unauthorized"}), 401
 
         db = _get_db()
@@ -1625,7 +1892,7 @@ def create_receiver_app(db_path: Optional[str] = None) -> Flask:
         methods=["PATCH"],
     )
     def update_comment(finding_id: int, comment_id: int) -> Any:
-        if not _read_authorized():
+        if not _admin_authorized():
             return jsonify({"ok": False, "error": "unauthorized"}), 401
 
         db = _get_db()

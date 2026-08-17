@@ -18,6 +18,9 @@ def mock_db():
     db = MagicMock()
     session = MagicMock()
     db.get_session.return_value = session
+    # Most stored maps predate the total_chars column; model that explicitly so
+    # tests exercise the documented fallback instead of a MagicMock's __int__.
+    db.get_alignment_total_chars.return_value = None
     return db
 
 @pytest.fixture
@@ -508,3 +511,191 @@ def test_content_guard_noop_without_client(mock_db):
         _topic_env(mp)
         ok = service._verify_content_match(segments, "mountain " * 100, abs_id="x")
     assert ok is True
+
+
+# --- issue #362b: text-progress denominator ---------------------------------
+#
+# get_progress_for_time() divided the interpolated character offset by the map's
+# LAST ANCHOR character. That anchor is where the transcript stopped matching the
+# book, not the end of the book, so every audio position read high — by ~1/coverage.
+# On the reporter's 75.5%-coverage map that turned a true 50% into 66.3%.
+
+
+def _progress_service(mock_db, alignment_map, total_chars):
+    service = AlignmentService(mock_db, Polisher())
+    service._get_alignment = MagicMock(return_value=alignment_map)
+    mock_db.get_alignment_total_chars.return_value = total_chars
+    return service
+
+
+def test_progress_for_time_uses_recorded_ebook_length(mock_db):
+    """A map whose anchors stop at 75.5% of the text must not inflate positions."""
+    # Anchors span 0 -> 75_470 chars over 0 -> 76_726.9s; the book is 100_000 chars.
+    alignment_map = [{"char": 0, "ts": 0.0}, {"char": 75_470, "ts": 76_726.9}]
+    service = _progress_service(mock_db, alignment_map, 100_000)
+
+    fraction = service.get_progress_for_time("abs-1", 50_889.5)
+
+    # 50_889.5/76_726.9 * 75_470 = 50_055 chars -> 50.06% of the real book.
+    assert fraction == pytest.approx(0.5006, abs=0.001)
+
+
+def test_progress_for_time_without_total_chars_keeps_legacy_behavior(mock_db):
+    """Maps stored before total_chars existed must not change behaviour."""
+    alignment_map = [{"char": 0, "ts": 0.0}, {"char": 75_470, "ts": 76_726.9}]
+    service = _progress_service(mock_db, alignment_map, None)
+
+    fraction = service.get_progress_for_time("abs-1", 50_889.5)
+
+    # The old denominator (last anchor) — the 1.325x inflation the reporter saw.
+    assert fraction == pytest.approx(0.6632, abs=0.001)
+
+
+def test_progress_for_time_is_clamped(mock_db):
+    alignment_map = [{"char": 0, "ts": 0.0}, {"char": 100_000, "ts": 1_000.0}]
+    service = _progress_service(mock_db, alignment_map, 100_000)
+
+    assert service.get_progress_for_time("abs-1", 0.0) == pytest.approx(0.0)
+    assert service.get_progress_for_time("abs-1", 5_000.0) == pytest.approx(1.0)
+
+
+def test_progress_for_time_caches_total_chars_lookup(mock_db):
+    alignment_map = [{"char": 0, "ts": 0.0}, {"char": 100_000, "ts": 1_000.0}]
+    service = _progress_service(mock_db, alignment_map, 100_000)
+
+    service.get_progress_for_time("abs-1", 100.0)
+    service.get_progress_for_time("abs-1", 200.0)
+
+    assert mock_db.get_alignment_total_chars.call_count == 1
+
+
+# --- backfilling total_chars onto pre-existing maps --------------------------
+#
+# Every map stored before the column existed keeps dividing by its own last
+# anchor, and only a re-align would ever record a length. The sync path already
+# holds the parsed ebook text, so it can fill them in as books are touched.
+
+
+def test_backfill_records_length_and_fixes_the_denominator(mock_db):
+    alignment_map = [{"char": 0, "ts": 0.0}, {"char": 75_470, "ts": 76_726.9}]
+    service = _progress_service(mock_db, alignment_map, None)
+    mock_db.set_alignment_total_chars_if_missing.return_value = True
+
+    # Pre-backfill: the legacy last-anchor denominator inflates the position.
+    assert service.get_progress_for_time("abs-1", 50_889.5) == pytest.approx(0.6632, abs=0.001)
+
+    assert service.record_total_chars_if_missing("abs-1", 100_000) is True
+    mock_db.set_alignment_total_chars_if_missing.assert_called_once_with("abs-1", 100_000)
+
+    # Post-backfill the same timestamp resolves against the real book length,
+    # without re-reading the database.
+    assert service.get_progress_for_time("abs-1", 50_889.5) == pytest.approx(0.5006, abs=0.001)
+
+
+def test_backfill_never_overwrites_a_recorded_length(mock_db):
+    alignment_map = [{"char": 0, "ts": 0.0}, {"char": 75_470, "ts": 76_726.9}]
+    service = _progress_service(mock_db, alignment_map, 100_000)
+
+    # Prime the cache with the recorded value, as a real read would.
+    service.get_progress_for_time("abs-1", 1.0)
+
+    assert service.record_total_chars_if_missing("abs-1", 42) is False
+    mock_db.set_alignment_total_chars_if_missing.assert_not_called()
+
+
+def test_backfill_ignores_meaningless_lengths(mock_db):
+    service = _progress_service(mock_db, [{"char": 0, "ts": 0.0}], None)
+
+    assert service.record_total_chars_if_missing("abs-1", 0) is False
+    assert service.record_total_chars_if_missing("abs-1", -5) is False
+    assert service.record_total_chars_if_missing("", 100) is False
+    mock_db.set_alignment_total_chars_if_missing.assert_not_called()
+
+
+def test_backfill_survives_a_database_error(mock_db):
+    service = _progress_service(mock_db, [{"char": 0, "ts": 0.0}], None)
+    mock_db.set_alignment_total_chars_if_missing.side_effect = RuntimeError("locked")
+
+    assert service.record_total_chars_if_missing("abs-1", 100_000) is False
+
+
+def test_align_and_store_records_ebook_length(mock_db):
+    ebook_text = "Alice in Wonderland"
+    session = mock_db.get_session()
+    session.__enter__.return_value = session
+    session.query.return_value.filter_by.return_value.first.return_value = None
+
+    service = AlignmentService(mock_db, Polisher())
+    service._generate_alignment_map_with_method = MagicMock(
+        return_value=([{'char': 0, 'ts': 0.0}, {'char': 5, 'ts': 1.0}], 'lexical')
+    )
+
+    assert service.align_and_store("test_id", [{'start': 0.0, 'end': 1.0, 'text': "Alice"}], ebook_text)
+
+    stored = session.add.call_args[0][0]
+    assert stored.total_chars == len(ebook_text)
+
+
+def test_save_alignment_updates_total_chars_on_existing_row(mock_db):
+    session = mock_db.get_session()
+    session.__enter__.return_value = session
+    existing = BookAlignment(abs_id="test_id", alignment_map_json="[]")
+    session.query.return_value.filter_by.return_value.first.return_value = existing
+
+    service = AlignmentService(mock_db, Polisher())
+    service._save_alignment("test_id", [{"char": 0, "ts": 0.0}], "lexical", total_chars=4242)
+
+    assert existing.total_chars == 4242
+
+
+def test_save_alignment_preserves_total_chars_when_not_supplied(mock_db):
+    """When updating an existing row without total_chars, the previous value must not be overwritten with None."""
+    session = mock_db.get_session()
+    session.__enter__.return_value = session
+    existing = BookAlignment(abs_id="test_id", alignment_map_json="[]", total_chars=50000)
+    session.query.return_value.filter_by.return_value.first.return_value = existing
+
+    service = AlignmentService(mock_db, Polisher())
+    # Simulate unanchored Storyteller path that cannot supply total_chars
+    service._save_alignment("test_id", [{"char": 0, "ts": 0.0}], "storyteller")
+
+    # The original total_chars must be preserved
+    assert existing.total_chars == 50000
+
+
+def test_progress_for_time_ignores_total_chars_smaller_than_the_map(mock_db):
+    """An inconsistent record must not shrink the denominator below the anchors."""
+    alignment_map = [{"char": 0, "ts": 0.0}, {"char": 1000, "ts": 10.0}]
+    service = _progress_service(mock_db, alignment_map, 10)
+
+    assert service.get_progress_for_time("abs-1", 5.0) == pytest.approx(0.5)
+
+
+def test_backfill_persists_against_a_real_database():
+    """End-to-end: a stored map with no length gets one, and only once."""
+    import shutil
+    from src.db.database_service import DatabaseService
+
+    tmp = tempfile.mkdtemp()
+    try:
+        db = DatabaseService(str(Path(tmp) / "align.db"))
+        service = AlignmentService(db, Polisher())
+
+        # A map exactly as the pre-column code stored it: no total_chars.
+        service._save_alignment("abs-legacy", [{"char": 0, "ts": 0.0},
+                                               {"char": 75_470, "ts": 76_726.9}])
+        assert db.get_alignment_total_chars("abs-legacy") is None
+
+        assert service.record_total_chars_if_missing("abs-legacy", 100_000) is True
+        assert db.get_alignment_total_chars("abs-legacy") == 100_000
+
+        # Second pass is a no-op, and a different length cannot displace it.
+        assert service.record_total_chars_if_missing("abs-legacy", 5) is False
+        assert db.get_alignment_total_chars("abs-legacy") == 100_000
+
+        # A book with no alignment row at all is simply skipped.
+        assert service.record_total_chars_if_missing("abs-unknown", 100_000) is False
+    finally:
+        if hasattr(db, 'db_manager'):
+            db.db_manager.close()
+        shutil.rmtree(tmp, ignore_errors=True)

@@ -104,6 +104,7 @@ class UserClientRegistry:
                         "(returning fallback, not caching)",
                         user_id,
                         exc,
+                        exc_info=True,
                     )
                     return self._build(user_id, {_ALLOW_GLOBAL_FALLBACK_KEY: False})
                 bundle = self._build(user_id, creds)

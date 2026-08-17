@@ -5,7 +5,7 @@ from typing import Optional
 
 from src.api.api_clients import ABSClient
 from src.db.models import Book, State
-from src.sync_clients.sync_client_interface import SyncClient, SyncResult, UpdateProgressRequest, ServiceState
+from src.sync_clients.sync_client_interface import SyncClient, SyncResult, UpdateProgressRequest, ServiceState, ABS_ITEM_NOT_FOUND
 from src.utils.ebook_utils import EbookParser
 from src.utils.progress_metadata import parse_service_timestamp
 from src.utils.transcriber import AudioTranscriber
@@ -48,23 +48,41 @@ class ABSSyncClient(SyncClient):
             abs_ts = item_data.get('currentTime', 0)
             abs_last_update = item_data.get('lastUpdate')
             abs_finished = bool(item_data.get('isFinished'))
+            abs_duration = item_data.get('duration')
             # Note: Still need to convert to percentage using transcript
         else:
             response = self.abs_client.get_progress(abs_id)
             abs_ts = response.get('currentTime') if response is not None else None
             abs_last_update = response.get('lastUpdate') if response is not None else None
             abs_finished = bool(response.get('isFinished')) if response is not None else False
+            abs_duration = response.get('duration') if response is not None else None
 
         if abs_ts is None:
             logger.info("🔍 ABS timestamp is None, probably not started the book yet")
             abs_ts = 0.0
 
+        # book.duration is stamped at match time and divides every seconds->percentage
+        # conversion below, so a re-encoded or re-chaptered audiobook silently skews
+        # every ABS position until it is re-matched. Adopt the service's own duration
+        # for this cycle and report it so the cycle can persist the correction.
+        corrected_duration = self._corrected_duration(book, abs_duration)
+        if corrected_duration is not None:
+            logger.info(
+                "📏 ABS duration changed for '%s': %.1fs -> %.1fs (percentages recomputed)",
+                title_snip or abs_id,
+                float(book.duration or 0.0),
+                corrected_duration,
+            )
+
+        # Use corrected duration for this cycle's calculations without mutating the shared book object
+        effective_duration = corrected_duration if corrected_duration is not None else book.duration
+
         # ABS can mark an item finished without moving currentTime to the exact
         # duration. Treat the service's completion flag as authoritative so the
         # next cycle does not reinterpret a completed book as a small rewind.
-        if abs_finished and book.duration and book.duration > 0:
-            abs_ts = float(book.duration)
-        abs_pct = 1.0 if abs_finished else self._abs_to_percentage(abs_ts, book)
+        if abs_finished and effective_duration and effective_duration > 0:
+            abs_ts = float(effective_duration)
+        abs_pct = 1.0 if abs_finished else self._abs_to_percentage(abs_ts, book, duration_override=effective_duration)
         if abs_ts > 0 and abs_pct is None:
             # We lower this to debug to avoid spam if book is offline/unprocessed
             pass
@@ -81,6 +99,8 @@ class ABSSyncClient(SyncClient):
         service_updated_at = parse_service_timestamp(abs_last_update)
         if service_updated_at is not None:
             current['service_updated_at'] = service_updated_at
+        if corrected_duration is not None:
+            current['service_duration'] = corrected_duration
 
         return ServiceState(
             current=current,
@@ -93,11 +113,43 @@ class ABSSyncClient(SyncClient):
             value_formatter=lambda v: f"{v:.4%}"
         )
 
-    def _abs_to_percentage(self, abs_seconds, book: Book):
+    # Below this relative change a duration difference is rounding/metadata noise,
+    # not a re-encode. Kept generous so normal jitter never rewrites the divisor.
+    _DURATION_DRIFT_TOLERANCE = 0.005
+
+    @classmethod
+    def _corrected_duration(cls, book: Book, service_duration) -> Optional[float]:
+        """Return the service's duration when it materially disagrees with ours.
+
+        Returns None when there is nothing to correct. A missing, zero, or
+        unparseable service value is always None: adopting it would zero the
+        divisor and be far worse than the staleness it would fix.
+        """
+        try:
+            candidate = float(service_duration)
+        except (TypeError, ValueError):
+            return None
+        if candidate <= 0:
+            return None
+
+        stored = book.duration if book else None
+        try:
+            stored = float(stored) if stored else 0.0
+        except (TypeError, ValueError):
+            stored = 0.0
+
+        if stored <= 0:
+            return candidate
+        if abs(candidate - stored) / stored <= cls._DURATION_DRIFT_TOLERANCE:
+            return None
+        return candidate
+
+    def _abs_to_percentage(self, abs_seconds, book: Book, duration_override: Optional[float] = None):
         """Convert ABS timestamp to percentage using book duration (preferred) or transcript"""
-        # 1. Try Book model duration (Golden Source)
-        if book.duration and book.duration > 0:
-            return min(max(abs_seconds / book.duration, 0.0), 1.0)
+        # 1. Try Book model duration (Golden Source), or duration_override if provided
+        effective_duration = duration_override if (duration_override is not None and duration_override > 0) else book.duration
+        if effective_duration and effective_duration > 0:
+            return min(max(abs_seconds / effective_duration, 0.0), 1.0)
             
         # 2. Try Transcript file (Legacy fallback)
         transcript_path = book.transcript_file
@@ -188,7 +240,12 @@ class ABSSyncClient(SyncClient):
                 'ts': final_ts,
                 'pct': 0.0
             }
-            return SyncResult(final_ts, result.get("success", False), updated_state)
+            return SyncResult(
+                final_ts,
+                result.get("success", False),
+                updated_state,
+                error_code=self._stale_item_error_code(book.abs_id, result),
+            )
 
         # Route database-managed books to AlignmentService and legacy books to Transcriber.
         ts_for_text = None
@@ -235,7 +292,12 @@ class ABSSyncClient(SyncClient):
                 'ts': final_ts,
                 'pct': pct or 0
             }
-            return SyncResult(final_ts, result.get("success", False), updated_state)
+            return SyncResult(
+                final_ts,
+                result.get("success", False),
+                updated_state,
+                error_code=self._stale_item_error_code(book.abs_id, result),
+            )
         logger.warning(f"⚠️ '{book_title}' Not updating ABS progress — could not find timestamp for provided text")
         return SyncResult(None, False)
 
@@ -273,3 +335,29 @@ class ABSSyncClient(SyncClient):
             except ImportError:
                 pass
         return abs_ok, adjusted_ts
+
+    def _stale_item_error_code(self, abs_id: str, write_result) -> Optional[str]:
+        """Classify a failed ABS write as a stale mapping, when that is provable.
+
+        Returns ABS_ITEM_NOT_FOUND only when the write failed AND a direct probe
+        confirms the library item is gone (HTTP 404). A probe that reports the
+        item present, cannot determine it, or raises is never treated as proof —
+        the caller acts on this code by marking the user's book unusable.
+        """
+        succeeded = write_result.get("success") if isinstance(write_result, dict) else bool(write_result)
+        if succeeded:
+            return None
+
+        try:
+            exists = self.abs_client.item_exists(abs_id)
+        except Exception as e:
+            logger.debug(f"ABS stale-item probe failed for '{abs_id}': {e}", exc_info=True)
+            return None
+
+        if exists is False:
+            logger.warning(
+                f"⚠️ ABS library item not found for '{abs_id}' — the mapping looks stale "
+                f"(the library item was renamed, moved, or removed in Audiobookshelf)"
+            )
+            return ABS_ITEM_NOT_FOUND
+        return None

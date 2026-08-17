@@ -13,6 +13,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.api.booklore_client import (
     BookloreClient,
     BULK_DETAIL_FETCH_LIMIT,
+    DETAIL_FETCH_WORKERS,
     MAX_DETAIL_FETCHES_PER_SEARCH,
 )
 from src.db.models import BookloreBook
@@ -2104,3 +2105,16 @@ def test_refresh_falls_back_to_flat_books_when_page_endpoint_404s(booklore_clien
     endpoints = [call.args[1] for call in booklore_client._make_request.call_args_list]
     assert endpoints == ["/api/v1/books/page?page=0&size=200", "/api/v1/books"]
     assert booklore_client._paginated_scan_supported is False
+
+
+def test_session_pool_sized_above_detail_fetch_workers(booklore_client):
+    """The session's connection pool has headroom over the detail-fetch fan-out.
+
+    Left at urllib3's default of 10 the pool exactly matches
+    ``DETAIL_FETCH_WORKERS``, and every full library refresh emits a burst of
+    "Connection pool is full, discarding connection" warnings.
+    """
+    for prefix in ("http://", "https://"):
+        adapter = booklore_client.session.get_adapter(prefix)
+        assert adapter._pool_maxsize > DETAIL_FETCH_WORKERS
+        assert adapter._pool_connections > DETAIL_FETCH_WORKERS

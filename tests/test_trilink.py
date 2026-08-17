@@ -250,6 +250,36 @@ class TestStorytellerAPIClientDownload(unittest.TestCase):
             self.assertTrue(result)
             self.assertTrue(output_path.exists())
 
+    @patch.dict(os.environ, {
+        'STORYTELLER_API_URL': 'http://test-storyteller:8001',
+        'STORYTELLER_USER': 'testuser',
+        'STORYTELLER_PASSWORD': 'testpass'
+    })
+    def test_download_book_rejects_null_fallback_details(self):
+        from src.api.storyteller_api import StorytellerAPIClient
+
+        client = StorytellerAPIClient()
+        api_response = Mock(status_code=404, text='could not open readaloud')
+        api_response.__enter__ = Mock(return_value=api_response)
+        api_response.__exit__ = Mock(return_value=False)
+        details_response = Mock(status_code=200)
+        details_response.json.return_value = None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / 'downloaded.epub'
+            with patch.object(client, '_get_fresh_token', return_value='test-token'), \
+                 patch.object(client.session, 'get', return_value=api_response), \
+                 patch.object(client, '_make_request', return_value=details_response), \
+                 self.assertLogs('src.api.storyteller_api', level='ERROR') as captured:
+                result = client.download_book('test-uuid', output_path)
+
+        self.assertFalse(result)
+        self.assertIn(
+            'Invalid book details response for fallback: expected an object',
+            '\n'.join(captured.output),
+        )
+        self.assertNotIn("object has no attribute 'get'", '\n'.join(captured.output))
+
 
 class TestStorytellerAPIClientCollectionRemoval(unittest.TestCase):
     """Test Storyteller collection removal by UUID."""

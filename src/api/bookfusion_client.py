@@ -76,7 +76,7 @@ class BookFusionClient:
                 timeout=_REQUEST_TIMEOUT,
             )
         except Exception as exc:
-            logger.error("BookFusion device link start failed: %s", exc)
+            logger.error("BookFusion device link start failed: %s", exc, exc_info=True)
             return None
         if resp.status_code != 200:
             logger.warning("BookFusion device link start returned %s: %s", resp.status_code, resp.text[:200])
@@ -97,7 +97,7 @@ class BookFusionClient:
                 timeout=_REQUEST_TIMEOUT,
             )
         except Exception as exc:
-            logger.error("BookFusion token poll failed: %s", exc)
+            logger.error("BookFusion token poll failed: %s", exc, exc_info=True)
             return {"ok": False, "error": "request_failed"}
 
         data = self._json(resp) or {}
@@ -163,7 +163,7 @@ class BookFusionClient:
         try:
             resp = self.session.get(url, timeout=_DOWNLOAD_TIMEOUT)
         except Exception as exc:
-            logger.error("BookFusion file download failed for %s: %s", book_id, exc)
+            logger.error("BookFusion file download failed for %s: %s", book_id, exc, exc_info=True)
             return None
         if resp.status_code != 200:
             logger.warning("BookFusion file download returned %s for %s", resp.status_code, book_id)
@@ -264,7 +264,7 @@ class BookFusionClient:
             if method_upper == "DELETE":
                 return self.session.delete(url, headers=headers, timeout=_REQUEST_TIMEOUT)
         except Exception as exc:
-            logger.error("BookFusion request failed (%s %s): %s", method, endpoint, exc)
+            logger.error("BookFusion request failed (%s %s): %s", method, endpoint, exc, exc_info=True)
         return None
 
     def _persist_access_token(self, token: str) -> None:

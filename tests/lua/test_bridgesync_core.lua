@@ -1,8 +1,13 @@
 local plugin_dir = assert(arg[1], "plugin directory argument required")
 package.path = plugin_dir .. "/?.lua;" .. package.path
 
-package.preload["docsettings"] = function() return {} end
-package.preload["libs/libkoreader-lfs"] = function() return { attributes = function() return nil end } end
+local fake_docsettings = {
+    hasSidecarFile = function() return false end,
+    open = function() return { readSetting = function() return {} end } end,
+}
+local fake_lfs = { attributes = function() return nil end }
+package.preload["docsettings"] = function() return fake_docsettings end
+package.preload["libs/libkoreader-lfs"] = function() return fake_lfs end
 package.preload["logger"] = function()
     return { info = function() end, warn = function() end, err = function() end }
 end
@@ -20,6 +25,70 @@ package.preload["json"] = function()
         decode = function() error("json.decode must not be reached by scalar tests") end,
     }
 end
+package.preload["socket"] = function()
+    return {
+        skip = function(count, ...)
+            return select(count + 1, ...)
+        end,
+        sleep = function() end,
+    }
+end
+local fake_http_body = "ok"
+local fake_http_content_length
+local fake_plugin_digest = string.rep("d", 64)
+package.preload["socket.http"] = function()
+    return {
+        request = function(request)
+            request.sink(fake_http_body)
+            request.sink(nil)
+            return 1, 200, {
+                ["content-length"] = tostring(fake_http_content_length or #fake_http_body),
+                ["x-content-sha256"] = fake_plugin_digest,
+            }, "OK"
+        end,
+    }
+end
+package.preload["ltn12"] = function()
+    return { source = { string = function(value) return value end } }
+end
+package.preload["socketutil"] = function()
+    return {
+        TIMEOUT_CODE = -1,
+        SSL_HANDSHAKE_CODE = -2,
+        SINK_TIMEOUT_CODE = -3,
+        set_timeout = function() end,
+        reset_timeout = function() end,
+        table_sink = function(target)
+            return function(chunk)
+                if chunk then target[#target + 1] = chunk end
+                return 1
+            end
+        end,
+        file_sink = function(handle)
+            return function(chunk)
+                if chunk then
+                    handle:write(chunk)
+                else
+                    handle:close()
+                end
+                return 1
+            end
+        end,
+    }
+end
+local scheduled_callbacks = {}
+package.preload["ui/uimanager"] = function()
+    return {
+        scheduleIn = function(_, delay_or_callback, callback)
+            scheduled_callbacks[#scheduled_callbacks + 1] = callback or delay_or_callback
+        end,
+    }
+end
+package.preload["ui/trapper"] = function()
+    return { wrap = function(_, callback) callback() end }
+end
+local fake_history = {}
+package.preload["readhistory"] = function() return { hist = fake_history } end
 
 -- Faithful fake of KOReader's lua-ljsqlite3 statement/connection API:
 --   * bind(...) binds all varargs positionally; bind1(i, v) binds one index
@@ -93,6 +162,61 @@ local stats_batches = require("bridge_stats_batches")
 local version = require("bridge_version")
 local sessions = require("bridge_sessions")
 local BridgeSqliteState = require("bridge_sqlite_state")
+local APIClient = require("bridge_api_client")
+local TransferPolicy = require("bridge_transfer_policy")
+local BridgeSweep = require("bridge_sweep")
+
+local small_block, small_total = TransferPolicy.timeouts(1024)
+local large_block, large_total = TransferPolicy.timeouts(64 * 1024 * 1024)
+assert(small_block == 30 and large_block == 30,
+    "the block timeout must remain a stall detector")
+assert(large_total > small_total, "download total timeout must scale with manifest size")
+assert(TransferPolicy.maxBytes(1024) < TransferPolicy.maxBytes(nil),
+    "known-size downloads must use a tighter byte ceiling")
+
+local request_runner_calls = 0
+local api_client = APIClient:new()
+api_client:init("http://bridge", "reader", "secret", nil, function(task)
+    request_runner_calls = request_runner_calls + 1
+    return true, task()
+end)
+local request_ok, request_code, request_body = api_client:_request("GET", "/test")
+assert(request_ok and request_code == 200 and request_body == "ok",
+    "background API request must preserve the HTTP result")
+assert(request_runner_calls == 1, "non-download HTTP must run through the request runner")
+
+local download_path = os.tmpname()
+local download_ok, download_err = api_client:downloadBook("/book", download_path, 2)
+assert(download_ok, download_err)
+local downloaded = assert(io.open(download_path, "rb"))
+assert(downloaded:read("*a") == "ok", "book download must publish the expected bytes")
+downloaded:close()
+os.remove(download_path)
+
+local mismatch_path = os.tmpname()
+local mismatch_ok, mismatch_err = api_client:downloadBook("/book", mismatch_path, 3)
+assert(not mismatch_ok and mismatch_err == "download_size_mismatch",
+    "manifest/download size mismatch must fail closed")
+local mismatch_file = io.open(mismatch_path, "rb")
+assert(not mismatch_file, "failed size validation must remove the partial download")
+
+local plugin_path = os.tmpname()
+local plugin_ok, plugin_digest = api_client:downloadPluginZip(plugin_path)
+assert(plugin_ok and plugin_digest == fake_plugin_digest,
+    "plugin download must preserve the server's archive digest")
+local plugin_download = assert(io.open(plugin_path, "rb"))
+assert(plugin_download:read("*a") == "ok", "plugin download must publish the response bytes")
+plugin_download:close()
+os.remove(plugin_path)
+
+fake_http_content_length = #fake_http_body + 1
+local short_plugin_path = os.tmpname()
+local short_plugin_ok, short_plugin_err = api_client:downloadPluginZip(short_plugin_path)
+assert(not short_plugin_ok and short_plugin_err == "download_size_mismatch",
+    "incomplete plugin downloads must fail closed")
+assert(not io.open(short_plugin_path, "rb"),
+    "incomplete plugin downloads must remove their partial file")
+fake_http_content_length = nil
 
 local entries = {}
 for index = 1, 55 do
@@ -107,21 +231,26 @@ for index = 1, 55 do
 end
 
 local saved_watermarks = {}
+local saved_signatures = {}
 local exchange_calls = 0
+local exchange_payloads = {}
 local bridge = {
     state = {
         readSetting = function(_, key)
             if key == "annotation_watermarks" then return saved_watermarks end
+            if key == "annotation_signatures" then return saved_signatures end
             return nil
         end,
         saveSetting = function(_, key, value)
             if key == "annotation_watermarks" then saved_watermarks = value end
+            if key == "annotation_signatures" then saved_signatures = value end
         end,
         flush = function() end,
     },
     api = {
         exchangeAnnotations = function(_, payload)
             exchange_calls = exchange_calls + 1
+            exchange_payloads[#exchange_payloads + 1] = payload
             local response_books = {}
             for _, book in ipairs(payload.books) do
                 table.insert(response_books, {
@@ -139,14 +268,132 @@ local bridge = {
     logWarn = function() end,
 }
 
+local normalize_calls = 0
+local original_normalize = annotations.normalizeEntry
+annotations.normalizeEntry = function(raw)
+    normalize_calls = normalize_calls + 1
+    return original_normalize(raw)
+end
 local result, exchange_err = annotations.exchangeBooks(bridge, {
     { hash = string.rep("a", 32), annotations = entries, live = false },
 })
+annotations.normalizeEntry = original_normalize
 assert(result, exchange_err)
 assert(result.uploaded == 55, "all annotation chunks must be uploaded")
 assert(exchange_calls == 2, "55 annotations must be split across two exchanges")
+assert(normalize_calls == 55, "annotations must be normalized only once per exchange")
 assert(saved_watermarks[string.rep("a", 32)] == "2020-01-01 00:00:00",
     "watermark advances only after all same-timestamp chunks succeed")
+assert(type(saved_signatures[string.rep("a", 32)]) == "string",
+    "complete local annotation sets must persist a signature")
+
+exchange_calls = 0
+exchange_payloads = {}
+local unchanged_result, unchanged_err = annotations.exchangeBooks(bridge, {
+    { hash = string.rep("a", 32), annotations = entries, live = false },
+})
+assert(unchanged_result, unchanged_err)
+assert(exchange_calls == 1, "unchanged annotations still require one pull-only exchange")
+assert(exchange_payloads[1].books[1].keysComplete == false
+        and #exchange_payloads[1].books[1].keys == 0,
+    "unchanged annotation signatures must suppress the complete key list")
+
+local identity_entries = {
+    { datetime = "same", pos0 = "/body/p[1]", text = "one" },
+    { datetime = "same", pos0 = "/body/p[2]", text = "two" },
+}
+local identity = annotations.newIdentityIndex(identity_entries)
+assert(identity:find({ datetime = "same", pos0 = "/body/p[2]", text = "two" }) == 2,
+    "ambiguous datetimes must fall back to indexed position and text")
+
+local bounded_calls = 0
+local bounded_sizes = {}
+bridge.api.max_json_body_bytes = 1500
+bridge.api.jsonBodySize = function(_, payload)
+    local size = 100
+    for _, book in ipairs(payload.books or {}) do
+        size = size + #(book.keys or {}) * 40 + #(book.changes or {}) * 100
+    end
+    return size
+end
+bridge.api.exchangeAnnotations = function(_, payload)
+    bounded_calls = bounded_calls + 1
+    local size = bridge.api:jsonBodySize(payload)
+    bounded_sizes[#bounded_sizes + 1] = size
+    local response_books = {}
+    for _, book in ipairs(payload.books) do
+        response_books[#response_books + 1] = {
+            hash = book.hash,
+            toApply = { add = {}, edit = {}, delete = {} },
+            more = false,
+        }
+    end
+    return true, { enabled = true, books = response_books }
+end
+local bounded_entries = {}
+for index = 1, 20 do
+    bounded_entries[index] = {
+        datetime = "2021-01-01 00:00:00",
+        pos0 = "/body/bounded[" .. index .. "]",
+        pos1 = "/body/bounded[" .. index .. "]/end",
+    }
+end
+local bounded_result, bounded_err = annotations.exchangeBooks(bridge, {
+    { hash = string.rep("b", 32), annotations = bounded_entries, live = false },
+})
+assert(bounded_result, bounded_err)
+assert(bounded_result.uploaded == 20 and bounded_calls > 1,
+    "byte budgeting must split an otherwise oversized annotation exchange")
+for _, size in ipairs(bounded_sizes) do
+    assert(size <= bridge.api.max_json_body_bytes, "annotation exchange exceeded its byte budget")
+end
+
+fake_history = {
+    { file = "/books/one.epub" },
+    { file = "/books/two.epub" },
+    { file = "/books/three.epub" },
+}
+fake_lfs.attributes = function() return "file" end
+fake_docsettings.hasSidecarFile = function() return true end
+local original_resolve_hash = annotations.resolveBookHash
+local original_exchange_books = annotations.exchangeBooks
+annotations.resolveBookHash = function(file) return string.rep(file:sub(8, 8), 32) end
+local sweep_exchanges = 0
+annotations.exchangeBooks = function()
+    sweep_exchanges = sweep_exchanges + 1
+    return { uploaded = 1, applied = 0, deleted = 0 }
+end
+local sweep_saved, sweep_done
+local sweep_bridge = {
+    state = {
+        readSetting = function() return sweep_saved end,
+        saveSetting = function(_, _, value) sweep_saved = value end,
+        delSetting = function() sweep_saved = nil end,
+        flush = function() end,
+    },
+    logInfo = function() end,
+    logWarn = function() end,
+}
+assert(BridgeSweep.start(sweep_bridge, nil, function(_, message) sweep_done = message or "done" end))
+assert(sweep_exchanges == 0, "sweep history discovery must yield before network work")
+while #scheduled_callbacks > 0 do
+    local callback = table.remove(scheduled_callbacks, 1)
+    callback()
+end
+assert(sweep_exchanges == 3 and sweep_done == "done" and sweep_saved == nil,
+    "sweep must process and ack-gate every queued history book")
+
+sweep_done = nil
+assert(BridgeSweep.start(sweep_bridge, nil, function(_, message) sweep_done = message end))
+BridgeSweep.cancel()
+while #scheduled_callbacks > 0 do
+    local callback = table.remove(scheduled_callbacks, 1)
+    callback()
+end
+assert(sweep_exchanges == 3 and sweep_done == "cancelled",
+    "sweep cancellation must invalidate scheduled work before exchange")
+annotations.resolveBookHash = original_resolve_hash
+annotations.exchangeBooks = original_exchange_books
 
 local pages, books = {}, {}
 for index = 1, 10001 do
@@ -197,6 +444,30 @@ assert(not coordinator:isBusy(), "coordinator remained busy after all jobs compl
 assert(version.isNewer("0.4.0", "0.3.6"), "newer semantic version was not detected")
 assert(not version.isNewer("0.3.5", "0.3.6"), "older server version would trigger a downgrade")
 assert(not version.isNewer("0.3.6", "0.3.6"), "equal version was treated as newer")
+
+-- ── ManifestRules (bridge_manifest_rules.lua) ──
+local manifest_rules = require("bridge_manifest_rules")
+
+assert(manifest_rules.revisionToPersist("abc123", 0, 0) == "abc123",
+    "revisionToPersist clean sweep persists revision")
+assert(manifest_rules.revisionToPersist("abc123", 1, 0) == "",
+    "revisionToPersist with errors returns empty string")
+assert(manifest_rules.revisionToPersist("abc123", 0, 2) == "",
+    "revisionToPersist with remaining downloads returns empty string")
+assert(manifest_rules.revisionToPersist("abc123", "3", nil) == "",
+    "revisionToPersist coerces string errors to number")
+assert(manifest_rules.revisionToPersist(nil, 0, 0) == "",
+    "revisionToPersist with nil revision returns empty string")
+assert(manifest_rules.revisionToPersist("abc123", nil, nil) == "abc123",
+    "revisionToPersist treats nil errors/remaining as zero")
+
+assert(manifest_rules.downloadAllowed(0, 0) == true, "downloadAllowed 0 cap is unlimited")
+assert(manifest_rules.downloadAllowed(999, 0) == true, "downloadAllowed 0 cap unlimited even at high attempts")
+assert(manifest_rules.downloadAllowed(0, nil) == true, "downloadAllowed nil cap is unlimited")
+assert(manifest_rules.downloadAllowed(4, 5) == true, "downloadAllowed attempts under cap allowed")
+assert(manifest_rules.downloadAllowed(5, 5) == false, "downloadAllowed attempts at cap denied")
+assert(manifest_rules.downloadAllowed(nil, 5) == true, "downloadAllowed nil attempts treated as zero")
+assert(manifest_rules.downloadAllowed(3, -1) == true, "downloadAllowed negative cap is unlimited")
 
 -- ── Session collapsing (bridge_sessions.lua, the real module) ──
 

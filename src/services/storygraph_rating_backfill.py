@@ -46,7 +46,7 @@ class StorygraphRatingBackfill:
         try:
             candidates = self._candidates()
         except Exception as exc:
-            logger.warning("StoryGraph rating backfill: failed to query candidates: %s", exc)
+            logger.warning("StoryGraph rating backfill: failed to query candidates: %s", exc, exc_info=True)
             return
 
         if not candidates:
@@ -66,7 +66,7 @@ class StorygraphRatingBackfill:
             except Exception as exc:
                 logger.warning(
                     "StoryGraph rating backfill: fetch failed for %s (%s): %s",
-                    details.abs_id, book_id, exc,
+                    details.abs_id, book_id, exc, exc_info=True,
                 )
                 failed += 1
                 time.sleep(self.request_delay_sec)
@@ -89,7 +89,7 @@ class StorygraphRatingBackfill:
             except Exception as exc:
                 logger.warning(
                     "StoryGraph rating backfill: save failed for %s: %s",
-                    details.abs_id, exc,
+                    details.abs_id, exc, exc_info=True,
                 )
                 failed += 1
 
@@ -123,7 +123,7 @@ def start_backfill_thread(
         try:
             backfill.run()
         except Exception as exc:
-            logger.warning("StoryGraph rating backfill: unexpected error: %s", exc)
+            logger.warning("StoryGraph rating backfill: unexpected error: %s", exc, exc_info=True)
 
     thread = threading.Thread(target=_runner, daemon=True, name="StorygraphRatingBackfill")
     thread.start()

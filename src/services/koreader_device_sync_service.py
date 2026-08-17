@@ -2,12 +2,13 @@ import hashlib
 import json
 import logging
 import mimetypes
+import os
 import re
 import threading
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict
 from urllib.parse import quote
 
 from src.utils.cache_paths import safe_cache_path
@@ -36,7 +37,12 @@ class KOReaderDeviceSyncService:
         kavita_client=None,
         epub_cache_dir=None,
         bookorbit_client=None,
+        user_id=None,
     ):
+        # When set, this instance is scoped to one user: it sees only the books
+        # that user has claimed, and its clients carry that user's credentials.
+        # None keeps the historical global/admin behavior.
+        self.user_id = user_id
         self.database_service = database_service
         self.ebook_parser = ebook_parser
         self.abs_client = abs_client
@@ -52,13 +58,33 @@ class KOReaderDeviceSyncService:
         # Audiobook-only mappings have no ebook file by design, so they're never
         # relevant to this ebook-focused device manifest -- including them just
         # produces a "no original ebook filename" warning every cycle, forever.
+        if self.user_id is not None:
+            books = self.database_service.get_books_by_status("active", user_id=self.user_id)
+        else:
+            books = self.database_service.get_books_by_status("active")
         return sorted(
             (
-                book for book in self.database_service.get_books_by_status("active")
+                book for book in books
                 if getattr(book, "sync_mode", "audiobook") != "audiobook_only"
             ),
             key=lambda book: (str(getattr(book, "abs_title", "") or "").lower(), str(book.abs_id)),
         )
+
+    @staticmethod
+    def _safe_file_size(path) -> Optional[int]:
+        """Byte size of ``path``, or None when it cannot be stat'ed.
+
+        The cache-cleanup paths delete orphaned EPUBs concurrently, so a file that
+        existed when the artifact was resolved can be gone by the time the manifest
+        item is built. An unguarded stat would raise out of the whole build_manifest
+        loop and cost every book its manifest entry; a missing size costs only this
+        one item's download-timeout hint, which the plugin already tolerates.
+        """
+        try:
+            return int(Path(path).stat().st_size)
+        except OSError:
+            logger.debug("KOReader device-sync could not size '%s'", sanitize_log_data(str(path)))
+            return None
 
     def build_manifest(self, shelf_mapping: dict[str, list[str]] | None = None) -> dict:
         books = self._get_active_books()
@@ -79,7 +105,7 @@ class KOReaderDeviceSyncService:
                 "title": str(getattr(book, "abs_title", "") or ""),
                 "content_hash": resolved["content_hash"],
                 "download_path": f"/koreader/device-sync/books/{quote(str(book.abs_id), safe='')}/download",
-                "size": None,
+                "size": self._safe_file_size(resolved["path"]),
                 "filename": filename,
             })
 
@@ -150,13 +176,21 @@ class KOReaderDeviceSyncService:
         return filename_map
 
     def _select_source_filename(self, book) -> Optional[str]:
+        storyteller_fallback = None
         for candidate in (
             getattr(book, "original_ebook_filename", None),
             getattr(book, "ebook_filename", None),
         ):
             filename = str(candidate or "").strip()
-            if filename and not self._is_storyteller_artifact_filename(filename):
-                return filename
+            if not filename:
+                continue
+            if self._is_storyteller_artifact_filename(filename):
+                if storyteller_fallback is None:
+                    storyteller_fallback = filename
+                continue
+            return filename
+        if storyteller_fallback and getattr(book, "sync_mode", None) == "ebook_only":
+            return storyteller_fallback
         logger.warning(
             "Skipping KOReader device-sync manifest item for '%s': no original ebook filename",
             sanitize_log_data(getattr(book, "abs_title", None) or getattr(book, "abs_id", None)),
@@ -190,6 +224,7 @@ class KOReaderDeviceSyncService:
                 "KOReader device-sync could not compute content hash for '%s': %s",
                 sanitize_log_data(source_path.name),
                 e,
+                exc_info=True,
             )
             return None
 
@@ -199,12 +234,15 @@ class KOReaderDeviceSyncService:
                 self._content_hash_cache[path_str] = (signature[0], signature[1], content_hash)
         return content_hash
 
-    def _resolve_download_artifact(self, book) -> Optional[dict]:
+    def _resolve_download_artifact(self, book, link_hashes: bool = True,
+                                   allow_revalidation: bool = False) -> Optional[dict]:
         source_filename = self._select_source_filename(book)
         if not source_filename:
             return None
 
-        source_path = self._resolve_source_path(book, source_filename)
+        source_path = self._resolve_source_path(
+            book, source_filename, allow_revalidation=allow_revalidation
+        )
         if not source_path or not source_path.exists():
             logger.warning(
                 "KOReader device-sync could not resolve original ebook for '%s' (%s)",
@@ -227,15 +265,16 @@ class KOReaderDeviceSyncService:
         # Make the served file's hash resolvable as a linked sibling so a device that
         # downloaded it via BridgeSync links to this book regardless of which hash the
         # primary book.kosync_doc_id column currently points at.
-        if abs_id and content_hash:
-            self._link_sibling_hash(abs_id, content_hash)
+        linked = False
+        if abs_id and content_hash and link_hashes:
+            linked = self._link_sibling_hash(abs_id, content_hash)
 
         if stored_hash and stored_hash != content_hash:
             # The primary hash may deliberately identify a different EPUB build, such
             # as a manually pinned or Storyteller-forged copy. Keep it primary and link
             # both hashes as siblings; GET/PUT resolution aggregates progress across
             # every hash linked to this book.
-            if abs_id:
+            if abs_id and link_hashes:
                 self._link_sibling_hash(abs_id, stored_hash)
             logger.debug(
                 "KOReader device-sync: keeping primary kosync_doc_id for '%s' "
@@ -249,12 +288,17 @@ class KOReaderDeviceSyncService:
             "path": source_path,
             "source_filename": source_filename,
             "content_hash": content_hash,
+            "linked": linked,
         }
 
-    def _link_sibling_hash(self, abs_id: str, doc_hash: str) -> None:
-        """Ensure ``doc_hash`` exists as a KosyncDocument linked to ``abs_id`` (best effort)."""
+    def _link_sibling_hash(self, abs_id: str, doc_hash: str) -> bool:
+        """Ensure ``doc_hash`` exists as a KosyncDocument linked to ``abs_id`` (best effort).
+
+        Returns True when a row was created or its link changed, so callers can
+        report how much drift a reconcile pass actually repaired.
+        """
         try:
-            self.database_service.ensure_linked_kosync_document(doc_hash, abs_id)
+            return bool(self.database_service.ensure_linked_kosync_document(doc_hash, abs_id))
         except Exception as e:
             logger.debug(
                 "KOReader device-sync: could not link sibling hash %s -> %s: %s",
@@ -262,6 +306,73 @@ class KOReaderDeviceSyncService:
                 sanitize_log_data(abs_id),
                 e,
             )
+            return False
+
+    def reconcile_hashes(self) -> Dict[str, int]:
+        """Re-hash every active book's ebook and bind any drifted hash to that book.
+
+        Editing metadata in a library (genres, cover, anything that rewrites the OPF)
+        changes the file's bytes and therefore its KoSync content hash, breaking the
+        device's link. This walks the catalogue and links the current hash as a
+        sibling, so a device that re-downloads an edited book still resolves.
+
+        ``Book.kosync_doc_id`` is deliberately never rewritten: hashes accumulate as
+        siblings, so copies delivered before the edit keep working too.
+        """
+        summary = {"checked": 0, "linked": 0, "skipped": 0, "errors": 0, "conflicts": 0}
+        claimed_by: Dict[str, str] = {}
+
+        for book in self._get_active_books():
+            summary["checked"] += 1
+            label = sanitize_log_data(getattr(book, "abs_title", None) or getattr(book, "abs_id", None))
+            try:
+                # Resolve without linking so a hash claimed by an earlier book in this
+                # same pass can be detected before it is rebound. This is the only
+                # path allowed to re-download an expired copy: it runs in the
+                # background, never inside a device request.
+                resolved = self._resolve_download_artifact(
+                    book, link_hashes=False, allow_revalidation=True
+                )
+            except Exception as e:
+                summary["errors"] += 1
+                logger.warning("🔗 Hash reconcile failed for '%s': %s", label, e, exc_info=True)
+                continue
+
+            if not resolved:
+                summary["skipped"] += 1
+                continue
+
+            content_hash = resolved.get("content_hash")
+            abs_id = str(getattr(book, "abs_id", "") or "").strip()
+            if not content_hash or not abs_id:
+                summary["skipped"] += 1
+                continue
+
+            # Two active books resolving to the same file would otherwise steal the
+            # hash from each other on every pass. That is a catalogue mis-mapping, not
+            # drift: leave the existing link alone and surface it instead.
+            owner = claimed_by.get(content_hash)
+            if owner and owner != abs_id:
+                summary["conflicts"] += 1
+                logger.warning(
+                    "🔗 Hash reconcile: '%s' resolves to the same file as '%s' (hash %s) — "
+                    "leaving the existing link alone; check these books' ebook mapping",
+                    label, sanitize_log_data(owner), sanitize_log_data(content_hash),
+                )
+                continue
+            claimed_by[content_hash] = abs_id
+
+            if self._link_sibling_hash(abs_id, content_hash):
+                summary["linked"] += 1
+                logger.info("🔗 Hash reconcile: bound new hash %s to '%s'",
+                            sanitize_log_data(content_hash), label)
+
+        logger.info(
+            "🔗 Hash reconcile: checked=%d linked=%d skipped=%d conflicts=%d errors=%d",
+            summary["checked"], summary["linked"], summary["skipped"],
+            summary["conflicts"], summary["errors"],
+        )
+        return summary
 
     def _build_preferred_filename(self, book, suffix: str) -> str:
         base = str(getattr(book, "abs_title", "") or "").strip()
@@ -298,10 +409,56 @@ class KOReaderDeviceSyncService:
                 return cached_path
         return None
 
-    def _resolve_source_path(self, book, source_filename: str) -> Optional[Path]:
-        source_path = self._try_local_path(source_filename)
-        if source_path:
-            return source_path
+    def _is_within_cache_dir(self, candidate: Path) -> bool:
+        """Return True when ``candidate`` lives inside the managed epub cache dir.
+
+        ``EbookParser.resolve_book_path`` falls back to the epub cache directory for
+        ordinary filenames, so a "resolved" path is not proof of a real library file.
+        A cached copy must go through the TTL check instead of short-circuiting it.
+        """
+        try:
+            candidate.resolve().relative_to(self.epub_cache_dir.resolve())
+            return True
+        except (ValueError, OSError):
+            return False
+
+    def _discard_refresh_file(self, target: Path) -> None:
+        """Remove a leftover revalidation temp file, best effort."""
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            return
+        except OSError as e:
+            logger.debug("KOReader device-sync could not remove refresh temp file: %s", e)
+
+    def _hosted_cache_expired(self, cache_path: Path) -> bool:
+        """Return True if the cached copy is expired based on TTL setting."""
+        if not cache_path.exists() or cache_path.stat().st_size == 0:
+            return False
+
+        try:
+            ttl_str = os.environ.get("DEVICE_SYNC_EBOOK_CACHE_TTL_MINUTES", "360")
+            ttl_minutes = int(float(ttl_str))
+        except (TypeError, ValueError):
+            ttl_minutes = 360
+
+        if ttl_minutes <= 0:
+            return False
+
+        try:
+            age_seconds = time.time() - cache_path.stat().st_mtime
+            return age_seconds > ttl_minutes * 60
+        except OSError:
+            return False
+
+    def _resolve_source_path(self, book, source_filename: str,
+                             allow_revalidation: bool = False) -> Optional[Path]:
+        try:
+            candidate = Path(self.ebook_parser.resolve_book_path(source_filename))
+            if candidate.exists() and not self._is_within_cache_dir(candidate):
+                return candidate
+        except Exception:
+            pass
 
         self.epub_cache_dir.mkdir(parents=True, exist_ok=True)
         cache_path = safe_cache_path(self.epub_cache_dir, source_filename)
@@ -309,15 +466,73 @@ class KOReaderDeviceSyncService:
             logger.warning("KOReader device-sync refused unsafe cache filename '%s'", sanitize_log_data(source_filename))
             return None
 
-        if self._download_from_bookorbit(book, source_filename, cache_path):
+        has_usable_cache = cache_path.exists() and cache_path.stat().st_size > 0
+        # Refreshing a copy means a network download, so it only ever happens on the
+        # background reconcile path. Device-facing work (manifest builds, file
+        # serving) takes whatever is cached however stale — a reader waiting on the
+        # library to re-send hundreds of books is far worse than briefly stale bytes,
+        # and the reconciler brings them current shortly after.
+        if has_usable_cache and (not allow_revalidation or not self._hosted_cache_expired(cache_path)):
+            logger.debug(
+                "KOReader device-sync served cached copy for '%s'",
+                sanitize_log_data(source_filename),
+            )
             return cache_path
-        if self._download_from_booklore(book, source_filename, cache_path):
+
+        # Revalidation downloads into a temp sibling and swaps only on success. The
+        # download helpers write straight to the path they are given and a failing
+        # one can leave it truncated or removed, so handing them the live cached copy
+        # would let a failed refresh destroy the only good copy we have.
+        if has_usable_cache:
+            logger.info(
+                "KOReader device-sync cached copy expired for '%s', revalidating",
+                sanitize_log_data(source_filename),
+            )
+            target = cache_path.with_name(cache_path.name + ".refresh")
+            self._discard_refresh_file(target)
+        else:
+            target = cache_path
+
+        downloaded = (
+            self._download_from_bookorbit(book, source_filename, target)
+            or self._download_from_booklore(book, source_filename, target)
+            or self._download_from_abs(book, source_filename, target)
+            or self._download_from_cwa(book, source_filename, target)
+            or self._download_from_kavita(book, source_filename, target)
+        )
+
+        if downloaded and target != cache_path:
+            try:
+                os.replace(target, cache_path)
+            except OSError as e:
+                logger.warning(
+                    "KOReader device-sync could not swap in the refreshed copy for '%s': %s",
+                    sanitize_log_data(source_filename),
+                    e,
+                    exc_info=True,
+                )
+                self._discard_refresh_file(target)
+                return cache_path
+        if downloaded:
             return cache_path
-        if self._download_from_abs(book, source_filename, cache_path):
-            return cache_path
-        if self._download_from_cwa(book, source_filename, cache_path):
-            return cache_path
-        if self._download_from_kavita(book, source_filename, cache_path):
+
+        if target != cache_path:
+            self._discard_refresh_file(target)
+
+        if has_usable_cache and cache_path.exists():
+            # Back off a full TTL before trying again. Without this an unreachable or
+            # unauthorized source is retried by every manifest rebuild (60s) for as
+            # long as the copy stays expired, which floods the log with download
+            # errors and hammers the remote.
+            try:
+                os.utime(cache_path, None)
+            except OSError as e:
+                logger.debug("KOReader device-sync could not defer the next refresh: %s", e)
+            logger.warning(
+                "KOReader device-sync revalidation failed for '%s', reusing previous cached "
+                "copy and retrying no sooner than the next TTL window",
+                sanitize_log_data(source_filename),
+            )
             return cache_path
 
         return None
@@ -344,6 +559,7 @@ class KOReaderDeviceSyncService:
                 "KOReader device-sync BookOrbit download failed for '%s': %s",
                 sanitize_log_data(source_filename),
                 exc,
+                exc_info=True,
             )
             return False
 
@@ -369,6 +585,7 @@ class KOReaderDeviceSyncService:
                 "KOReader device-sync Grimmory download failed for '%s': %s",
                 sanitize_log_data(source_filename),
                 e,
+                exc_info=True,
             )
             return False
 
@@ -401,6 +618,7 @@ class KOReaderDeviceSyncService:
                 "KOReader device-sync ABS download failed for '%s': %s",
                 sanitize_log_data(source_filename),
                 e,
+                exc_info=True,
             )
             return False
 
@@ -408,9 +626,15 @@ class KOReaderDeviceSyncService:
         if not self.cwa_client or not self.cwa_client.is_configured():
             return False
 
+        # ebook_source_id is namespaced to the source that owns the book, so it is a
+        # CWA id only when the book is CWA-sourced. Reading it unconditionally sent
+        # every other provider's id to CWA — a BookOrbit book was requested as
+        # /opds/download/<bookorbit id>/, which can only ever fail.
         source_name = str(getattr(book, "ebook_source", "") or "").strip().lower()
-        cwa_id = str(getattr(book, "ebook_source_id", "") or "").strip()
-        if source_name != "cwa" and not cwa_id:
+        cwa_id = ""
+        if source_name == "cwa":
+            cwa_id = str(getattr(book, "ebook_source_id", "") or "").strip()
+        if not cwa_id:
             match = self._CWA_FILENAME_RE.match(str(source_filename or ""))
             if match:
                 cwa_id = str(match.group("cwa_id") or "").strip()
@@ -427,6 +651,7 @@ class KOReaderDeviceSyncService:
                 "KOReader device-sync CWA download failed for '%s': %s",
                 sanitize_log_data(source_filename),
                 e,
+                exc_info=True,
             )
             return False
 
@@ -455,6 +680,7 @@ class KOReaderDeviceSyncService:
                 "KOReader device-sync Kavita download failed for '%s': %s",
                 sanitize_log_data(source_filename),
                 e,
+                exc_info=True,
             )
             return False
 

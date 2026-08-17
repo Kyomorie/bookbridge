@@ -11,7 +11,8 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
 local lfs = require("libs/libkoreader-lfs")
 local bit = require("bit")
-local md5 = require("ffi/sha2").md5
+local sha2 = require("ffi/sha2")
+local md5 = sha2.md5
 local FFIUtil = require("ffi/util")
 local buffer = require("string.buffer")
 local socket = require("socket")
@@ -22,6 +23,7 @@ local BridgeSweep = require("bridge_sweep")
 local BridgeSyncCoordinator = require("bridge_sync_coordinator")
 local BridgeStatsBatches = require("bridge_stats_batches")
 local BridgeVersion = require("bridge_version")
+local ManifestRules = require("bridge_manifest_rules")
 local BridgeSqliteState = require("bridge_sqlite_state")
 local BridgeSessions = require("bridge_sessions")
 local SQ3
@@ -51,6 +53,7 @@ local T = require("ffi/util").template
 local STATS_UPLOAD_BATCH = 3000
 local SETTINGS_VERSION = 1
 local DEVICE_LOG_UPLOAD_MAX_BYTES = 24 * 1024
+local DEVICE_LOG_MAX_BYTES = 512 * 1024
 
 local BridgeSync = WidgetContainer:extend{
     name = "bridgesync",
@@ -154,6 +157,7 @@ function BridgeSync:init()
         self.auto_sync_on_close = auto_sync_on_close
     end
     self.delete_removed_books = get_setting("delete_removed_books") or false
+    self.max_downloads_per_sync = tonumber(get_setting("max_downloads_per_sync")) or 0
     self.manual_only = get_setting("manual_only") or false
     local do_not_sync_while_book_open = get_setting("do_not_sync_while_book_open")
     if do_not_sync_while_book_open == nil then
@@ -196,6 +200,7 @@ function BridgeSync:init()
     else
         self.pending_sessions = self.state:readSetting("pending_sessions") or {}
     end
+    self.pending_annotation_closes = self:_getStateScalarJSON("pending_annotation_closes", {}) or {}
 
     self.sync_in_progress = false
     self.last_auto_sync_time = 0
@@ -206,14 +211,17 @@ function BridgeSync:init()
     self.needs_wake_sync = false
     self.sync_scheduled = false
     self.close_book_sync_scheduled = false
+    self.scheduled_tasks = {}
     self.api = APIClient:new()
     self.api:init(self.server_url, self.username, self.key, function(level, message)
         self:_appendLog(level, message)
+    end, function(task)
+        return self:_runInSubprocess(task)
     end)
     self.sync_coordinator = BridgeSyncCoordinator:new()
 
     self.ui.menu:registerToMainMenu(self)
-    UIManager:scheduleIn(10, function()
+    self:_scheduleTask("plugin_update", 10, function()
         self:_maybeCheckForPluginUpdate()
     end)
 end
@@ -341,6 +349,11 @@ end
 
 function BridgeSync:_appendLog(level, message)
     local line = os.date("%Y-%m-%d %H:%M:%S") .. " [" .. tostring(level or "info") .. "] " .. tostring(message or "") .. "\n"
+    local current_size = tonumber(lfs.attributes(self.log_path, "size")) or 0
+    if current_size + #line > DEVICE_LOG_MAX_BYTES then
+        os.remove(self.log_path .. ".1")
+        os.rename(self.log_path, self.log_path .. ".1")
+    end
     local handle = io.open(self.log_path, "a")
     if handle then
         handle:write(line)
@@ -454,6 +467,7 @@ function BridgeSync:_saveSettings()
     self:_saveSetting("auto_sync_on_network", self.auto_sync_on_network)
     self:_saveSetting("auto_sync_on_close", self.auto_sync_on_close)
     self:_saveSetting("delete_removed_books", self.delete_removed_books)
+    self:_saveSetting("max_downloads_per_sync", self.max_downloads_per_sync)
     self:_saveSetting("manual_only", self.manual_only)
     self:_saveSetting("do_not_sync_while_book_open", self.do_not_sync_while_book_open)
     self:_saveSetting("wake_sync_delay_seconds", self.wake_sync_delay_seconds)
@@ -469,6 +483,8 @@ function BridgeSync:_saveSettings()
     
     self.api:init(self.server_url, self.username, self.key, function(level, message)
         self:_appendLog(level, message)
+    end, function(task)
+        return self:_runInSubprocess(task)
     end)
 end
 
@@ -484,6 +500,10 @@ function BridgeSync:_preflightNetwork(allow_dns_retry)
     local host = self:_extractHost()
     if not host or host == "" then
         return false, _("Server URL is invalid")
+    end
+
+    if host:match("^%d+%.%d+%.%d+%.%d+$") then
+        return true
     end
 
     local resolved_ip = socket.dns.toip(host)
@@ -670,8 +690,8 @@ function BridgeSync:_showManagedFolderChooser(touchmenu_instance)
 end
 
 function BridgeSync:_runInSubprocess(task)
-    local co = coroutine.running()
-    if not co then
+    local co, is_main = coroutine.running()
+    if not co or is_main then
         return true, task()
     end
 
@@ -826,6 +846,9 @@ function BridgeSync:_hasWakeWork()
     if #self.pending_sessions > 0 then
         return true
     end
+    if #self.pending_annotation_closes > 0 then
+        return true
+    end
     if self.session_tracking_enabled and self.auto_sync_stats
         and (os.time() - (self.last_stats_sync_time or 0)) >= 300 then
         return true
@@ -842,6 +865,7 @@ end
 -- deferred while a document is open and respects the auto-sync toggles + cooldown.
 function BridgeSync:_runScheduledWork(silent)
     self:_maybeUploadPendingSessions("wake")
+    self:_maybeUploadPendingAnnotationCloses("wake")
     self:_maybeAutoSyncStats("wake")
 
     if self.manual_only then
@@ -915,13 +939,48 @@ function BridgeSync:_syncStatusSummary()
     )
 end
 
+function BridgeSync:_cancelTask(name)
+    local callback = self.scheduled_tasks and self.scheduled_tasks[name]
+    if callback then
+        UIManager:unschedule(callback)
+        self.scheduled_tasks[name] = nil
+    end
+end
+
+function BridgeSync:_scheduleTask(name, delay_seconds, callback)
+    self.scheduled_tasks = self.scheduled_tasks or {}
+    self:_cancelTask(name)
+    local scheduled
+    scheduled = function()
+        if self.scheduled_tasks[name] ~= scheduled then return end
+        self.scheduled_tasks[name] = nil
+        callback()
+    end
+    self.scheduled_tasks[name] = scheduled
+    UIManager:scheduleIn(delay_seconds, scheduled)
+end
+
+function BridgeSync:_cancelAutomaticTasks()
+    if self.close_book_sync_scheduled then self.needs_wake_sync = true end
+    for _, name in ipairs({
+        "wake_sync", "book_sync", "annotation_sync", "stats_sync",
+        "close_annotations", "plugin_update",
+    }) do
+        self:_cancelTask(name)
+    end
+    self.sync_scheduled = false
+    self.close_book_sync_scheduled = false
+    self.annotation_sync_scheduled = false
+    self.stats_sync_scheduled = false
+end
+
 function BridgeSync:_scheduleSync(delay_seconds, silent, retries_left)
     if self.sync_scheduled then
         return
     end
 
     self.sync_scheduled = true
-    UIManager:scheduleIn(delay_seconds or 10, function()
+    self:_scheduleTask("wake_sync", delay_seconds or 10, function()
         self.sync_scheduled = false
         if not self.is_enabled then
             return
@@ -956,7 +1015,7 @@ function BridgeSync:_scheduleAutoBookSync(reason, delay_seconds, silent, retries
     end
 
     self.close_book_sync_scheduled = true
-    UIManager:scheduleIn(delay_seconds or 1, function()
+    self:_scheduleTask("book_sync", delay_seconds or 1, function()
         self.close_book_sync_scheduled = false
         if not self.is_enabled or self.manual_only then
             return
@@ -1038,7 +1097,7 @@ function BridgeSync:_scheduleAutoAnnotationSync(reason, delay_seconds, silent, r
     end
 
     self.annotation_sync_scheduled = true
-    UIManager:scheduleIn(delay_seconds or 1, function()
+    self:_scheduleTask("annotation_sync", delay_seconds or 1, function()
         self.annotation_sync_scheduled = false
         if not self.is_enabled or not self.annotation_sync_enabled then
             return
@@ -1078,7 +1137,7 @@ function BridgeSync:_scheduleAutoStatsSync(reason, delay_seconds, silent, retrie
     end
 
     self.stats_sync_scheduled = true
-    UIManager:scheduleIn(delay_seconds or 1, function()
+    self:_scheduleTask("stats_sync", delay_seconds or 1, function()
         self.stats_sync_scheduled = false
         if not self.is_enabled or not self.session_tracking_enabled or not self.auto_sync_stats then
             return
@@ -1313,7 +1372,7 @@ function BridgeSync:onNetworkConnected()
     if self:_hasWakeWork() then
         self:_scheduleSync(10, true)
     end
-    UIManager:scheduleIn(2, function()
+    self:_scheduleTask("plugin_update", 2, function()
         self:_maybeCheckForPluginUpdate()
     end)
     return false
@@ -1512,6 +1571,7 @@ function BridgeSync:_runSync()
             deleted = 0,
             deferred = 0,
             errors = 0,
+            remaining = 0,
             revision = remote_revision,
             unchanged = true,
         }
@@ -1528,6 +1588,7 @@ function BridgeSync:_runSync()
         return hash_index
     end
     local downloaded, skipped, renamed, deleted, deferred, errors = 0, 0, 0, 0, 0, 0
+    local remaining, download_attempts = 0, 0
 
     for _, book in ipairs(remote_books) do
         remote_by_abs[book.abs_id] = true
@@ -1582,42 +1643,47 @@ function BridgeSync:_runSync()
                 if hash_index then hash_index[book.content_hash] = target_path end
             end
         else
-            local temp_path = target_path .. ".part"
-            self:_safeRemove(temp_path)
-            local dl_ok, dl_err = self.api:downloadBook(book.download_path, temp_path)
-            if not dl_ok then
-                self:logWarn("Download failed for", book.abs_id, dl_err or "")
-                errors = errors + 1
-                self:_safeRemove(temp_path)
+            if not ManifestRules.downloadAllowed(download_attempts, self.max_downloads_per_sync) then
+                remaining = remaining + 1
             else
-                local downloaded_hash = self:_calculateBookHash(temp_path)
-                if downloaded_hash and downloaded_hash ~= book.content_hash then
-                    self:logWarn("Hash mismatch for", book.abs_id, downloaded_hash, book.content_hash)
+                download_attempts = download_attempts + 1
+                local temp_path = target_path .. ".part"
+                self:_safeRemove(temp_path)
+                local dl_ok, dl_err = self.api:downloadBook(book.download_path, temp_path, book.size)
+                if not dl_ok then
+                    self:logWarn("Download failed for", book.abs_id, dl_err or "")
                     errors = errors + 1
                     self:_safeRemove(temp_path)
                 else
-                    self:_safeRemove(target_path)
-                    local move_ok, move_err = os.rename(temp_path, target_path)
-                    if not move_ok then
-                        self:logWarn("Rename failed for", book.abs_id, move_err or "")
+                    local downloaded_hash = self:_calculateBookHash(temp_path)
+                    if downloaded_hash and downloaded_hash ~= book.content_hash then
+                        self:logWarn("Hash mismatch for", book.abs_id, downloaded_hash, book.content_hash)
                         errors = errors + 1
                         self:_safeRemove(temp_path)
                     else
-                        downloaded = downloaded + 1
-                        if previous_entry
-                            and self:_managedPathsEqual(previous_entry.local_path, target_path)
-                            and previous_entry.content_hash
-                            and previous_entry.content_hash ~= book.content_hash
-                        then
-                            self:_removeTree(target_path .. ".sdr")
+                        self:_safeRemove(target_path)
+                        local move_ok, move_err = os.rename(temp_path, target_path)
+                        if not move_ok then
+                            self:logWarn("Rename failed for", book.abs_id, move_err or "")
+                            errors = errors + 1
+                            self:_safeRemove(temp_path)
+                        else
+                            downloaded = downloaded + 1
+                            if previous_entry
+                                and self:_managedPathsEqual(previous_entry.local_path, target_path)
+                                and previous_entry.content_hash
+                                and previous_entry.content_hash ~= book.content_hash
+                            then
+                                self:_removeTree(target_path .. ".sdr")
+                            end
+                            items[book.abs_id] = {
+                                local_path = target_path,
+                                filename = book.filename,
+                                content_hash = book.content_hash,
+                                shelves = book.shelves,
+                            }
+                            if hash_index then hash_index[book.content_hash] = target_path end
                         end
-                        items[book.abs_id] = {
-                            local_path = target_path,
-                            filename = book.filename,
-                            content_hash = book.content_hash,
-                            shelves = book.shelves,
-                        }
-                        if hash_index then hash_index[book.content_hash] = target_path end
                     end
                 end
             end
@@ -1649,8 +1715,14 @@ function BridgeSync:_runSync()
         end
     end
 
+    if remaining > 0 then
+        self:logInfo("Download cap reached:", remaining, "book(s) deferred to next sync")
+    end
+
     self:_updateCollections(items)
-    self:_saveState(items, manifest.revision or "")
+    -- A dirty sweep (errors or capped downloads) must not persist the server
+    -- revision, or the next sync's revision-match short-circuit would never retry.
+    self:_saveState(items, ManifestRules.revisionToPersist(manifest.revision, errors, remaining))
     return {
         downloaded = downloaded,
         skipped = skipped,
@@ -1658,6 +1730,7 @@ function BridgeSync:_runSync()
         deleted = deleted,
         deferred = deferred,
         errors = errors,
+        remaining = remaining,
         revision = remote_revision,
         unchanged = false,
     }
@@ -1823,6 +1896,12 @@ function BridgeSync:syncFromBridge(silent)
             result.deferred,
             result.errors
         )
+        if (result.remaining or 0) > 0 then
+            message = message .. "\n" .. T(_("Remaining: %1 (will continue next sync)"), result.remaining)
+        end
+        if (result.errors or 0) > 0 then
+            message = message .. "\n" .. _("Failed downloads will be retried on the next sync.")
+        end
     end
     self:logInfo(message)
     if not silent then
@@ -1841,7 +1920,7 @@ function BridgeSync:syncFromBridge(silent)
 
     self:_maybeAutoSyncStats("manifest sync")
 
-    local sync_status = (tonumber(result.errors) or 0) > 0 and "partial" or "success"
+    local sync_status = ((tonumber(result.errors) or 0) > 0 or (tonumber(result.remaining) or 0) > 0) and "partial" or "success"
     self:_uploadDeviceLogTail("book_sync", sync_status)
 
     return true
@@ -2736,6 +2815,97 @@ function BridgeSync:_captureAnnotationSnapshot()
     return captured
 end
 
+function BridgeSync:_savePendingAnnotationCloses()
+    return self:_saveStateScalarJSON("pending_annotation_closes", self.pending_annotation_closes)
+end
+
+function BridgeSync:_enqueuePendingAnnotationClose(closed_file, captured)
+    local item = {
+        file = closed_file or (captured and captured.file),
+        hash = captured and captured.hash or nil,
+        annotations = captured and captured.annotations or nil,
+        queued_at = os.time(),
+    }
+    if not item.hash and item.file then
+        item.hash = BridgeAnnotations.resolveBookHash(item.file)
+    end
+    if not item.file and not item.hash then return false end
+
+    local deduped = {}
+    for _, pending in ipairs(self.pending_annotation_closes) do
+        if not ((item.hash and pending.hash == item.hash) or
+                (item.file and pending.file == item.file)) then
+            deduped[#deduped + 1] = pending
+        end
+    end
+    deduped[#deduped + 1] = item
+    while #deduped > 10 do table.remove(deduped, 1) end
+    self.pending_annotation_closes = deduped
+    self:_savePendingAnnotationCloses()
+    return true
+end
+
+function BridgeSync:_uploadPendingAnnotationCloses()
+    local retained = {}
+    local all_ok = true
+    for _, pending in ipairs(self.pending_annotation_closes) do
+        local book
+        if pending.file then
+            book = BridgeAnnotations.collectBookByFile(pending.file, pending.hash)
+        end
+        if not book and pending.hash and type(pending.annotations) == "table" then
+            book = {
+                file = pending.file,
+                hash = pending.hash,
+                annotations = pending.annotations,
+                live = false,
+            }
+        end
+
+        if book and book.hash then
+            self:logInfo("Close-sync scanning highlights:",
+                tostring(#(book.annotations or {})), "annotation(s)")
+            local ok, result, err = pcall(
+                BridgeAnnotations.exchangeBooks,
+                self,
+                { book },
+                { upload_only = true }
+            )
+            if ok and type(result) == "table" then
+                self:logInfo("Close-sync highlights:", tostring(result.uploaded), "uploaded,",
+                    tostring(result.applied), "applied,", tostring(result.deleted), "deleted")
+            else
+                retained[#retained + 1] = pending
+                all_ok = false
+                self:logWarn("Close-sync highlights failed:", tostring(ok and err or result))
+            end
+        else
+            self:logInfo("Close-sync discarded an unreadable snapshot")
+        end
+    end
+    self.pending_annotation_closes = retained
+    self:_savePendingAnnotationCloses()
+    return all_ok
+end
+
+function BridgeSync:_maybeUploadPendingAnnotationCloses(reason)
+    if #self.pending_annotation_closes == 0 then return false end
+    if not NetworkMgr:isConnected() then
+        self:logInfo("Close-sync highlights still queued after", tostring(reason or "close"),
+            "- waiting for WiFi")
+        return false
+    end
+    self:_submitSyncJob(
+        "close_annotations",
+        _("Close highlight sync"),
+        reason or "close",
+        BridgeSyncCoordinator.PRIORITY.lifecycle,
+        true,
+        function() return self:_uploadPendingAnnotationCloses() end
+    )
+    return true
+end
+
 function BridgeSync:_syncAnnotationsAfterClose(closed_file, captured)
     if not self.is_enabled or not self.annotation_sync_enabled then
         return
@@ -2743,62 +2913,15 @@ function BridgeSync:_syncAnnotationsAfterClose(closed_file, captured)
     if not closed_file and not captured then
         return
     end
-    UIManager:scheduleIn(2, function()
-        if not NetworkMgr:isConnected() then
-            self:logInfo("Close-sync highlights waiting for WiFi; periodic sync will retry later")
-            return
-        end
-        self:_submitSyncJob(
-            "close_annotations",
-            _("Close highlight sync"),
-            "close",
-            BridgeSyncCoordinator.PRIORITY.lifecycle,
-            true,
-            function()
-            self.annotation_close_sync_in_flight = true
-            local run_ok, result, err = pcall(function()
-                local book = nil
-                if closed_file then
-                    local known_hash = captured and captured.hash or nil
-                    book = BridgeAnnotations.collectBookByFile(closed_file, known_hash)
-                end
-                if not book and captured then
-                    if not captured.hash then
-                        captured.hash = BridgeAnnotations.resolveBookHash(captured.file)
-                    end
-                    if captured.hash then
-                        book = captured
-                    end
-                end
-                if not book or not book.hash then
-                    return nil, "no hash"
-                end
-                self:logInfo(
-                    "Close-sync scanning highlights:",
-                    tostring(#(book.annotations or {})),
-                    "annotation(s)"
-                )
-                -- upload_only: push this session's highlights on close. Received
-                -- changes for the just-closed book are applied by the next
-                -- periodic sync, not a write that races KOReader's close flush.
-                return BridgeAnnotations.exchangeBooks(self, { book }, { upload_only = true })
-            end)
-            self.annotation_close_sync_in_flight = false
-            if run_ok and type(result) == "table" then
-                self:logInfo("Close-sync highlights:", tostring(result.uploaded), "uploaded,",
-                    tostring(result.applied), "applied,", tostring(result.deleted), "deleted")
-            elseif run_ok and err and err ~= "no hash" then
-                self:logWarn("Close-sync highlights failed:", tostring(err))
-            elseif not run_ok then
-                self:logWarn("Close-sync highlights crashed:", tostring(result))
-            end
-            return run_ok and (result ~= nil or err == "no hash")
-            end
-        )
+    self:_enqueuePendingAnnotationClose(closed_file, captured)
+    self:_scheduleTask("close_annotations", 2, function()
+        self:_maybeUploadPendingAnnotationCloses("close")
     end)
 end
 
 function BridgeSync:onSuspend()
+    self:_cancelAutomaticTasks()
+    if BridgeSweep.isRunning() then BridgeSweep.cancel() end
     self:endSession({ silent = true, force_queue = true })
     return false
 end
@@ -2919,6 +3042,92 @@ local function _shellQuote(path)
     return "'" .. tostring(path):gsub("'", "'\\''") .. "'"
 end
 
+local function _extractWithArchiver(Archiver, zip_path, staging)
+    local archive = Archiver.Reader:new()
+    if not archive:open(zip_path) then
+        local open_err = archive.err
+        archive:close()
+        return nil, tostring(open_err or "could not open update archive")
+    end
+    for entry in archive:iterate() do
+        local path = tostring(entry.path or "")
+        if path == "" or path:sub(1, 1) == "/" or path == ".."
+            or path:sub(1, 3) == "../" or path:find("/../", 1, true) then
+            archive:close()
+            return nil, "unsafe path in update archive"
+        end
+        -- A failed entry must abort the whole update. Breaking out and returning
+        -- success left a PARTIAL plugin staged; _installPluginZip only checks that
+        -- _meta.lua and main.lua exist, so a tree missing any other module passed
+        -- every gate and was renamed into place over the backup -- bricking the
+        -- plugin at the next require().
+        if not archive:extractToPath(path, staging .. "/" .. path) then
+            local entry_err = archive.err
+            archive:close()
+            return nil, tostring(entry_err or ("could not extract " .. path))
+        end
+    end
+    local extract_err = archive.err
+    archive:close()
+    if extract_err then return nil, tostring(extract_err) end
+    return true
+end
+
+BridgeSync._extractWithArchiver = _extractWithArchiver
+
+local function _verifyPluginArchive(zip_path, expected_digest, log)
+    if not expected_digest or expected_digest == "" then
+        -- Older bridges do not send X-Content-SHA256, and some reverse proxies strip
+        -- unknown X- response headers. Continuing is deliberate (the update would
+        -- otherwise be impossible), but it must not look like the archive was
+        -- checked when it was not.
+        if log then
+            log("warn", "Update archive checksum unavailable - installing without SHA-256 verification")
+        end
+        return true
+    end
+    expected_digest = tostring(expected_digest)
+    if #expected_digest ~= 64 or not expected_digest:match("^%x+$") then
+        return nil, "server returned an invalid update checksum"
+    end
+    if type(sha2.sha256) ~= "function" then
+        return nil, "SHA-256 verification is unavailable on this device"
+    end
+    local handle, open_err = io.open(zip_path, "rb")
+    if not handle then return nil, tostring(open_err or "could not read update archive") end
+    local contents = handle:read("*a")
+    handle:close()
+    local ok, actual = pcall(sha2.sha256, contents)
+    if not ok or not actual then return nil, "could not calculate update checksum" end
+    if tostring(actual):lower() ~= expected_digest:lower() then
+        return nil, "downloaded update checksum mismatch"
+    end
+    return true
+end
+
+BridgeSync._verifyPluginArchive = _verifyPluginArchive
+
+local function _validatePluginMetadata(meta_path, expected_version)
+    local handle, open_err = io.open(meta_path, "rb")
+    if not handle then return nil, tostring(open_err or "could not read plugin metadata") end
+    local contents = handle:read("*a")
+    handle:close()
+    local function field(name)
+        local prefix = "[%s,{]" .. name .. "%s*=%s*"
+        return contents:match(prefix .. "\"([^\"]+)\"")
+            or contents:match(prefix .. "'([^']+)'")
+    end
+    if field("name") ~= "bridgesync" then return nil, "update archive is not BridgeSync" end
+    local version = field("version")
+    if not version then return nil, "update archive has no plugin version" end
+    if expected_version and tostring(version) ~= tostring(expected_version) then
+        return nil, "update archive version does not match the offered version"
+    end
+    return true
+end
+
+BridgeSync._validatePluginMetadata = _validatePluginMetadata
+
 function BridgeSync:_downloadAndInstallPlugin(version)
     local temp_path = DataStorage:getSettingsDir() .. "/bridgesync-update.zip"
 
@@ -2929,7 +3138,7 @@ function BridgeSync:_downloadAndInstallPlugin(version)
     UIManager:show(info_msg)
     UIManager:forceRePaint()
 
-    local subprocess_ok, ok, err = self:_runInSubprocess(function()
+    local subprocess_ok, ok, digest_or_err = self:_runInSubprocess(function()
         return self.api:downloadPluginZip(temp_path)
     end)
 
@@ -2942,8 +3151,8 @@ function BridgeSync:_downloadAndInstallPlugin(version)
     end
 
     if not ok then
-        self:logWarn(err or "Download failed")
-        self:_showMessage(err or _("Plugin download failed"), 4)
+        self:logWarn(digest_or_err or "Download failed")
+        self:_showMessage(digest_or_err or _("Plugin download failed"), 4)
         return
     end
 
@@ -2953,7 +3162,7 @@ function BridgeSync:_downloadAndInstallPlugin(version)
     -- archive helper — platform `unzip` exit codes vary and some devices don't
     -- ship unzip at all. Staging/backup live next to the plugin dir so the
     -- renames stay on one filesystem.
-    local install_ok, install_err = self:_installPluginZip(temp_path)
+    local install_ok, install_err = self:_installPluginZip(temp_path, version, digest_or_err)
     os.remove(temp_path)
 
     if not install_ok then
@@ -2972,7 +3181,7 @@ function BridgeSync:_downloadAndInstallPlugin(version)
     })
 end
 
-function BridgeSync:_installPluginZip(zip_path)
+function BridgeSync:_installPluginZip(zip_path, expected_version, expected_digest)
     local plugin_dir = tostring(self.path):gsub("/+$", "")
     local plugins_dir = plugin_dir:match("^(.+)/[^/]+$")
     local plugin_name = plugin_dir:match("([^/]+)$")
@@ -2983,6 +3192,12 @@ function BridgeSync:_installPluginZip(zip_path)
     local staging = plugins_dir .. "/" .. plugin_name .. ".update"
     local backup = plugins_dir .. "/" .. plugin_name .. ".bak"
 
+    local digest_ok, digest_err = _verifyPluginArchive(
+        zip_path, expected_digest,
+        function(level, message) self:_appendLog(level, message) end
+    )
+    if not digest_ok then return nil, digest_err end
+
     -- Clear any leftovers from a previously interrupted attempt.
     os.execute("rm -rf " .. _shellQuote(staging))
 
@@ -2990,18 +3205,21 @@ function BridgeSync:_installPluginZip(zip_path)
         return nil, "could not create staging directory"
     end
 
-    local Device = require("device")
     local unpack_ok, unpack_err
-    if type(Device.unpackArchive) == "function" then
-        unpack_ok, unpack_err = Device:unpackArchive(zip_path, staging, true)
+    local has_archiver, Archiver = pcall(require, "ffi/archiver")
+    if has_archiver and type(Archiver) == "table" and Archiver.Reader then
+        unpack_ok, unpack_err = _extractWithArchiver(Archiver, zip_path, staging)
     else
-        -- Very old KOReader without the helper: fall back to unzip, but still
-        -- into staging only.
-        local exit_code = os.execute(
-            "unzip -o " .. _shellQuote(zip_path) .. " -d " .. _shellQuote(staging) .. " >/dev/null 2>&1"
-        )
-        unpack_ok = (exit_code == 0 or exit_code == true)
-        unpack_err = unpack_ok and nil or "unzip failed"
+        local Device = require("device")
+        if type(Device.unpackArchive) == "function" then
+            unpack_ok, unpack_err = Device:unpackArchive(zip_path, staging, true)
+        else
+            local exit_code = os.execute(
+                "unzip -o " .. _shellQuote(zip_path) .. " -d " .. _shellQuote(staging) .. " >/dev/null 2>&1"
+            )
+            unpack_ok = (exit_code == 0 or exit_code == true)
+            unpack_err = unpack_ok and nil or "unzip failed"
+        end
     end
     if not unpack_ok then
         os.execute("rm -rf " .. _shellQuote(staging))
@@ -3030,6 +3248,16 @@ function BridgeSync:_installPluginZip(zip_path)
     if not staged_plugin then
         os.execute("rm -rf " .. _shellQuote(staging))
         return nil, "downloaded archive has no _meta.lua"
+    end
+    if lfs.attributes(staged_plugin .. "/main.lua", "mode") ~= "file" then
+        os.execute("rm -rf " .. _shellQuote(staging))
+        return nil, "downloaded archive has no main.lua"
+    end
+    local metadata_ok, metadata_err = _validatePluginMetadata(
+        staged_plugin .. "/_meta.lua", expected_version)
+    if not metadata_ok then
+        os.execute("rm -rf " .. _shellQuote(staging))
+        return nil, metadata_err
     end
 
     os.execute("rm -rf " .. _shellQuote(backup))
@@ -3190,6 +3418,32 @@ function BridgeSync:addToMainMenu(menu_items)
                     self.delete_removed_books = not self.delete_removed_books
                     self:_saveSettings()
                     self:_refreshMenu(touchmenu_instance)
+                end,
+            },
+            {
+                text_func = function()
+                    return T(_("Max Downloads per Sync: %1"), self.max_downloads_per_sync == 0 and _("Unlimited") or self.max_downloads_per_sync)
+                end,
+                keep_menu_open = true,
+                callback = function(touchmenu_instance)
+                    self:_promptForSetting(
+                        _("Max Downloads per Sync"),
+                        tostring(self.max_downloads_per_sync),
+                        _("Enter max downloads (0 = unlimited)"),
+                        function(value)
+                            local n = tonumber(value)
+                            if not n or n <= 0 then
+                                self.max_downloads_per_sync = 0
+                            else
+                                self.max_downloads_per_sync = math.floor(n)
+                            end
+                            self:_saveSettings()
+                        end,
+                        nil,
+                        function()
+                            self:_refreshMenu(touchmenu_instance)
+                        end
+                    )
                 end,
             },
             {

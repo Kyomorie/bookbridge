@@ -309,10 +309,11 @@ class TestKosyncEndpoints(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
         self.assertEqual(data.get('name'), 'bridgesync')
-        self.assertTrue(data.get('version'))
+        self.assertEqual(data.get('version'), '0.6.3')
 
     def test_admin_plugin_download_serves_zip_attachment(self):
         """Settings-page download endpoint serves the plugin as a zip attachment."""
+        import hashlib as _hashlib
         import io as _io
         import zipfile as _zipfile
         response = self.client.get('/api/kosync-plugin/download')
@@ -321,9 +322,28 @@ class TestKosyncEndpoints(unittest.TestCase):
         disposition = response.headers.get('Content-Disposition', '')
         self.assertIn('attachment', disposition)
         self.assertIn('bridgesync-', disposition)
+        self.assertEqual(
+            response.headers.get('X-Content-SHA256'),
+            _hashlib.sha256(response.data).hexdigest(),
+        )
         with _zipfile.ZipFile(_io.BytesIO(response.data)) as zf:
             names = zf.namelist()
         self.assertIn('bridgesync.koplugin/_meta.lua', names)
+        self.assertIn('bridgesync.koplugin/bridge_transfer_policy.lua', names)
+
+    def test_device_plugin_download_has_matching_sha256(self):
+        """Device updater receives a digest for the exact archive bytes."""
+        import hashlib as _hashlib
+
+        response = self.client.get(
+            '/koreader/device-sync/plugin/download',
+            headers=self.auth_headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers.get('X-Content-SHA256'),
+            _hashlib.sha256(response.data).hexdigest(),
+        )
 
     def test_put_progress_creates_document(self):
         """Test that PUT creates a new document."""
@@ -2039,6 +2059,57 @@ class TestKosyncEndpoints(unittest.TestCase):
             "Session upload: book not found for abs_id='missing-book' hash='None'",
             "\n".join(captured.output),
         )
+
+    def test_plugin_session_upload_resolves_linked_document_without_abs_id(self):
+        """Hash-only plugin sessions use the document's linked book."""
+        from src import web_server
+        from src.api import kosync_server
+
+        book = Book(
+            abs_id='linked-session-book',
+            abs_title='Inferno',
+            ebook_filename='inferno.epub',
+            kosync_doc_id='p' * 32,
+            status='active',
+            sync_mode='ebook_only',
+        )
+        web_server.database_service.save_book(book)
+        upload_hash = 'u' * 32
+        web_server.database_service.save_kosync_document(
+            KosyncDocument(
+                document_hash=upload_hash,
+                filename='inferno.epub',
+                linked_abs_id=book.abs_id,
+            )
+        )
+        payload = [{
+            'session_id': 'hash-only-session',
+            'document_hash': upload_hash,
+            'session_type': 'EPUB',
+            'start_time': 1_742_930_000,
+            'end_time': 1_742_930_120,
+            'duration_seconds': 120,
+            'start_progress': 20,
+            'end_progress': 25,
+        }]
+
+        with patch.object(kosync_server, '_manager', None):
+            response = self.client.post(
+                '/koreader/device-sync/sessions',
+                headers=self.auth_headers,
+                json=payload,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {
+            'accepted': 1,
+            'rejected': 0,
+            'results': [{
+                'accepted': True,
+                'index': 1,
+                'session_id': 'hash-only-session',
+            }],
+        })
 
     def test_plugin_log_upload_relays_bounded_severity_to_bridge_logs(self):
         """Device log telemetry is authenticated, sanitized, and severity-preserving."""

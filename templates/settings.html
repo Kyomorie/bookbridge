@@ -734,6 +734,11 @@
                         <div class="help-text">Enter <code>disabled</code> to skip Audiobookshelf</div>
                     </div>
                     <div class="form-group full-width">
+                        <label>Public URL <span style="font-weight:400;opacity:.65;">(optional)</span></label>
+                        <input type="text" name="ABS_WEB_URL" value="{{ get_val('ABS_WEB_URL') }}">
+                        <div class="help-text">Used for library links and the header button when the server URL is internal-only (Docker hostname, reverse proxy, tunnel). Empty uses the server URL.</div>
+                    </div>
+                    <div class="form-group full-width">
                         <div class="help-text" style="background:rgba(102,126,234,.08);border:1px solid rgba(102,126,234,.25);border-radius:8px;padding:10px 12px;">
                             🔒 <strong>Per-user account.</strong> Each user's Audiobookshelf API token, Library ID &amp;
                             auto-add Collection name are set per user in
@@ -945,6 +950,11 @@
                         <input type="text" name="BOOKLORE_SERVER" value="{{ get_val('BOOKLORE_SERVER') }}">
                     </div>
                     <div class="form-group full-width">
+                        <label>Public URL <span style="font-weight:400;opacity:.65;">(optional)</span></label>
+                        <input type="text" name="BOOKLORE_WEB_URL" value="{{ get_val('BOOKLORE_WEB_URL') }}">
+                        <div class="help-text">Used for library links and the header button when the server URL is internal-only (Docker hostname, reverse proxy, tunnel). Empty uses the server URL.</div>
+                    </div>
+                    <div class="form-group full-width">
                         <div class="help-text" style="background:rgba(102,126,234,.08);border:1px solid rgba(102,126,234,.25);border-radius:8px;padding:10px 12px;">
                             🔒 <strong>Per-user account.</strong> Each user's Grimmory login, Shelf name &amp; Library ID are set per user in
                             <a href="{{ url_for('settings') }}#users" style="color:#aab4f5;">Settings → Users → (user) → Integrations</a>
@@ -1017,6 +1027,17 @@
                             <button class="btn" type="button" onclick="checkBookloreShelves()">🔍 Find Shelves</button>
                         </div>
                         <div class="help-text">Comma-separated list of Grimmory shelf names to skip when creating KOReader collections.</div>
+                    </div>
+
+                    <!-- Separator -->
+                    <div class="full-width" style="margin: 10px 0; border-top: 1px solid rgba(255,255,255,0.1);"></div>
+                    <h4 class="full-width" style="font-size: 14px; color: #fff; margin-bottom: -10px;">Device Sync Delivery</h4>
+
+                    <div class="form-group">
+                        <label>Hosted Ebook Cache TTL (minutes)</label>
+                        <input type="number" name="DEVICE_SYNC_EBOOK_CACHE_TTL_MINUTES" min="0"
+                            value="{{ get_val('DEVICE_SYNC_EBOOK_CACHE_TTL_MINUTES', '360') }}">
+                        <div class="help-text">Ebooks that live in a library API (BookOrbit, Grimmory, ABS, CWA, Kavita) are cached here after the first download. Once a cached copy is this old it is fetched again, so metadata you edit in your library reaches BridgeSync and the book's sync hash stays current. Set to <code>0</code> to keep the first copy forever. Ebooks read straight from your books folder are always current and ignore this.</div>
                     </div>
                 </div>
             </div>
@@ -1096,6 +1117,11 @@
                     <div class="form-group full-width">
                         <label>Server URL</label>
                         <input type="text" name="BOOKORBIT_SERVER" value="{{ get_val('BOOKORBIT_SERVER') }}">
+                    </div>
+                    <div class="form-group full-width">
+                        <label>Public URL <span style="font-weight:400;opacity:.65;">(optional)</span></label>
+                        <input type="text" name="BOOKORBIT_WEB_URL" value="{{ get_val('BOOKORBIT_WEB_URL') }}">
+                        <div class="help-text">Used for library links and the header button when the server URL is internal-only (Docker hostname, reverse proxy, tunnel). Empty uses the server URL.</div>
                     </div>
                     <div class="form-group full-width">
                         <div class="help-text" style="background:rgba(102,126,234,.08);border:1px solid rgba(102,126,234,.25);border-radius:8px;padding:10px 12px;">
@@ -1231,6 +1257,11 @@
                         <input type="text" name="CWA_SERVER" value="{{ get_val('CWA_SERVER') }}">
                         <div class="help-text">URL to your Calibre-Web Automated instance (e.g.
                             http://192.168.1.100:8083)</div>
+                    </div>
+                    <div class="form-group full-width">
+                        <label>Public URL <span style="font-weight:400;opacity:.65;">(optional)</span></label>
+                        <input type="text" name="CWA_WEB_URL" value="{{ get_val('CWA_WEB_URL') }}">
+                        <div class="help-text">Used for library links and the header button when the server URL is internal-only (Docker hostname, reverse proxy, tunnel). Empty uses the server URL.</div>
                     </div>
 
                     <!-- OPDS Library -->
@@ -1414,6 +1445,36 @@
 
             <div class="tab-panel" data-panel="features">
 
+            <!-- Shared library (multi-user) -->
+            <div class="settings-section">
+                <div class="section-header">
+                    <h3>Shared Library</h3>
+                    <div class="header-tail">
+                        <div class="toggle-switch-wrapper">
+                            <span class="toggle-label">Enable</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" name="SHARE_ALL_BOOKS_WITH_ALL_USERS"
+                                    {% if get_bool('SHARE_ALL_BOOKS_WITH_ALL_USERS') %}checked{% endif %}>
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="section-body">
+                    <div class="form-group full-width">
+                        <div class="help-text">
+                            Every matched book becomes visible to every user, and new accounts start
+                            with the whole library — nobody has to re-match a book someone else already
+                            processed. For a household reading one shared library.
+                            <strong>Visibility only:</strong> reading progress, KOSync documents and
+                            stats stay per-user exactly as they are today, and removing a book still
+                            only drops the claim of the user who removed it. Leave off if each user
+                            curates their own library.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Telegram (Optional) -->
             <div class="settings-section">
                 {% set telegram_configured = get_val('TELEGRAM_BOT_TOKEN') != '' %}
@@ -1505,6 +1566,33 @@
                             matching identifier (ISBN/ASIN) is found, or if the fuzzy matcher and Ollama both agree
                             on a single exact audiobook. Ambiguous matches still become suggestions. Requires Ollama
                             for the fuzzy-agreement path.</small>
+                    </div>
+                    <div class="checkbox-wrapper full-width">
+                        <input type="checkbox" id="kosync_hash_reconcile" name="KOSYNC_HASH_RECONCILE_ENABLED"
+                            {% if get_bool('KOSYNC_HASH_RECONCILE_ENABLED') %}checked{% endif %}>
+                        <label for="kosync_hash_reconcile">Keep book links working after file edits</label>
+                        <small>Editing a book's metadata in your library (genres, cover, anything that rewrites the
+                            file) changes its sync fingerprint and would otherwise break the link to your reader.
+                            When enabled, BookBridge re-checks your books on a schedule and re-links them
+                            automatically, so you never have to update a hash by hand. Earlier copies already on a
+                            device keep working.</small>
+                    </div>
+                    <div class="form-group">
+                        <label>Re-check Interval (minutes)</label>
+                        <input type="number" name="KOSYNC_HASH_RECONCILE_MINUTES" min="5"
+                            value="{{ get_val('KOSYNC_HASH_RECONCILE_MINUTES', '360') }}">
+                        <div class="help-text">How often to re-check your books for changed files. Unchanged files
+                            are skipped cheaply, so this is inexpensive for books stored on disk. Minimum 5 minutes.</div>
+                    </div>
+                    <div class="form-group">
+                        <label>BookOrbit Search Limit (books)</label>
+                        <input type="number" name="KOSYNC_BOOKORBIT_DISCOVERY_LIMIT" min="0"
+                            value="{{ get_val('KOSYNC_BOOKORBIT_DISCOVERY_LIMIT', '40') }}">
+                        <div class="help-text">When a reader opens a book BookBridge doesn't recognise, it can look
+                            through your BookOrbit library to identify it. BookOrbit has no local files, so each
+                            candidate must be downloaded — this caps how many are fetched per search. Already-cached
+                            books are checked for free and don't count. Set to <code>0</code> to disable the
+                            BookOrbit search.</div>
                     </div>
                 </div>
             </div>
@@ -1753,6 +1841,24 @@
                             %}checked{% endif %}>
                         <label for="abs_ebook">Enable ABS Ebook Sync (Bi-directional)</label>
                     </div>
+                    <div class="form-group" style="align-items: center;">
+                        <label>ABS Ebook Position Format</label>
+                        <select name="ABS_EBOOK_LOCATOR_FORMAT" id="abs_ebook_locator_format">
+                            <option value="cfi" {% if get_val('ABS_EBOOK_LOCATOR_FORMAT', 'cfi') == 'cfi' %}selected{% endif %}>CFI (recommended)</option>
+                            <option value="readium" {% if get_val('ABS_EBOOK_LOCATOR_FORMAT') == 'readium' %}selected{% endif %}>Readium locator</option>
+                            <option value="auto" {% if get_val('ABS_EBOOK_LOCATOR_FORMAT') == 'auto' %}selected{% endif %}>Auto (match your reader)</option>
+                        </select>
+                        <div class="help-text" style="display: block; width: 100%; margin-top: 5px;">
+                            Audiobookshelf stores one position field shared by every reader, but readers
+                            disagree on its format. <strong>CFI</strong> is read by all of them and is exact
+                            in the official ABS app and web reader; some third-party readers land in the
+                            right chapter but a little early. <strong>Readium locator</strong> is exact in
+                            third-party readers such as Audiobooth, but the official ABS app and web reader
+                            cannot restore it and will open at the cover. <strong>Auto</strong> writes back
+                            whichever format your reader last used &mdash; the most precise choice if you
+                            only ever use one reader, and the wrong one if you switch between them.
+                        </div>
+                    </div>
                     <div class="checkbox-wrapper full-width">
                         <input type="checkbox" id="reprocess_on_clear" name="REPROCESS_ON_CLEAR_IF_NO_ALIGNMENT" {% if
                             get_bool('REPROCESS_ON_CLEAR_IF_NO_ALIGNMENT') %}checked{% endif %}>
@@ -1936,6 +2042,34 @@
                 </div>
             </div>
 
+            <div class="settings-section">
+                <div class="section-header">
+                    <h3>Reverse Proxy Auto-Login</h3>
+                    <div class="header-tail">
+                        <div class="toggle-switch-wrapper">
+                            <span class="toggle-label">Enable</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" name="REMOTE_AUTH_ENABLED"
+                                    {% if get_bool('REMOTE_AUTH_ENABLED') %}checked{% endif %}>
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="section-body">
+                    <div class="form-group full-width">
+                        <label>Username Header</label>
+                        <input type="text" name="REMOTE_AUTH_HEADER" value="{{ get_val('REMOTE_AUTH_HEADER') }}" placeholder="Remote-User">
+                        <div class="help-text">When enabled, a request carrying this header is signed in as the BookBridge user with that username. Existing accounts only; unknown or inactive usernames fall through to the login form. Only enable when a trusted reverse proxy sets this header and strips any client-supplied copy.</div>
+                    </div>
+                    <div class="form-group full-width">
+                        <label>Trusted Proxy Addresses</label>
+                        <input type="text" name="REMOTE_AUTH_TRUSTED_PROXIES" value="{{ get_val('REMOTE_AUTH_TRUSTED_PROXIES') }}" placeholder="172.18.0.5, 10.0.0.0/24">
+                        <div class="help-text">Comma-separated IP addresses or CIDR ranges allowed to present the header above. <strong>Leave blank to trust only localhost.</strong> The header is a full sign-in, so any machine that can reach this port and is covered here can log in as any user — list your reverse proxy's address specifically, not a whole LAN range such as <code>192.168.0.0/16</code>. On Docker, this is the proxy container's address on the shared network (find it with <code>docker inspect</code>), not the browser's.</div>
+                    </div>
+                </div>
+            </div>
+
             <!-- System Paths -->
             <div class="settings-section">
                 <div class="section-header">
@@ -2110,6 +2244,12 @@
                             min="1" max="120" step="1" placeholder="45" />
                         <div class="help-text">Audio is normalized to WAV and split into chunks of this length before transcription. Lower it (e.g. 15) if a small GPU runs out of memory on long books. Ignored when <strong>Send Original Audio</strong> is enabled, since the server then does its own chunking.</div>
                     </div>
+                    <div class="form-group">
+                        <label>Minimum Transcript Coverage</label>
+                        <input type="number" name="TRANSCRIPT_MIN_COVERAGE" value="{{ get_val('TRANSCRIPT_MIN_COVERAGE', '0.85') }}"
+                            min="0" max="1" step="0.05" placeholder="0.85" />
+                        <div class="help-text">Fraction of the audiobook's known runtime a transcript must span before BookBridge will align it. A truncated download or a partly-decoded file still aligns cleanly against the ebook, so without this check every synced position ends up wrong by the shortfall. Set <code>0</code> to disable — needed only for genuinely abridged audio.</div>
+                    </div>
                     <!-- Wrapper: Whisper.cpp -->
                     <div id="group_whispercpp" class="dynamic-group full-width" style="display:contents;">
                         <div class="form-group full-width">
@@ -2258,6 +2398,11 @@
                         <div class="help-text">Up to 200 recent scrubbed INFO-and-higher log lines are included automatically.</div>
                     </div>
                     <div class="form-group full-width">
+                        <label>Maximum Report Size (bytes)</label>
+                        <input type="number" name="DIAGNOSTICS_MAX_PAYLOAD_BYTES" value="{{ get_val('DIAGNOSTICS_MAX_PAYLOAD_BYTES', '800000') }}" min="0" step="10000" placeholder="800000">
+                        <div class="help-text">Reports larger than this are trimmed before sending &mdash; the least frequent warnings lose their context first, then get deferred to the next report. The receiver rejects oversized bodies outright, and a rejected report is never cleared, so without trimming the same report would be retried forever. Set <code>0</code> to disable trimming.</div>
+                    </div>
+                    <div class="form-group full-width">
                         <label>Last automatic report</label>
                         <div style="padding:8px 12px; background:rgba(255,255,255,0.05); border-radius:6px; font-size:0.85rem; color:rgba(255,255,255,0.65);">
                             {% set _last = get_val('DIAGNOSTICS_LAST_SENT') %}
@@ -2296,6 +2441,11 @@
                     <h3>👥 Users</h3>
                 </div>
                 <div class="section-body">
+                    <div class="help-text full-width" style="margin-bottom:10px">
+                        Each user has their own progress and credentials but shares the book catalog.
+                        To make every matched book visible to everyone automatically, enable
+                        <a href="{{ url_for('settings') }}#features" style="color:#aab4f5;">Features → Shared Library</a>.
+                    </div>
                     <table class="users-table full-width">
                         <tr>
                             <th>User</th>

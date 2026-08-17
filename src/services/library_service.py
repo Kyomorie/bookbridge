@@ -94,7 +94,7 @@ class LibraryService:
                                 else:
                                     logger.warning(f"   Priority 0 (Explicit mapping): Empty download from {source_name} ({book.ebook_source_id}), falling through")
                             except Exception as e:
-                                logger.warning(f"   Priority 0 (Explicit mapping): Download failed for {source_name} ({book.ebook_source_id}): {e}")
+                                logger.warning(f"   Priority 0 (Explicit mapping): Download failed for {source_name} ({book.ebook_source_id}): {e}", exc_info=True)
                         else:
                             logger.debug("   Priority 0 (Explicit mapping): Skipped — safe_cache_path returned None")
                     else:
@@ -220,5 +220,5 @@ class LibraryService:
             # we could do it here, but efficiently. For now, trust the client's cache logic.
             
         except Exception as e:
-            logger.error(f"   ❌ Library sync failed: {e}")
+            logger.error(f"   ❌ Library sync failed: {e}", exc_info=True)
 

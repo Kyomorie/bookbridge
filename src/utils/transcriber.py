@@ -67,9 +67,83 @@ class AudioTranscriber:
         try:
             minutes = int(raw)
         except (TypeError, ValueError):
-            logger.warning(f"⚠️ Invalid AUDIO_SPLIT_DURATION_MINUTES '{raw}', using 45")
+            logger.warning(f"⚠️ Invalid AUDIO_SPLIT_DURATION_MINUTES '{raw}', using 45", exc_info=True)
             minutes = 45
         return max(1, minutes) * 60
+
+    @property
+    def min_coverage(self) -> float:
+        """Minimum fraction of the audiobook a transcript must span to be usable.
+
+        A transcript that covers only part of the audio still aligns cleanly against
+        the ebook, so nothing downstream notices — every position derived from that
+        map is then silently wrong by 1/coverage. Read per access (DI singleton, so a
+        cached value would ignore settings changes until restart). 0 disables.
+        """
+        raw = os.environ.get("TRANSCRIPT_MIN_COVERAGE", "0.85")
+        try:
+            coverage = float(raw)
+        except (TypeError, ValueError):
+            logger.warning(f"⚠️ Invalid TRANSCRIPT_MIN_COVERAGE '{raw}', using 0.85", exc_info=True)
+            coverage = 0.85
+        return min(max(0.0, coverage), 1.0)
+
+    def _check_audio_coverage(self, actual_duration: float, expected_duration: Optional[float],
+                              stage: str = "") -> None:
+        """Raise when the audio/transcript we have falls short of the known runtime.
+
+        Mirrors the SMIL fast-path failsafe (see transcribe_from_smil), which has
+        always rejected a short transcript. The Whisper path had no equivalent, so a
+        truncated download or a partial split was accepted as a complete book.
+        """
+        threshold = self.min_coverage
+        if not threshold or not expected_duration or expected_duration <= 0:
+            return
+        if actual_duration is None or actual_duration <= 0:
+            raise ValueError(
+                f"TRANSCRIPT REJECTED: no audio duration resolved (expected {expected_duration:.0f}s)"
+            )
+
+        coverage = actual_duration / expected_duration
+        if coverage < threshold:
+            raise ValueError(
+                f"TRANSCRIPT REJECTED: Coverage too low ({coverage:.1%}). "
+                f"Expected {expected_duration:.0f}s, got {actual_duration:.0f}s"
+                + (f" [{stage}]" if stage else "")
+            )
+
+    @staticmethod
+    def _transcript_extent(transcript: Optional[list]) -> float:
+        """Last timestamp covered by a transcript, or 0.0 when it is unusable."""
+        if not transcript:
+            return 0.0
+        try:
+            return float(transcript[-1].get('end', 0.0) or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _verify_download_size(response, local_path: Path) -> None:
+        """Raise when a streamed download is shorter than its declared Content-Length.
+
+        `requests.iter_content` stops silently when the connection closes early, so a
+        truncated body used to land on disk as a "successful" download.
+        """
+        declared = str(response.headers.get('Content-Length') or "").strip()
+        # Content-Length is a decimal string; anything else is not a length we can
+        # check against, so verification is simply skipped.
+        if not declared.isdigit():
+            return
+        expected_bytes = int(declared)
+        if expected_bytes <= 0:
+            return
+
+        actual_bytes = local_path.stat().st_size if local_path.exists() else 0
+        if actual_bytes != expected_bytes:
+            raise ValueError(
+                f"Truncated download for {local_path.name}: got {actual_bytes} bytes, "
+                f"expected {expected_bytes}"
+            )
 
     def validate_smil(self, smil_segments: list, ebook_text: str) -> tuple[bool, float]:
         """
@@ -179,7 +253,7 @@ class AudioTranscriber:
             logger.info(f"✅ SMIL Extraction complete: {len(transcript)} segments")
             return transcript # Return raw data!
         except Exception as e:
-            logger.error(f"❌ Failed to extract SMIL transcript: {e}")
+            logger.error(f"❌ Failed to extract SMIL transcript: {e}", exc_info=True)
             return None
 
     def _get_cached_transcript(self, path):
@@ -208,7 +282,7 @@ class AudioTranscriber:
                 self._transcript_cache.popitem(last=False)
             return loaded
         except Exception as e:
-            logger.error(f"❌ Error loading transcript '{path}': {e}")
+            logger.error(f"❌ Error loading transcript '{path}': {e}", exc_info=True)
             return None
 
     def _detect_transcript_format(self, data):
@@ -294,7 +368,7 @@ class AudioTranscriber:
             result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             return float(result.stdout.strip())
         except (ValueError, subprocess.CalledProcessError) as e:
-            logger.error(f"❌ Could not determine duration for '{file_path}': {e}")
+            logger.error(f"❌ Could not determine duration for '{file_path}': {e}", exc_info=True)
             return 0.0
 
     def normalize_audio_to_wav(self, input_path: Path) -> Optional[Path]:
@@ -325,6 +399,11 @@ class AudioTranscriber:
             '-ac', '1',          # Mono
             '-c:a', 'pcm_s16le', # 16-bit PCM (most compatible)
             '-f', 'wav',         # Force WAV container
+            # RIFF size fields are 32-bit, so a book past ~37h overflows them and
+            # ffmpeg warns the output "will be broken". Current builds still read
+            # it, but don't rely on that: RF64 is the standard answer and kicks in
+            # only when the file actually grows past the limit.
+            '-rf64', 'auto',
             '-loglevel', 'error',
             str(output_path)
         ]
@@ -340,7 +419,7 @@ class AudioTranscriber:
             return output_path
 
         except subprocess.CalledProcessError as e:
-            logger.error(f"❌ FFmpeg conversion failed for '{input_path}': {e.stderr}")
+            logger.error(f"❌ FFmpeg conversion failed for '{input_path}': {e.stderr}", exc_info=True)
             return None
 
     def split_audio_file(self, file_path, target_max_duration_sec=2700):
@@ -369,6 +448,7 @@ class AudioTranscriber:
                 '-ac', '1',          # Mono
                 '-c:a', 'pcm_s16le', # PCM WAV
                 '-f', 'wav',
+                '-rf64', 'auto',     # see normalize_audio_to_wav
                 '-loglevel', 'error',
                 str(new_path)
             ]
@@ -377,7 +457,7 @@ class AudioTranscriber:
                 new_files.append(new_path)
                 logger.info(f"      Created chunk {i+1}/{num_parts}: {new_filename}")
             except subprocess.CalledProcessError as e:
-                logger.error(f"❌ Failed to create chunk {i+1}: {e}")
+                logger.error(f"❌ Failed to create chunk {i+1}: {e}", exc_info=True)
 
         # Remove original file after splitting
         if new_files:
@@ -411,6 +491,7 @@ class AudioTranscriber:
         full_book_text=None,
         progress_callback=None,
         cancellation_token: Optional[CancellationToken] = None,
+        expected_duration: Optional[float] = None,
     ) -> Optional[list]:
         """
         Main transcription pipeline.
@@ -441,10 +522,25 @@ class AudioTranscriber:
                 if progress.get('chunks_completed', 0) > 0 and progress.get('done', False):
                     cached_transcript = progress.get('transcript', [])
                     if cached_transcript:
-                        logger.info(f"⚡ Resuming from completed local cache for {abs_id}")
-                        return cached_transcript
-                    progress_file.unlink()
-                    logger.info(f"Invalidated empty completed transcript cache for {abs_id}")
+                        # A cache written before the coverage guard existed can hold a
+                        # silently truncated transcript, and _prune_audio_cache keeps
+                        # this file forever. Re-check it here or the book never heals.
+                        try:
+                            self._check_audio_coverage(
+                                self._transcript_extent(cached_transcript), expected_duration
+                            )
+                        except ValueError as coverage_err:
+                            progress_file.unlink(missing_ok=True)
+                            logger.warning(
+                                f"⚠️ {coverage_err} — discarding cached transcript for {abs_id} "
+                                f"and re-transcribing",
+                            )
+                        else:
+                            logger.info(f"⚡ Resuming from completed local cache for {abs_id}")
+                            return cached_transcript
+                    else:
+                        progress_file.unlink()
+                        logger.info(f"Invalidated empty completed transcript cache for {abs_id}")
              except (json.JSONDecodeError, OSError) as e:
                  logger.debug(f"Failed to read progress cache file: {e}")
 
@@ -454,6 +550,7 @@ class AudioTranscriber:
         raw_audio = getattr(provider, 'supports_raw_audio', False)
 
         downloaded_files = []
+        source_durations = []
         full_transcript = []
         chunks_completed = 0
         cumulative_duration = 0.0
@@ -477,7 +574,7 @@ class AudioTranscriber:
                         resuming = True
                         logger.info(f"♻️ Resuming transcription: {chunks_completed} chunks previously done")
                 except Exception as e:
-                    logger.warning(f"⚠️ Could not resume (will start fresh): {e}")
+                    logger.warning(f"⚠️ Could not resume (will start fresh): {e}", exc_info=True)
                     if book_cache_dir.exists(): shutil.rmtree(book_cache_dir)
                     book_cache_dir.mkdir(parents=True, exist_ok=True)
                     resuming = False
@@ -538,9 +635,30 @@ class AudioTranscriber:
                                         for chunk in r.iter_content(chunk_size=8192):
                                             raise_if_cancelled()
                                             f.write(chunk)
+                                    self._verify_download_size(r, local_path)
 
                             if not local_path.exists() or local_path.stat().st_size == 0:
                                 raise ValueError(f"File {local_path} is empty or missing.")
+
+                            # Measure what actually arrived. When a book comes out
+                            # short, this is what says whether the source was already
+                            # short or whether a later stage lost the audio.
+                            source_seconds = self.get_audio_duration(local_path)
+                            source_durations.append(source_seconds)
+                            logger.info(
+                                f"   Part {idx + 1}/{len(audio_urls)}: "
+                                f"{local_path.stat().st_size:,} bytes, {source_seconds / 60:.1f} min"
+                            )
+
+                            # Single-file books can be judged immediately, which skips
+                            # a normalization pass that runs for minutes on a long
+                            # book. Multi-file books are only meaningful in total, so
+                            # they are checked once the loop finishes.
+                            if len(audio_urls) == 1:
+                                self._check_audio_coverage(
+                                    source_seconds, expected_duration,
+                                    stage="source audio as downloaded",
+                                )
 
                             # Normalize to WAV
                             raise_if_cancelled()
@@ -548,11 +666,30 @@ class AudioTranscriber:
                             if not normalized_path:
                                 raise ValueError(f"Normalization failed for part {idx+1}")
 
+                            # FFmpeg can stop early on a damaged stream and still exit
+                            # 0, which silently shortens the book. Compare against what
+                            # we just measured rather than discovering it later.
+                            normalized_seconds = self.get_audio_duration(normalized_path)
+                            if source_seconds > 0 and normalized_seconds < source_seconds * 0.99:
+                                raise ValueError(
+                                    f"Normalization lost audio for part {idx + 1}: source "
+                                    f"{source_seconds:.0f}s -> WAV {normalized_seconds:.0f}s"
+                                )
+
                             # Split if needed
                             downloaded_files.extend(self.split_audio_file(normalized_path, MAX_DURATION_SECONDS))
 
                     if not downloaded_files:
                         raise ValueError("No audio files were successfully downloaded and normalized")
+
+                    # Attribute a shortfall to the source before any later stage can be
+                    # blamed for it: this fires when the bytes the library served are
+                    # already shorter than the runtime it reports.
+                    if len(source_durations) > 1:
+                        self._check_audio_coverage(
+                            sum(source_durations), expected_duration,
+                            stage="source audio as downloaded",
+                        )
 
                 if not downloaded_files:
                     raise ValueError("No audio files were successfully downloaded and normalized")
@@ -564,6 +701,25 @@ class AudioTranscriber:
             total_chunks = len(downloaded_files)
             # Calculate total audio duration for progress reporting
             total_audio_duration = sum(self.get_audio_duration(f) for f in downloaded_files)
+
+            # Coverage is checked BEFORE transcribing: a truncated download otherwise
+            # costs hours of Whisper before producing a map that is wrong anyway.
+            try:
+                self._check_audio_coverage(
+                    total_audio_duration, expected_duration, stage="normalized/split audio",
+                )
+            except ValueError as coverage_err:
+                # Wipe the chunks too — otherwise the retry "finds a valid cache" and
+                # re-checks the same short audio forever instead of re-downloading.
+                if not raw_audio:
+                    shutil.rmtree(book_cache_dir, ignore_errors=True)
+                logger.error(
+                    f"❌ '{abs_id}' {coverage_err} — the audio BookBridge fetched is shorter "
+                    f"than the runtime the library reports. Cleared the audio cache; the job "
+                    f"will retry with a fresh download.",
+                    exc_info=True,
+                )
+                raise
 
             for idx, local_path in enumerate(downloaded_files):
                 # Skip already-completed chunks when resuming
@@ -594,7 +750,7 @@ class AudioTranscriber:
                 except Exception as e:
                     # Raw-audio providers get stream URLs (plain strings) here, not Paths.
                     source_label = getattr(local_path, 'name', local_path)
-                    logger.error(f"   ❌ Transcription failed for {source_label}: {e}")
+                    logger.error(f"   ❌ Transcription failed for {source_label}: {e}", exc_info=True)
                     raise
 
                 cumulative_duration += duration
@@ -627,6 +783,15 @@ class AudioTranscriber:
                 progress_file.unlink(missing_ok=True)
                 raise ValueError("Transcription completed without any segments")
 
+            # Belt-and-braces: chunks can individually fail to decode, so the
+            # transcript can still fall short of audio that measured fine above.
+            try:
+                self._check_audio_coverage(self._transcript_extent(full_transcript), expected_duration)
+            except ValueError as coverage_err:
+                progress_file.unlink(missing_ok=True)
+                logger.error(f"❌ '{abs_id}' {coverage_err}", exc_info=True)
+                raise
+
             # Clean up cache only on success. Keep `_progress.json` (it holds the finished
             # transcript) so a later re-align can reuse it via the resume check above and
             # skip re-downloading/re-running Whisper — only the heavy audio is removed.
@@ -639,7 +804,7 @@ class AudioTranscriber:
             # can skip the terminal DB write without logging a scary error.
             raise
         except Exception as e:
-            logger.error(f"❌ Transcription failed: {e}")
+            logger.error(f"❌ Transcription failed: {e}", exc_info=True)
             # Don't delete cache dir - allows resume on retry
             raise e
 
@@ -757,7 +922,7 @@ class AudioTranscriber:
             return self._clean_text(raw_text)
 
         except Exception as e:
-            logger.error(f"❌ Error reading transcript '{transcript_path}': {e}")
+            logger.error(f"❌ Error reading transcript '{transcript_path}': {e}", exc_info=True)
         return None
 
     def get_previous_segment_text(self, transcript_path, timestamp):
@@ -799,7 +964,7 @@ class AudioTranscriber:
             return None
 
         except Exception as e:
-            logger.error(f"❌ Error getting previous segment '{transcript_path}': {e}")
+            logger.error(f"❌ Error getting previous segment '{transcript_path}': {e}", exc_info=True)
             return None
 
     def _ollama_align_fallback(self, clean_search, windows, hint_percentage, data, title_prefix="") -> Optional[float]:
@@ -1002,6 +1167,6 @@ class AudioTranscriber:
                 return None
 
         except Exception as e:
-            logger.error(f"❌ {title_prefix}Error searching transcript '{transcript_path}': {e}")
+            logger.error(f"❌ {title_prefix}Error searching transcript '{transcript_path}': {e}", exc_info=True)
         return None
 

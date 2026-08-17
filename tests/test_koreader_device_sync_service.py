@@ -3,7 +3,7 @@ import shutil
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from src.db.database_service import DatabaseService
 from src.db.models import Book, KosyncDocument
@@ -79,7 +79,34 @@ class TestKOReaderDeviceSyncService(unittest.TestCase):
         self.assertEqual(item["abs_id"], "abs-1")
         self.assertEqual(item["content_hash"], "hash-kavita_187")
         self.assertEqual(item["download_path"], "/koreader/device-sync/books/abs-1/download")
+        self.assertEqual(item["size"], 4)
         self.assertEqual(item["filename"], "Dragon's Justice.epub")
+
+    def test_manifest_uses_storyteller_artifact_for_ebook_only_mode(self):
+        """Regression for #1375: when sync_mode is 'ebook_only' and the only
+        available filename is a Storyteller artifact, it should be used instead
+        of emitting a warning and skipping the book."""
+        self._write_book_file("storyteller_abc.epub")
+        book = Book(
+            abs_id="abs-ebook-only-1",
+            abs_title="Storyteller Only Book",
+            ebook_filename="storyteller_abc.epub",
+            original_ebook_filename=None,
+            sync_mode="ebook_only",
+            kosync_doc_id="hash-1",
+            status="active",
+        )
+        self.db.save_book(book)
+
+        with self.assertNoLogs("src.services.koreader_device_sync_service", level="WARNING"):
+            manifest = self.service.build_manifest()
+
+        self.assertEqual(len(manifest["books"]), 1)
+        item = manifest["books"][0]
+        self.assertEqual(item["abs_id"], "abs-ebook-only-1")
+        self.assertEqual(item["content_hash"], "hash-storyteller_abc")
+        self.assertEqual(item["download_path"], "/koreader/device-sync/books/abs-ebook-only-1/download")
+        self.assertEqual(item["filename"], "Storyteller Only Book.epub")
 
     def test_manifest_excludes_audiobook_only_book_without_warning(self):
         """Audiobook-only mappings have no ebook file by design and must not be
@@ -139,6 +166,46 @@ class TestKOReaderDeviceSyncService(unittest.TestCase):
             filenames,
             ["Same Title__abs-a.epub", "Same Title__abs-b.epub"],
         )
+
+    def test_one_unstattable_file_does_not_lose_the_whole_manifest(self):
+        """A file deleted between resolution and sizing must cost only its own size.
+
+        The cache-cleanup paths delete orphaned EPUBs concurrently. An unguarded
+        stat() raised out of the whole build_manifest loop, so one vanished file
+        left every book without a manifest entry.
+        """
+        self._write_book_file("kavita_1.epub")
+        self._write_book_file("kavita_2.epub")
+        for abs_id, filename in (("abs-a", "kavita_1.epub"), ("abs-b", "kavita_2.epub")):
+            self.db.save_book(
+                Book(
+                    abs_id=abs_id,
+                    abs_title=f"Book {abs_id}",
+                    original_ebook_filename=filename,
+                    kosync_doc_id=f"hash-{abs_id}",
+                    status="active",
+                )
+            )
+
+        # Reproduce the real race: the file is present when the artifact is
+        # resolved and gone by the time the manifest item is sized.
+        original_resolve = self.service._resolve_download_artifact
+
+        def _resolve_then_delete(book, *args, **kwargs):
+            resolved = original_resolve(book, *args, **kwargs)
+            if resolved and str(getattr(book, "abs_id", "")) == "abs-a":
+                Path(resolved["path"]).unlink()
+            return resolved
+
+        with patch.object(
+            self.service, "_resolve_download_artifact", side_effect=_resolve_then_delete
+        ):
+            manifest = self.service.build_manifest()
+
+        sizes = {item["abs_id"]: item["size"] for item in manifest["books"]}
+        self.assertEqual(len(sizes), 2, "both books must still be in the manifest")
+        self.assertIsNone(sizes["abs-a"], "the un-stat-able book reports no size")
+        self.assertEqual(sizes["abs-b"], len(b"epub"))
 
     def test_resolve_download_uses_local_original_file(self):
         source_path = self.books_dir / "kavita_187.epub"
@@ -278,7 +345,13 @@ class TestKOReaderDeviceSyncService(unittest.TestCase):
 
         resolved = self.service.resolve_download("abs-1")
         self.assertIsNotNone(resolved)
-        self.assertEqual(Path(resolved["path"]), self.cache_dir / "remote.epub")
+        # Compare resolved: a hosted copy now comes back from safe_cache_path, which
+        # resolves for traversal safety. Identical on POSIX; on Windows an unresolved
+        # "/tmp/..." expectation picks up a drive letter and only looks different.
+        self.assertEqual(
+            Path(resolved["path"]).resolve(),
+            (self.cache_dir / "remote.epub").resolve(),
+        )
         self.assertEqual(resolved["content_hash"], "hash-remote")
 
     def test_manifest_downloads_bookorbit_source_into_epub_cache(self):

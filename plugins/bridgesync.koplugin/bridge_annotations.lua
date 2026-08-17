@@ -288,15 +288,37 @@ end
 -- keys_complete=false marks the key list as non-authoritative for deletion
 -- detection (the sweep uses this — a backfill must never delete server data
 -- just because a sidecar was momentarily empty/partial).
-function BridgeAnnotations.buildBookPayload(book, watermark, keys_complete, ignore_watermark, offset)
+local function annotationSignature(entries)
+    local fingerprints = {}
+    local fields = {
+        "datetime", "datetimeUpdated", "pos0", "pos1", "posFormat",
+        "drawer", "color", "text", "note", "chapter", "pageno",
+    }
+    for _, entry in ipairs(entries) do
+        local parts = {}
+        for _, field in ipairs(fields) do
+            local value = tostring(entry[field] or "")
+            parts[#parts + 1] = field .. ":" .. tostring(#value) .. ":" .. value
+        end
+        fingerprints[#fingerprints + 1] = md5(table.concat(parts, "|"))
+    end
+    table.sort(fingerprints)
+    return md5(table.concat(fingerprints))
+end
+
+function BridgeAnnotations.prepareBook(book, watermark, keys_complete, ignore_watermark, stored_signature)
     local keys, candidates = {}, {}
+    local normalized = {}
+    local max_candidate_stamp = ""
     for _, raw in ipairs(book.annotations or {}) do
         local entry = BridgeAnnotations.normalizeEntry(raw)
         if entry then
+            normalized[#normalized + 1] = entry
             table.insert(keys, { k = BridgeAnnotations.buildKey(entry.datetime, entry.pos0), dt = entry.datetime })
             local stamp = entryTimestamp(entry)
             if ignore_watermark or stamp > (watermark or "") then
                 table.insert(candidates, entry)
+                if stamp > max_candidate_stamp then max_candidate_stamp = stamp end
             end
         end
     end
@@ -308,25 +330,47 @@ function BridgeAnnotations.buildBookPayload(book, watermark, keys_complete, igno
         return tostring(a.pos0) < tostring(b.pos0)
     end)
 
+    local signature = annotationSignature(normalized)
     local keys_are_complete = keys_complete ~= false and #keys <= MAX_KEYS_PER_BOOK
-    if not keys_are_complete then keys = {} end
+    local send_keys = keys_are_complete and signature ~= stored_signature
+    if not send_keys then keys = {} end
 
-    local start_index = math.max(tonumber(offset) or 1, 1)
+    return {
+        book = book,
+        watermark = watermark or "",
+        candidates = candidates,
+        keys = keys,
+        keys_complete = send_keys,
+        complete_signature = keys_are_complete and signature or nil,
+        max_candidate_stamp = max_candidate_stamp,
+        offset = 1,
+        first_request = true,
+    }
+end
+
+local function payloadSlice(state, count)
+    local start_index = math.max(tonumber(state.offset) or 1, 1)
     local changes = {}
     local max_sent = ""
-    local stop_index = math.min(#candidates, start_index + MAX_CHANGES_PER_BOOK - 1)
+    local stop_index = math.min(#state.candidates, start_index + math.max(tonumber(count) or 0, 0) - 1)
     for index = start_index, stop_index do
-        local entry = candidates[index]
+        local entry = state.candidates[index]
         table.insert(changes, entry)
         local stamp = entryTimestamp(entry)
         if stamp > max_sent then max_sent = stamp end
     end
     return {
-        hash = book.hash,
-        keys = keys,
-        keysComplete = keys_are_complete,
+        hash = state.book.hash,
+        keys = state.first_request and state.keys or {},
+        keysComplete = state.first_request and state.keys_complete or false,
         changes = changes,
-    }, max_sent, stop_index < #candidates, stop_index + 1
+    }, max_sent, stop_index < #state.candidates, stop_index + 1
+end
+
+function BridgeAnnotations.buildBookPayload(book, watermark, keys_complete, ignore_watermark, offset)
+    local state = BridgeAnnotations.prepareBook(book, watermark, keys_complete, ignore_watermark)
+    state.offset = math.max(tonumber(offset) or 1, 1)
+    return payloadSlice(state, MAX_CHANGES_PER_BOOK)
 end
 
 -- ------------------------------------------------------------------
@@ -338,28 +382,68 @@ local function normalizedText(value)
     return value:gsub("%s+", " "):match("^%s*(.-)%s*$")
 end
 
-local function findByIdentity(annotations, entry)
-    local found_index, found_count = nil, 0
-    if type(entry.datetime) == "string" and entry.datetime ~= "" then
-        for index, annotation in ipairs(annotations or {}) do
-            if annotation.datetime == entry.datetime then
-                found_index, found_count = index, found_count + 1
-            end
+local IdentityIndex = {}
+IdentityIndex.__index = IdentityIndex
+
+function IdentityIndex:new(annotations)
+    local index = setmetatable({}, self)
+    index:rebuild(annotations)
+    return index
+end
+
+function IdentityIndex:rebuild(annotations)
+    self.annotations = annotations or {}
+    self.by_datetime = {}
+    self.by_pos0 = {}
+    for index, annotation in ipairs(self.annotations) do
+        local datetime = annotation.datetime
+        if type(datetime) == "string" and datetime ~= "" then
+            self.by_datetime[datetime] = self.by_datetime[datetime] == nil and index or false
         end
-        if found_count == 1 then return found_index end
+        local pos0 = BridgeAnnotations.normalizeXPointer(annotation.pos0)
+        if pos0 ~= "" then
+            local matches = self.by_pos0[pos0] or {}
+            matches[#matches + 1] = index
+            self.by_pos0[pos0] = matches
+        end
     end
-    if type(entry.pos0) == "string" and entry.pos0 ~= "" then
-        for index, annotation in ipairs(annotations or {}) do
-            if BridgeAnnotations.normalizeXPointer(annotation.pos0)
-                    == BridgeAnnotations.normalizeXPointer(entry.pos0)
-                and (normalizedText(entry.text) == ""
-                    or normalizedText(annotation.text) == normalizedText(entry.text))
-            then
-                return index
-            end
+end
+
+function IdentityIndex:find(entry)
+    local datetime = entry.datetime
+    if type(datetime) == "string" and datetime ~= "" then
+        local index = self.by_datetime[datetime]
+        if type(index) == "number" then return index end
+    end
+    local pos0 = BridgeAnnotations.normalizeXPointer(entry.pos0)
+    local wanted_text = normalizedText(entry.text)
+    for _, index in ipairs(self.by_pos0[pos0] or {}) do
+        local annotation = self.annotations[index]
+        if annotation and (wanted_text == "" or normalizedText(annotation.text) == wanted_text) then
+            return index
         end
     end
     return nil
+end
+
+function IdentityIndex:noteAppended()
+    local index = #self.annotations
+    local annotation = self.annotations[index]
+    if not annotation then return end
+    local datetime = annotation.datetime
+    if type(datetime) == "string" and datetime ~= "" then
+        self.by_datetime[datetime] = self.by_datetime[datetime] == nil and index or false
+    end
+    local pos0 = BridgeAnnotations.normalizeXPointer(annotation.pos0)
+    if pos0 ~= "" then
+        local matches = self.by_pos0[pos0] or {}
+        matches[#matches + 1] = index
+        self.by_pos0[pos0] = matches
+    end
+end
+
+function BridgeAnnotations.newIdentityIndex(annotations)
+    return IdentityIndex:new(annotations)
 end
 
 -- Merge toApply into the closed book's sidecar. Returns ack lists.
@@ -367,15 +451,18 @@ function BridgeAnnotations.applyToSidecar(book, to_apply)
     local applied, deleted = {}, {}
     local doc_settings = DocSettings:open(book.file)
     local annotations = doc_settings:readSetting("annotations") or {}
+    local identity = IdentityIndex:new(annotations)
     local changed = false
 
     for _, entry in ipairs(to_apply.add or {}) do
         if type(entry.pos0) == "string" and type(entry.datetime) == "string" then
-            local existing = findByIdentity(annotations, entry)
+            local existing = identity:find(entry)
             if existing then
                 annotations[existing] = toSidecarEntry(entry)
+                identity:rebuild(annotations)
             else
                 table.insert(annotations, toSidecarEntry(entry))
+                identity:noteAppended()
             end
             changed = true
             table.insert(applied, { serverId = entry.serverId, version = entry.version, status = "applied" })
@@ -384,7 +471,7 @@ function BridgeAnnotations.applyToSidecar(book, to_apply)
 
     for _, entry in ipairs(to_apply.edit or {}) do
         if type(entry.datetime) == "string" then
-            local existing = findByIdentity(annotations, entry)
+            local existing = identity:find(entry)
             if existing then
                 local target = annotations[existing]
                 target.drawer = _s(entry.drawer) or target.drawer
@@ -401,16 +488,21 @@ function BridgeAnnotations.applyToSidecar(book, to_apply)
         end
     end
 
+    local delete_indices = {}
     for _, entry in ipairs(to_apply.delete or {}) do
         if type(entry.datetime) == "string" then
-            local existing = findByIdentity(annotations, entry)
-            if existing then
-                table.remove(annotations, existing)
-                changed = true
-            end
+            local existing = identity:find(entry)
+            if existing then delete_indices[existing] = true end
             -- Ack even when already absent locally — the tombstone is satisfied.
             table.insert(deleted, { serverId = entry.serverId, status = "applied" })
         end
+    end
+    local ordered_deletes = {}
+    for index in pairs(delete_indices) do ordered_deletes[#ordered_deletes + 1] = index end
+    table.sort(ordered_deletes, function(a, b) return a > b end)
+    for _, index in ipairs(ordered_deletes) do
+        table.remove(annotations, index)
+        changed = true
     end
 
     if changed then
@@ -446,6 +538,7 @@ function BridgeAnnotations.applyLive(to_apply)
     local Event = require("ui/event")
     local UIManager = require("ui/uimanager")
     local annotations = ui.annotation.annotations
+    local identity = IdentityIndex:new(annotations)
 
     local applied, deleted = {}, {}
     local touched = 0
@@ -477,12 +570,13 @@ function BridgeAnnotations.applyLive(to_apply)
     end
 
     for _, entry in ipairs(to_apply.add or {}) do
-        if findByIdentity(annotations, entry) then
+        if identity:find(entry) then
             table.insert(applied, { serverId = entry.serverId, version = entry.version, status = "applied" })
         elseif entry.posFormat == "xpointer" and (rangeMatches(entry) or repairRange(entry)) then
             local item = toSidecarEntry(entry)  -- type-guarded (no JSON-null sentinels)
             local ok_add = pcall(function() ui.annotation:addItem(item) end)
             if ok_add then
+                identity:rebuild(annotations)
                 pcall(function()
                     ui:handleEvent(Event:new("AnnotationsModified", { item, nb_highlights_added = 1 }))
                 end)
@@ -494,7 +588,7 @@ function BridgeAnnotations.applyLive(to_apply)
     end
 
     for _, entry in ipairs(to_apply.edit or {}) do
-        local idx = findByIdentity(annotations, entry)
+        local idx = identity:find(entry)
         if idx then
             local a = annotations[idx]
             a.drawer = _s(entry.drawer) or a.drawer
@@ -512,13 +606,20 @@ function BridgeAnnotations.applyLive(to_apply)
         table.insert(applied, { serverId = entry.serverId, version = entry.version, status = "applied" })
     end
 
+    local delete_indices = {}
     for _, entry in ipairs(to_apply.delete or {}) do
-        local idx = findByIdentity(annotations, entry)
-        if idx and ui.bookmark and type(ui.bookmark.removeItemByIndex) == "function" then
+        local idx = identity:find(entry)
+        if idx then delete_indices[idx] = true end
+        table.insert(deleted, { serverId = entry.serverId, status = "applied" })
+    end
+    local ordered_deletes = {}
+    for index in pairs(delete_indices) do ordered_deletes[#ordered_deletes + 1] = index end
+    table.sort(ordered_deletes, function(a, b) return a > b end)
+    if ui.bookmark and type(ui.bookmark.removeItemByIndex) == "function" then
+        for _, idx in ipairs(ordered_deletes) do
             pcall(function() ui.bookmark:removeItemByIndex(idx) end)
             touched = touched + 1
         end
-        table.insert(deleted, { serverId = entry.serverId, status = "applied" })
     end
 
     if touched > 0 then
@@ -545,6 +646,7 @@ function BridgeAnnotations.exchangeBooks(bridge, books, opts)
     local ignore_watermark = opts.ignore_watermark
     local device, device_id = bridge:_currentDeviceIdentity()
     local watermarks = bridge.state:readSetting("annotation_watermarks") or {}
+    local signatures = bridge.state:readSetting("annotation_signatures") or {}
 
     if #books == 0 then
         return { books = 0, uploaded = 0, applied = 0, deleted = 0 }
@@ -557,14 +659,15 @@ function BridgeAnnotations.exchangeBooks(bridge, books, opts)
             watermark = ""
             watermarks[book.hash] = ""
         end
-        table.insert(states, {
-            book = book,
-            watermark = watermark,
-            offset = 1,
-            max_sent = "",
-            has_more = false,
-        })
+        table.insert(states, BridgeAnnotations.prepareBook(
+            book,
+            watermark,
+            keys_complete,
+            ignore_watermark,
+            signatures[book.hash]
+        ))
     end
+    local all_states = states
 
     local books_by_hash = {}
     for _, book in ipairs(books) do books_by_hash[book.hash] = book end
@@ -623,24 +726,69 @@ function BridgeAnnotations.exchangeBooks(bridge, books, opts)
         return true
     end
 
-    local first_round = true
-    while first_round or #states > 0 do
-        local payload_books = {}
-        local next_states = {}
+    local max_body_bytes = tonumber(bridge.api.max_json_body_bytes) or (900 * 1024)
+    local function payloadSize(payload_books)
+        if type(bridge.api.jsonBodySize) ~= "function" then return 0 end
+        return bridge.api:jsonBodySize({
+            device = device,
+            device_id = device_id,
+            books = payload_books,
+        })
+    end
+
+    while #states > 0 do
+        local payload_books, commits, next_states = {}, {}, {}
         for _, state in ipairs(states) do
-            local payload, max_sent, has_more, next_offset = BridgeAnnotations.buildBookPayload(
-                state.book,
-                state.watermark,
-                first_round and keys_complete or false,
-                ignore_watermark,
-                state.offset
-            )
-            uploaded_total = uploaded_total + #payload.changes
-            if max_sent > state.max_sent then state.max_sent = max_sent end
-            state.has_more = has_more
-            state.offset = next_offset
-            table.insert(payload_books, payload)
-            if has_more then table.insert(next_states, state) end
+            local remaining = math.max(#state.candidates - state.offset + 1, 0)
+            local upper = math.min(remaining, MAX_CHANGES_PER_BOOK)
+            local zero_payload = payloadSlice(state, 0)
+            local candidate_books = {}
+            for _, payload in ipairs(payload_books) do candidate_books[#candidate_books + 1] = payload end
+            candidate_books[#candidate_books + 1] = zero_payload
+            local zero_size, size_err = payloadSize(candidate_books)
+            if zero_size == nil then return nil, tostring(size_err or "Annotation JSON encoding failed") end
+
+            if zero_size > max_body_bytes then
+                if #payload_books == 0 then
+                    return nil, "Annotation identity payload exceeds the request size limit"
+                end
+                next_states[#next_states + 1] = state
+            else
+                local best = 0
+                local low, high = 1, upper
+                while low <= high do
+                    local middle = math.floor((low + high) / 2)
+                    local test_payload = payloadSlice(state, middle)
+                    candidate_books[#candidate_books] = test_payload
+                    local encoded_size, encode_err = payloadSize(candidate_books)
+                    if encoded_size == nil then
+                        return nil, tostring(encode_err or "Annotation JSON encoding failed")
+                    elseif encoded_size <= max_body_bytes then
+                        best = middle
+                        low = middle + 1
+                    else
+                        high = middle - 1
+                    end
+                end
+
+                if upper > 0 and best == 0 and not state.first_request then
+                    if #payload_books == 0 then
+                        return nil, "One annotation exceeds the request size limit"
+                    end
+                    next_states[#next_states + 1] = state
+                else
+                    local payload, max_sent, has_more, next_offset = payloadSlice(state, best)
+                    payload_books[#payload_books + 1] = payload
+                    commits[#commits + 1] = {
+                        state = state,
+                        count = #payload.changes,
+                        max_sent = max_sent,
+                        has_more = has_more,
+                        next_offset = next_offset,
+                        sent_signature = payload.keysComplete,
+                    }
+                end
+            end
         end
 
         if #payload_books == 0 then break end
@@ -657,8 +805,17 @@ function BridgeAnnotations.exchangeBooks(bridge, books, opts)
         end
         local applied_ok, apply_err = applyResponse(response)
         if not applied_ok then return nil, apply_err end
+
+        for _, commit in ipairs(commits) do
+            local state = commit.state
+            uploaded_total = uploaded_total + commit.count
+            state.offset = commit.next_offset
+            state.first_request = false
+            if commit.max_sent > (state.max_sent or "") then state.max_sent = commit.max_sent end
+            if commit.sent_signature then state.signature_sent = true end
+            if commit.has_more then next_states[#next_states + 1] = state end
+        end
         states = next_states
-        first_round = false
     end
 
     -- Drain server-side deltas that exceeded one response page. These rounds
@@ -684,31 +841,22 @@ function BridgeAnnotations.exchangeBooks(bridge, books, opts)
     -- partial failure leaves the old watermark so the idempotent retry can
     -- safely replay all chunks.
     local now = deviceNow()
-    for _, state in ipairs(states) do
-        -- states is empty after a fully-drained multi-round upload; advancement
-        -- is handled from the original book list below.
-        state.max_sent = state.max_sent
-    end
-    for _, book in ipairs(books) do
-        local watermark = watermarks[book.hash] or ""
-        local _, max_sent = BridgeAnnotations.buildBookPayload(book, watermark, keys_complete, ignore_watermark, 1)
-        -- Derive the real maximum only after success; the payload helper's first
-        -- chunk is insufficient for large books, so scan normalized entries.
-        for _, raw in ipairs(book.annotations or {}) do
-            local entry = BridgeAnnotations.normalizeEntry(raw)
-            if entry then
-                local stamp = entryTimestamp(entry)
-                if (ignore_watermark or stamp > watermark) and stamp > max_sent then max_sent = stamp end
-            end
-        end
+    for _, state in ipairs(all_states) do
+        local book = state.book
+        local watermark = state.watermark
+        local max_sent = state.max_candidate_stamp
         if max_sent > now then max_sent = now end
         if max_sent ~= "" and max_sent > watermark then
             watermarks[book.hash] = max_sent
         elseif watermarks[book.hash] == nil then
             watermarks[book.hash] = ""
         end
+        if state.signature_sent and state.complete_signature then
+            signatures[book.hash] = state.complete_signature
+        end
     end
     bridge.state:saveSetting("annotation_watermarks", watermarks)
+    bridge.state:saveSetting("annotation_signatures", signatures)
     bridge.state:flush()
 
     return {

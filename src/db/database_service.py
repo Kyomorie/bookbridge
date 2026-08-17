@@ -71,7 +71,6 @@ class DatabaseService:
     def _run_alembic_migrations(self):
         """Run Alembic migrations to ensure database schema is up to date."""
         import sys
-        import traceback
         from alembic.config import Config
         from alembic import command
         from sqlalchemy import inspect, text
@@ -98,7 +97,7 @@ class DatabaseService:
                     current_rev = result.scalar()
                     logger.info(f"🔍 Current database revision before migration: '{current_rev}'")
                 except Exception as e:
-                    logger.warning(f"⚠️ Could not read alembic version: {e}")
+                    logger.warning(f"⚠️ Could not read alembic version: {e}", exc_info=True)
             else:
                 table_names = inspector.get_table_names()
                 if 'books' in table_names:
@@ -123,8 +122,7 @@ class DatabaseService:
             command.upgrade(alembic_cfg, "head")
             logger.info("✅ Database migrations completed successfully")
         except Exception as e:
-            logger.error(f"❌ FATAL: Alembic migration failed: {e}")
-            logger.error(f"❌ Migration error details: {traceback.format_exc()}")
+            logger.error(f"❌ FATAL: Alembic migration failed: {e}", exc_info=True)
             # Re-raise to prevent startup with invalid schema
             raise
         finally:
@@ -149,7 +147,7 @@ class DatabaseService:
             session.commit()
         except Exception as e:
             session.rollback()
-            logger.error(f"❌ Database error: {e}")
+            logger.error(f"❌ Database error: {e}", exc_info=True)
             raise
         finally:
             session.close()
@@ -215,7 +213,7 @@ class DatabaseService:
         try:
             return json.loads(raw)
         except (TypeError, json.JSONDecodeError):
-            logger.warning("Invalid JSON setting for '%s'", key)
+            logger.warning("Invalid JSON setting for '%s'", key, exc_info=True)
             return default
 
     def set_json_setting(self, key: str, value) -> Setting:
@@ -496,6 +494,65 @@ class DatabaseService:
             )
             return bool(updated)
 
+    def has_alignment(self, abs_id: str) -> bool:
+        """Whether a stored alignment map exists for a book.
+
+        Deliberately selects only the key: a map blob runs 10-15MB, and callers
+        that merely need to know "has this book already been aligned?" (the
+        re-match guard) must not pay to load and parse it.
+        """
+        if not abs_id:
+            return False
+        with self.get_session() as session:
+            row = (
+                session.query(BookAlignment.abs_id)
+                .filter(BookAlignment.abs_id == abs_id)
+                .first()
+            )
+            return row is not None
+
+    def get_alignment_total_chars(self, abs_id: str) -> Optional[int]:
+        """Ebook length a book's alignment map was built against, if recorded.
+
+        Returns None for maps stored before ``total_chars`` existed; callers fall
+        back to the map's last anchor. Selects the scalar only (see has_alignment).
+        """
+        if not abs_id:
+            return None
+        with self.get_session() as session:
+            row = (
+                session.query(BookAlignment.total_chars)
+                .filter(BookAlignment.abs_id == abs_id)
+                .first()
+            )
+            if not row or row[0] is None:
+                return None
+            try:
+                return int(row[0])
+            except (TypeError, ValueError):
+                return None
+
+    def set_alignment_total_chars_if_missing(self, abs_id: str, total_chars: int) -> bool:
+        """Record an ebook length on a map that has none. Returns whether it wrote.
+
+        Backfill for maps stored before ``total_chars`` existed. Only ever fills a
+        NULL: a recorded length belongs to the text its anchors were built against,
+        so overwriting it with a different parse of a since-changed file would
+        silently re-scale every position the map resolves.
+        """
+        if not abs_id or not total_chars or total_chars <= 0:
+            return False
+        with self.get_session() as session:
+            row = (
+                session.query(BookAlignment)
+                .filter(BookAlignment.abs_id == abs_id)
+                .first()
+            )
+            if row is None or row.total_chars is not None:
+                return False
+            row.total_chars = int(total_chars)
+            return True
+
     def get_alignment_provenance(self) -> dict:
         """Report how each stored alignment map was built.
 
@@ -571,12 +628,13 @@ class DatabaseService:
 
     def get_all_books(self, user_id: int = None) -> List[Book]:
         """Get all books as model objects. When user_id is given, scope to the
-        books that user has matched/claimed (shared catalog, per-user links)."""
-        if user_id is None:
-            logger.debug(
-                "get_all_books called with user_id=None — returning unfiltered "
-                "bulk data. Future callers should pass an explicit user_id."
-            )
+        books that user has matched/claimed (shared catalog, per-user links).
+
+        Passing user_id is required for user-facing request paths. Omitting it
+        returns the whole shared catalog — correct and intended for catalog-wide
+        background work (cache cleanup, suggestion dedupe, library metadata sync)
+        and admin views.
+        """
         with self.get_session() as session:
             query = session.query(Book)
             if user_id is not None:
@@ -696,7 +754,7 @@ class DatabaseService:
                 
                 logger.info(f"✅ Migrated data from '{old_abs_id}' to '{new_abs_id}'")
             except Exception as e:
-                logger.error(f"❌ Failed to migrate book data: {e}")
+                logger.error(f"❌ Failed to migrate book data: {e}", exc_info=True)
                 raise
 
     def delete_book(self, abs_id: str) -> bool:
@@ -770,6 +828,47 @@ class DatabaseService:
             ).first()
             if not exists:
                 session.add(UserBook(user_id=user_id, abs_id=abs_id))
+
+    def link_book_to_all_active_users(self, abs_id: str) -> int:
+        """Claim one book for every active user. Returns links created.
+
+        Backs the share-all-books setting: the catalog row and its alignment are
+        already shared, so visibility is the only thing that needs fanning out.
+        Idempotent — existing claims are skipped, matching link_user_book.
+        """
+        if not abs_id:
+            return 0
+        with self.get_session() as session:
+            user_ids = {
+                row[0] for row in session.query(User.id).filter(User.active == 1).all()
+            }
+            claimed = {
+                row[0] for row in
+                session.query(UserBook.user_id).filter(UserBook.abs_id == abs_id).all()
+            }
+            missing = user_ids - claimed
+            for user_id in missing:
+                session.add(UserBook(user_id=user_id, abs_id=abs_id))
+            return len(missing)
+
+    def backfill_user_books_for_user(self, user_id: int) -> int:
+        """Claim every catalog book for one user. Returns links created.
+
+        Used when a new account is created while share-all-books is on, so they
+        start with the same library everyone else already sees.
+        """
+        if user_id is None:
+            return 0
+        with self.get_session() as session:
+            all_ids = {row[0] for row in session.query(Book.abs_id).all()}
+            claimed = {
+                row[0] for row in
+                session.query(UserBook.abs_id).filter(UserBook.user_id == user_id).all()
+            }
+            missing = all_ids - claimed
+            for abs_id in missing:
+                session.add(UserBook(user_id=user_id, abs_id=abs_id))
+            return len(missing)
 
     def unlink_user_book(self, user_id: int, abs_id: str) -> int:
         """Remove a user's claim on a book. Returns rows deleted."""
@@ -1744,6 +1843,46 @@ class DatabaseService:
                 session.expunge(row)
             return rows
 
+    def delete_kosync_data_for_book(self, abs_id: str) -> tuple[int, int]:
+        """Delete every KoSync document and per-user progress row for a book.
+
+        Called when a mapping is removed. KoSync progress must not outlive the
+        mapping: the document hash is derived from the EPUB's content, so
+        re-matching the same file re-links the identical hash, and the
+        furthest-wins gate in ``_respond_from_book_states`` then serves the
+        pre-delete position back against the fresh book's empty state (#358).
+
+        Returns ``(documents_deleted, progress_rows_deleted)``.
+        """
+        if not abs_id:
+            return 0, 0
+
+        with self.get_session() as session:
+            hashes = {
+                row[0]
+                for row in session.query(KosyncDocument.document_hash)
+                .filter(KosyncDocument.linked_abs_id == abs_id)
+                .all()
+                if row[0]
+            }
+            book = session.query(Book).filter(Book.abs_id == abs_id).first()
+            if book and book.kosync_doc_id:
+                hashes.add(book.kosync_doc_id)
+            if not hashes:
+                return 0, 0
+
+            progress_deleted = (
+                session.query(KosyncUserProgress)
+                .filter(KosyncUserProgress.document_hash.in_(hashes))
+                .delete(synchronize_session=False)
+            )
+            documents_deleted = (
+                session.query(KosyncDocument)
+                .filter(KosyncDocument.document_hash.in_(hashes))
+                .delete(synchronize_session=False)
+            )
+            return int(documents_deleted or 0), int(progress_deleted or 0)
+
     def reset_user_kosync_progress_for_book(self, abs_id: str, user_id: int = None) -> int:
         """Set this user's KoSync device-progress rows for a linked book to 0%.
 
@@ -2011,7 +2150,7 @@ class DatabaseService:
                 session.query(BookloreBook).filter(BookloreBook.filename == filename).delete(synchronize_session=False)
                 return True
         except Exception as e:
-            logger.error(f"❌ Failed to delete Grimmory book '{filename}': {e}")
+            logger.error(f"❌ Failed to delete Grimmory book '{filename}': {e}", exc_info=True)
             return False
 
 
@@ -4105,7 +4244,7 @@ class DatabaseService:
             return True
         except Exception as e:
             session.rollback()
-            logger.error(f"❌ Failed to clear Grimmory cache table: {e}")
+            logger.error(f"❌ Failed to clear Grimmory cache table: {e}", exc_info=True)
             return False
         finally:
             session.close()
@@ -4134,7 +4273,7 @@ class DatabaseMigrator:
                     logger.info(f"✅ Migrated {len(mapping_data['mappings'])} book mappings")
 
             except Exception as e:
-                logger.error(f"❌ Failed to migrate mapping data: {e}")
+                logger.error(f"❌ Failed to migrate mapping data: {e}", exc_info=True)
 
         # Migrate state
         if self.json_state_path.exists():
@@ -4146,7 +4285,7 @@ class DatabaseMigrator:
                 logger.info(f"✅ Migrated state for {len(state_data)} books")
 
             except Exception as e:
-                logger.error(f"❌ Failed to migrate state data: {e}")
+                logger.error(f"❌ Failed to migrate state data: {e}", exc_info=True)
 
         logger.info("✅ Migration completed")
 

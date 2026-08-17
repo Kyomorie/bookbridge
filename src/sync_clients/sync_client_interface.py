@@ -3,6 +3,10 @@ from typing import Optional, Callable, Tuple
 
 from src.db.models import Book, State
 
+# SyncResult.error_code value meaning the target Audiobookshelf library item no
+# longer exists (the mapping is stale).
+ABS_ITEM_NOT_FOUND = "abs_item_not_found"
+
 @dataclass
 class ServiceState:
     # can contain xpath, ts, pct, href, frag
@@ -14,6 +18,12 @@ class ServiceState:
     display: Tuple[str, str]
     value_formatter: Callable[[float], str]
     value_seconds_formatter: Callable[[float], str] = None
+    # How this service stored the position it just reported ('readium' | 'cfi').
+    # Set by clients whose write shape has to mirror what the reader already uses,
+    # so the write path can reuse this read instead of probing the service again.
+    # Deliberately NOT inside `current`: that dict is persisted and fingerprinted,
+    # and an extra key there would perturb change detection.
+    locator_shape: Optional[str] = None
 
 @dataclass
 class LocatorResult:
@@ -38,6 +48,11 @@ class UpdateProgressRequest:
     # instead of zero (used when an audiobook-companion leader like Storyteller
     # advances the position — see STORYTELLER_LISTENING_SESSIONS).
     credit_listening: bool = False
+    # The ServiceState this same cycle already read from the client being written
+    # to. Lets a client reuse its own read instead of re-fetching state it just
+    # had; None whenever the caller has no prior read (resets, ebook-only path),
+    # in which case the client falls back to probing.
+    current_state: Optional['ServiceState'] = None
 
 @dataclass
 class SyncResult:
@@ -45,6 +60,8 @@ class SyncResult:
     location: Optional[float] = None
     success: bool = False
     updated_state: dict = field(default_factory=dict)
+    # Optional machine-readable reason for failure; None for ordinary/unknown failures, ABS_ITEM_NOT_FOUND when the target ABS library item no longer exists
+    error_code: Optional[str] = None
 
 class SyncClient:
     """

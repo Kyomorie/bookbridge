@@ -144,7 +144,7 @@ class HardcoverClient:
         except HardcoverRateLimitError:
             raise
         except Exception as e:
-            logger.error(f"❌ Hardcover query failed: {e}")
+            logger.error(f"❌ Hardcover query failed: {e}", exc_info=True)
 
         return None
 
@@ -188,7 +188,7 @@ class HardcoverClient:
                     return books[0]
 
         except Exception as e:
-            logger.error(f"❌ Error fetching user book: {e}")
+            logger.error(f"❌ Error fetching user book: {e}", exc_info=True)
 
         return None
 
@@ -624,7 +624,7 @@ class HardcoverClient:
                 else:
                     return None
             except Exception as e:
-                logger.error(f"❌ resolve_book_from_input error (id): {e}")
+                logger.error(f"❌ resolve_book_from_input error (id): {e}", exc_info=True)
                 return None
         else:
             # Treat as slug
