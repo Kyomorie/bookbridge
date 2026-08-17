@@ -399,6 +399,11 @@ class AudioTranscriber:
             '-ac', '1',          # Mono
             '-c:a', 'pcm_s16le', # 16-bit PCM (most compatible)
             '-f', 'wav',         # Force WAV container
+            # RIFF size fields are 32-bit, so a book past ~37h overflows them and
+            # ffmpeg warns the output "will be broken". Current builds still read
+            # it, but don't rely on that: RF64 is the standard answer and kicks in
+            # only when the file actually grows past the limit.
+            '-rf64', 'auto',
             '-loglevel', 'error',
             str(output_path)
         ]
@@ -443,6 +448,7 @@ class AudioTranscriber:
                 '-ac', '1',          # Mono
                 '-c:a', 'pcm_s16le', # PCM WAV
                 '-f', 'wav',
+                '-rf64', 'auto',     # see normalize_audio_to_wav
                 '-loglevel', 'error',
                 str(new_path)
             ]

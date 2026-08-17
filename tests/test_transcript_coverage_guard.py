@@ -319,3 +319,47 @@ class TestStageAttribution(TranscriptCoverageTestCase):
                 )
 
         self.assertIn("Normalization lost audio", str(ctx.exception))
+
+
+class TestLargeWavHeaders(TranscriptCoverageTestCase):
+    """A 16kHz mono WAV passes RIFF's 32-bit size fields at ~37.3h of audio.
+
+    ffmpeg then warns "output file will be broken". Current builds still read
+    such a file, but the standards-correct answer is RF64, and it costs nothing
+    below the limit.
+    """
+
+    def _ffmpeg_cmd_for(self, method, *args):
+        with patch("src.utils.transcriber.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0, stdout="1.0", stderr="")
+            try:
+                method(*args)
+            except Exception:
+                pass
+            return [call.args[0] for call in run.call_args_list if call.args] or []
+
+    def test_normalize_requests_rf64_auto(self):
+        source = self.tmp / "part_000.m4b"
+        source.write_bytes(b"x")
+        cmds = self._ffmpeg_cmd_for(self.transcriber.normalize_audio_to_wav, source)
+        self.assertTrue(cmds, "expected an ffmpeg invocation")
+        cmd = cmds[0]
+        self.assertIn("-rf64", cmd)
+        self.assertEqual(cmd[cmd.index("-rf64") + 1], "auto")
+
+    def test_split_requests_rf64_auto(self):
+        source = self.tmp / "part_000.wav"
+        source.write_bytes(b"x")
+        self.transcriber.get_audio_duration = MagicMock(return_value=10_000.0)
+        cmds = self._ffmpeg_cmd_for(self.transcriber.split_audio_file, source, 2700)
+        ffmpeg_cmds = [c for c in cmds if c and c[0] == "ffmpeg"]
+        self.assertTrue(ffmpeg_cmds, "expected ffmpeg split invocations")
+        for cmd in ffmpeg_cmds:
+            self.assertIn("-rf64", cmd)
+            self.assertEqual(cmd[cmd.index("-rf64") + 1], "auto")
+
+    def test_riff_limit_is_where_we_think_it_is(self):
+        """Documents the threshold the flag exists for: 16kHz mono s16le."""
+        bytes_per_second = 16000 * 1 * 2
+        limit_hours = (2 ** 32) / bytes_per_second / 3600
+        self.assertAlmostEqual(limit_hours, 37.28, places=1)
