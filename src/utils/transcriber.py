@@ -88,7 +88,8 @@ class AudioTranscriber:
             coverage = 0.85
         return min(max(0.0, coverage), 1.0)
 
-    def _check_audio_coverage(self, actual_duration: float, expected_duration: Optional[float]) -> None:
+    def _check_audio_coverage(self, actual_duration: float, expected_duration: Optional[float],
+                              stage: str = "") -> None:
         """Raise when the audio/transcript we have falls short of the known runtime.
 
         Mirrors the SMIL fast-path failsafe (see transcribe_from_smil), which has
@@ -108,6 +109,7 @@ class AudioTranscriber:
             raise ValueError(
                 f"TRANSCRIPT REJECTED: Coverage too low ({coverage:.1%}). "
                 f"Expected {expected_duration:.0f}s, got {actual_duration:.0f}s"
+                + (f" [{stage}]" if stage else "")
             )
 
     @staticmethod
@@ -542,6 +544,7 @@ class AudioTranscriber:
         raw_audio = getattr(provider, 'supports_raw_audio', False)
 
         downloaded_files = []
+        source_durations = []
         full_transcript = []
         chunks_completed = 0
         cumulative_duration = 0.0
@@ -631,17 +634,56 @@ class AudioTranscriber:
                             if not local_path.exists() or local_path.stat().st_size == 0:
                                 raise ValueError(f"File {local_path} is empty or missing.")
 
+                            # Measure what actually arrived. When a book comes out
+                            # short, this is what says whether the source was already
+                            # short or whether a later stage lost the audio.
+                            source_seconds = self.get_audio_duration(local_path)
+                            source_durations.append(source_seconds)
+                            logger.info(
+                                f"   Part {idx + 1}/{len(audio_urls)}: "
+                                f"{local_path.stat().st_size:,} bytes, {source_seconds / 60:.1f} min"
+                            )
+
+                            # Single-file books can be judged immediately, which skips
+                            # a normalization pass that runs for minutes on a long
+                            # book. Multi-file books are only meaningful in total, so
+                            # they are checked once the loop finishes.
+                            if len(audio_urls) == 1:
+                                self._check_audio_coverage(
+                                    source_seconds, expected_duration,
+                                    stage="source audio as downloaded",
+                                )
+
                             # Normalize to WAV
                             raise_if_cancelled()
                             normalized_path = self.normalize_audio_to_wav(local_path)
                             if not normalized_path:
                                 raise ValueError(f"Normalization failed for part {idx+1}")
 
+                            # FFmpeg can stop early on a damaged stream and still exit
+                            # 0, which silently shortens the book. Compare against what
+                            # we just measured rather than discovering it later.
+                            normalized_seconds = self.get_audio_duration(normalized_path)
+                            if source_seconds > 0 and normalized_seconds < source_seconds * 0.99:
+                                raise ValueError(
+                                    f"Normalization lost audio for part {idx + 1}: source "
+                                    f"{source_seconds:.0f}s -> WAV {normalized_seconds:.0f}s"
+                                )
+
                             # Split if needed
                             downloaded_files.extend(self.split_audio_file(normalized_path, MAX_DURATION_SECONDS))
 
                     if not downloaded_files:
                         raise ValueError("No audio files were successfully downloaded and normalized")
+
+                    # Attribute a shortfall to the source before any later stage can be
+                    # blamed for it: this fires when the bytes the library served are
+                    # already shorter than the runtime it reports.
+                    if len(source_durations) > 1:
+                        self._check_audio_coverage(
+                            sum(source_durations), expected_duration,
+                            stage="source audio as downloaded",
+                        )
 
                 if not downloaded_files:
                     raise ValueError("No audio files were successfully downloaded and normalized")
@@ -657,7 +699,9 @@ class AudioTranscriber:
             # Coverage is checked BEFORE transcribing: a truncated download otherwise
             # costs hours of Whisper before producing a map that is wrong anyway.
             try:
-                self._check_audio_coverage(total_audio_duration, expected_duration)
+                self._check_audio_coverage(
+                    total_audio_duration, expected_duration, stage="normalized/split audio",
+                )
             except ValueError as coverage_err:
                 # Wipe the chunks too — otherwise the retry "finds a valid cache" and
                 # re-checks the same short audio forever instead of re-downloading.

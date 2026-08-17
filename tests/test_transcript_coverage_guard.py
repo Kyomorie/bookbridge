@@ -224,3 +224,98 @@ class TestProcessAudioGuards(TranscriptCoverageTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStageAttribution(TranscriptCoverageTestCase):
+    """#362 follow-up: say WHICH stage lost the audio, not just that it's short.
+
+    The reporter's second run proved the guard works but left the cause open —
+    the log showed a short WAV without saying whether the download or the
+    normalization produced it.
+    """
+
+    def test_message_names_the_stage(self):
+        with self.assertRaises(ValueError) as ctx:
+            self.transcriber._check_audio_coverage(
+                REPORTED_TRANSCRIPT_EXTENT, REPORTED_AUDIO_DURATION,
+                stage="source audio as downloaded",
+            )
+        message = str(ctx.exception)
+        # The greppable prefix is a contract; the stage is a suffix on it.
+        self.assertTrue(message.startswith("TRANSCRIPT REJECTED: Coverage too low"))
+        self.assertIn("[source audio as downloaded]", message)
+
+    def test_stage_is_optional(self):
+        with self.assertRaises(ValueError) as ctx:
+            self.transcriber._check_audio_coverage(
+                REPORTED_TRANSCRIPT_EXTENT, REPORTED_AUDIO_DURATION)
+        self.assertNotIn("[", str(ctx.exception))
+
+    def test_short_source_is_blamed_on_the_download_not_normalization(self):
+        """A source already short must fail before normalization is implicated."""
+        abs_id = "short-source"
+        cache_dir = self.tmp / "audio_cache" / abs_id
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        self.transcriber.get_audio_duration = MagicMock(return_value=REPORTED_TRANSCRIPT_EXTENT)
+        self.transcriber.normalize_audio_to_wav = MagicMock(
+            side_effect=AssertionError("normalization must not run on a short source"))
+
+        def fake_get(url, **kwargs):
+            response = MagicMock()
+            response.headers = {}
+            response.iter_content.return_value = [b"audio"]
+            response.__enter__ = lambda s: s
+            response.__exit__ = lambda *a: False
+            return response
+
+        with patch("src.utils.transcriber.requests.get", side_effect=fake_get), \
+             patch("src.utils.transcriber.get_transcription_provider") as provider_factory:
+            provider = MagicMock()
+            provider.supports_raw_audio = False
+            provider_factory.return_value = provider
+
+            with self.assertRaises(ValueError) as ctx:
+                self.transcriber.process_audio(
+                    abs_id,
+                    [{"stream_url": "http://example.com/1.m4b", "ext": "m4b"}],
+                    expected_duration=REPORTED_AUDIO_DURATION,
+                )
+
+        self.assertIn("source audio as downloaded", str(ctx.exception))
+
+    def test_normalization_shrinkage_is_reported(self):
+        """FFmpeg can stop early on a damaged stream and still exit 0."""
+        abs_id = "lossy-normalize"
+        cache_dir = self.tmp / "audio_cache" / abs_id
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        wav = cache_dir / "part_000.wav"
+        wav.write_bytes(b"RIFF")
+
+        durations = {"source": REPORTED_AUDIO_DURATION, "wav": REPORTED_TRANSCRIPT_EXTENT}
+        self.transcriber.get_audio_duration = MagicMock(
+            side_effect=lambda p: durations["wav"] if str(p).endswith(".wav") else durations["source"])
+        self.transcriber.normalize_audio_to_wav = MagicMock(return_value=wav)
+
+        def fake_get(url, **kwargs):
+            response = MagicMock()
+            response.headers = {}
+            response.iter_content.return_value = [b"audio"]
+            response.__enter__ = lambda s: s
+            response.__exit__ = lambda *a: False
+            return response
+
+        with patch("src.utils.transcriber.requests.get", side_effect=fake_get), \
+             patch("src.utils.transcriber.get_transcription_provider") as provider_factory:
+            provider = MagicMock()
+            provider.supports_raw_audio = False
+            provider_factory.return_value = provider
+
+            with self.assertRaises(ValueError) as ctx:
+                self.transcriber.process_audio(
+                    abs_id,
+                    [{"stream_url": "http://example.com/1.m4b", "ext": "m4b"}],
+                    expected_duration=REPORTED_AUDIO_DURATION,
+                )
+
+        self.assertIn("Normalization lost audio", str(ctx.exception))
