@@ -79,8 +79,9 @@ All notable changes to BookBridge will be documented in this file.
 - **Several diagnostics-backed integration edge cases now fail cleanly or recover.**
   Audiobookshelf 401 errors now point directly to the ABS key setting; BookOrbit
   progress errors report the real HTTP status instead of calling every
-  4xx/5xx response "no response"; Audiobookshelf collection creation re-fetches
-  the new collection when a successful response omits its id; BridgeSync reading
+  4xx/5xx response "no response"; Audiobookshelf collection creation includes the
+  first book as required by current ABS releases instead of trying to create an
+  invalid empty collection; BridgeSync reading
   sessions carrying only a linked KoSync document hash resolve to the correct
   book instead of remaining in the device retry queue; and a JSON `null` response
   from Storyteller's fallback details endpoint is rejected cleanly instead of

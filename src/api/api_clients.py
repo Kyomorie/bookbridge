@@ -767,21 +767,11 @@ class ABSClient:
                     library_id = libraries[0].get('id') if libraries else None
                     if library_id:
                         r_create = self.session.post(collections_url,
-                                                 json={"libraryId": library_id, "name": collection_name})
+                                                 json={"libraryId": library_id, "name": collection_name,
+                                                       "books": [item_id]})
                         if r_create.status_code in [200, 201]:
-                            target_collection = r_create.json()
-
-                            # Some ABS versions return a success envelope without
-                            # the created collection id. Re-fetch the collection
-                            # instead of crashing on target_collection['id'].
-                            if not isinstance(target_collection, dict) or not target_collection.get('id'):
-                                r_refresh = self.session.get(collections_url)
-                                if r_refresh.status_code == 200:
-                                    refreshed = r_refresh.json().get('collections', [])
-                                    target_collection = next(
-                                        (c for c in refreshed if c.get('name') == collection_name),
-                                        None,
-                                    )
+                            logger.info("Added item to newly created ABS Collection: %s", collection_name)
+                            return True
 
             collection_id = target_collection.get('id') if isinstance(target_collection, dict) else None
             if not collection_id:

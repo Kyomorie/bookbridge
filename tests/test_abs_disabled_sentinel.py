@@ -207,7 +207,7 @@ class TestABSDisabledSentinel(unittest.TestCase):
 
 
 class TestABSCollectionCleanup(unittest.TestCase):
-    def test_add_collection_refetches_when_create_response_has_no_id(self):
+    def test_add_collection_creates_it_with_the_first_book(self):
         with patch.dict(
             os.environ,
             {"ABS_SERVER": "http://abs.example", "ABS_KEY": "token"},
@@ -218,29 +218,25 @@ class TestABSCollectionCleanup(unittest.TestCase):
             no_collection.json.return_value = {"collections": []}
             libraries = MagicMock(status_code=200)
             libraries.json.return_value = {"libraries": [{"id": "library-1"}]}
-            created_without_id = MagicMock(status_code=201)
-            created_without_id.json.return_value = {"name": "Synced with KOReader"}
-            refreshed = MagicMock(status_code=200)
-            refreshed.json.return_value = {
-                "collections": [
-                    {"id": "collection-1", "name": "Synced with KOReader"}
-                ]
-            }
-            added = MagicMock(status_code=204)
             client.session = MagicMock()
-            client.session.get.side_effect = [no_collection, libraries, refreshed]
-            client.session.post.side_effect = [created_without_id, added]
+            client.session.get.side_effect = [no_collection, libraries]
 
-            with patch.object(client, "get_item_details", return_value=None):
+            def create_collection(_url, json):
+                return MagicMock(
+                    status_code=201 if json.get("books") == ["item-1"] else 400
+                )
+
+            client.session.post.side_effect = create_collection
+
+            with self.assertLogs("src.api.api_clients", level="INFO") as captured:
                 result = client.add_to_collection(
                     "item-1", "Synced with KOReader"
                 )
 
         self.assertTrue(result)
-        self.assertIn(
-            "/api/collections/collection-1/book",
-            client.session.post.call_args_list[1].args[0],
-        )
+        self.assertEqual(client.session.post.call_count, 1)
+        self.assertIn("newly created ABS Collection", "\n".join(captured.output))
+        self.assertNotIn("collection id unavailable", "\n".join(captured.output))
 
     def test_disabled_client_does_not_call_collection_api(self):
         with patch.dict(
