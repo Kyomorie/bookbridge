@@ -309,7 +309,7 @@ class TestKosyncEndpoints(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
         self.assertEqual(data.get('name'), 'bridgesync')
-        self.assertEqual(data.get('version'), '0.6.2')
+        self.assertEqual(data.get('version'), '0.6.3')
 
     def test_admin_plugin_download_serves_zip_attachment(self):
         """Settings-page download endpoint serves the plugin as a zip attachment."""

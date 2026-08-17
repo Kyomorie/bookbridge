@@ -71,6 +71,12 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **BridgeSync now accepts numeric IPv4 server addresses (#367).** On Android
+  KOReader, the plugin could report `DNS lookup failed` for a server configured
+  as an IP address and port even though no DNS lookup was needed. BridgeSync
+  now connects directly to literal IPv4 addresses while retaining the existing
+  DNS preflight for hostnames. Update the plugin to v0.6.3 on each device.
+
 - **The private diagnostics report center no longer times out while loading its
   overview.** Finding pages now aggregate linked user-report counts once per
   request instead of re-scanning the fleet warning history for every displayed

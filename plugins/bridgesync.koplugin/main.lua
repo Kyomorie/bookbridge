@@ -502,6 +502,10 @@ function BridgeSync:_preflightNetwork(allow_dns_retry)
         return false, _("Server URL is invalid")
     end
 
+    if host:match("^%d+%.%d+%.%d+%.%d+$") then
+        return true
+    end
+
     local resolved_ip = socket.dns.toip(host)
     if not resolved_ip then
         if allow_dns_retry then

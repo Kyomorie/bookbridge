@@ -13,10 +13,25 @@ end
 preload("ui/widget/confirmbox", empty_module)
 preload("ui/widget/infomessage", empty_module)
 preload("ui/widget/inputdialog", empty_module)
-preload("ui/network/manager", empty_module)
+preload("ui/network/manager", function()
+    return {
+        isConnected = function() return true end,
+    }
+end)
 preload("ui/trapper", empty_module)
 preload("bit", empty_module)
-preload("socket", empty_module)
+
+local dns_lookups = {}
+preload("socket", function()
+    return {
+        dns = {
+            toip = function(host)
+                dns_lookups[#dns_lookups + 1] = host
+                return nil
+            end,
+        },
+    }
+end)
 
 preload("gettext", function()
     return function(value) return value end
@@ -91,7 +106,12 @@ end)
 
 preload("ffi/util", function()
     return {
-        template = function(value) return value end,
+        template = function(value, ...)
+            local args = { ... }
+            return tostring(value):gsub("%%(%d+)", function(index)
+                return tostring(args[tonumber(index)] or "")
+            end)
+        end,
     }
 end)
 
@@ -308,17 +328,17 @@ os.remove(archive_path)
 
 local metadata_path = settings_dir .. "/bridgesync-update-meta.lua"
 local metadata = assert(io.open(metadata_path, "wb"))
-metadata:write('return { name = "bridgesync", version = "0.6.2" }')
+metadata:write('return { name = "bridgesync", version = "0.6.3" }')
 metadata:close()
-assert(BridgeSync._validatePluginMetadata(metadata_path, "0.6.2"),
+assert(BridgeSync._validatePluginMetadata(metadata_path, "0.6.3"),
     "matching staged BridgeSync metadata must pass")
 local metadata_ok, metadata_err = BridgeSync._validatePluginMetadata(metadata_path, "9.9.9")
 assert(not metadata_ok and metadata_err:find("does not match", 1, true),
     "a staged plugin with the wrong version must fail closed")
 metadata = assert(io.open(metadata_path, "wb"))
-metadata:write('return { fullname = "Bridge Sync", name = "other", version = "0.6.2" }')
+metadata:write('return { fullname = "Bridge Sync", name = "other", version = "0.6.3" }')
 metadata:close()
-metadata_ok, metadata_err = BridgeSync._validatePluginMetadata(metadata_path, "0.6.2")
+metadata_ok, metadata_err = BridgeSync._validatePluginMetadata(metadata_path, "0.6.3")
 assert(not metadata_ok and metadata_err:find("not BridgeSync", 1, true),
     "a staged package with the wrong identity must fail closed")
 os.remove(metadata_path)
@@ -336,6 +356,19 @@ local ok, init_error = pcall(bridge.init, bridge)
 assert(ok, "BridgeSync init failed: " .. tostring(init_error))
 assert(bridge.log_path == settings_dir .. "/bridge_sync.log",
     "BridgeSync must initialize log_path before startup logging")
+
+bridge.server_url = "http://192.168.88.200:5758"
+local network_ok, network_err = bridge:_preflightNetwork()
+assert(network_ok, tostring(network_err))
+assert(#dns_lookups == 0,
+    "a literal IPv4 server must bypass DNS resolution")
+
+bridge.server_url = "http://bridge.example:5758"
+network_ok, network_err = bridge:_preflightNetwork()
+assert(not network_ok and network_err == "DNS lookup failed for bridge.example",
+    "hostnames must retain the DNS preflight")
+assert(#dns_lookups == 1 and dns_lookups[1] == "bridge.example",
+    "the DNS preflight must receive only the hostname")
 
 local handle = assert(io.open(bridge.log_path, "r"),
     "BridgeSync startup did not create bridge_sync.log")
@@ -418,7 +451,7 @@ assert(#uploaded_log_payloads == 3,
 assert(uploaded_log_payloads[2].operation == "session_upload")
 assert(uploaded_log_payloads[2].status == "failure")
 assert(uploaded_log_payloads[3].status == "success")
-assert(uploaded_log_payloads[3].plugin_version == "0.6.2")
+assert(uploaded_log_payloads[3].plugin_version == "0.6.3")
 assert(type(sqlite_values.device_log_upload_offset) == "number",
     "successful telemetry must persist the acknowledged log byte offset")
 
