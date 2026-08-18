@@ -808,6 +808,92 @@ class TestCrossUserFailedRetryLater(unittest.TestCase):
         result = mgr._client_bundle_for_book_claimant(book)
         self.assertEqual(result.user_id, self.user_b.id)
 
+    def test_falls_through_to_configured_claimant_when_owner_unconfigured(self):
+        """Regression: an owner with no personal ABS_KEY must not permanently
+        fail a shared book's background job when another claimant of the same
+        book has a working ABS client. Reproduces the "0 audio files" symptom
+        reported for shared books where the recorded owner never configured a
+        personal ABS API key (ABS_KEY is per-user and does not fall back to
+        the global admin key; see src/utils/user_config.py)."""
+        from src.sync_manager import SyncManager
+
+        unconfigured_abs = MagicMock()
+        unconfigured_abs.is_configured.return_value = False
+        bundle_owner = MagicMock()
+        bundle_owner.user_id = self.user_b.id
+        bundle_owner.abs_client = unconfigured_abs
+
+        configured_abs = MagicMock()
+        configured_abs.is_configured.return_value = True
+        bundle_other = MagicMock()
+        bundle_other.user_id = self.user_a.id
+        bundle_other.abs_client = configured_abs
+
+        mock_registry = MagicMock()
+
+        def get_clients_side_effect(uid):
+            if uid == self.user_b.id:
+                return bundle_owner
+            return bundle_other
+        mock_registry.get_clients.side_effect = get_clients_side_effect
+
+        book = self.db.save_book(Book(
+            abs_id="shared-owner-unconfigured",
+            abs_title="Shared Owner Unconfigured",
+            audio_source="ABS",
+            user_id=self.user_b.id,  # bob is the owner but lacks a personal ABS_KEY
+            sync_mode="audiobook",
+        ))
+        self.db.link_user_book(self.user_a.id, book.abs_id)
+        self.db.link_user_book(self.user_b.id, book.abs_id)
+
+        mgr = SyncManager.__new__(SyncManager)
+        mgr.database_service = self.db
+        mgr.user_client_registry = mock_registry
+
+        import contextvars
+        mgr._client_bundle_override_var = contextvars.ContextVar("test4", default=None)
+
+        result = mgr._client_bundle_for_book_claimant(book)
+        # Falls through to alice, whose ABS client is actually configured,
+        # instead of returning bob's permanently-unconfigured bundle.
+        self.assertEqual(result.user_id, self.user_a.id)
+
+    def test_returns_unconfigured_bundle_when_no_claimant_is_configured(self):
+        """When every claimant lacks a working client, behavior is unchanged:
+        the owner's (still-unconfigured) bundle is returned so the existing
+        is_configured() warning logging in ABSClient can fire."""
+        from src.sync_manager import SyncManager
+
+        unconfigured_abs = MagicMock()
+        unconfigured_abs.is_configured.return_value = False
+        bundle = MagicMock()
+        bundle.user_id = self.user_a.id
+        bundle.abs_client = unconfigured_abs
+
+        mock_registry = MagicMock()
+        mock_registry.get_clients.return_value = bundle
+
+        book = self.db.save_book(Book(
+            abs_id="solo-unconfigured",
+            abs_title="Solo Unconfigured",
+            audio_source="ABS",
+            user_id=self.user_a.id,
+            sync_mode="audiobook",
+        ))
+        self.db.link_user_book(self.user_a.id, book.abs_id)
+
+        mgr = SyncManager.__new__(SyncManager)
+        mgr.database_service = self.db
+        mgr.user_client_registry = mock_registry
+
+        import contextvars
+        mgr._client_bundle_override_var = contextvars.ContextVar("test5", default=None)
+
+        result = mgr._client_bundle_for_book_claimant(book)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.user_id, self.user_a.id)
+
 
 class TestUserClientRegistryBookOrbit(unittest.TestCase):
     """UserClientRegistry passes database_service and user_id to BookOrbit clients."""
