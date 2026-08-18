@@ -107,6 +107,43 @@ class TestABSGetAudioFilesExpanded(unittest.TestCase):
         self.assertEqual(kwargs.get("params"), {"expanded": 1})
         self.assertEqual(details["media"]["chapters"][0]["title"], "Chapter 1")
 
+    def test_get_audio_files_logs_warning_when_client_not_configured(self):
+        """Regression: per-user ABS_KEY that isn't set must not fail silently.
+
+        ABS_KEY is a per-user credential (see PER_USER_CREDENTIAL_KEYS in
+        src/utils/user_config.py) that does not fall back to the global
+        ABS_KEY for regular users. When a user has no personal key
+        configured, is_configured() returns False and this previously
+        returned [] with zero logging, making the resulting "0 audio
+        files" transcription failure impossible to diagnose from logs.
+        """
+        client = ABSClient(credentials={"ABS_KEY": "", "__allow_global_fallback__": False})
+        client.session = MagicMock()
+
+        with self.assertLogs("src.api.api_clients", level="WARNING") as captured:
+            result = client.get_audio_files("item-123")
+
+        self.assertEqual(result, [])
+        client.session.get.assert_not_called()
+        self.assertTrue(
+            any("not configured" in line for line in captured.output),
+            "Expected a warning explaining the client is not configured",
+        )
+
+    def test_get_item_details_logs_warning_when_client_not_configured(self):
+        client = ABSClient(credentials={"ABS_KEY": "", "__allow_global_fallback__": False})
+        client.session = MagicMock()
+
+        with self.assertLogs("src.api.api_clients", level="WARNING") as captured:
+            result = client.get_item_details("item-123")
+
+        self.assertIsNone(result)
+        client.session.get.assert_not_called()
+        self.assertTrue(
+            any("not configured" in line for line in captured.output),
+            "Expected a warning explaining the client is not configured",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

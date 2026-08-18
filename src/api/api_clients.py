@@ -261,7 +261,12 @@ class ABSClient:
             return []
 
     def get_audio_files(self, item_id):
-        if not self.is_configured(): return []
+        if not self.is_configured():
+            logger.warning(
+                f"⚠️ ABS: get_audio_files('{item_id}') skipped — client is not configured "
+                "(missing/unset ABS_SERVER or per-user ABS_KEY for this credential context)"
+            )
+            return []
         self._update_session_headers()
         url = f"{self.base_url}/api/items/{item_id}"
         try:
@@ -429,7 +434,12 @@ class ABSClient:
             return False
 
     def get_item_details(self, item_id):
-        if not self.is_configured(): return None
+        if not self.is_configured():
+            logger.warning(
+                f"⚠️ ABS: get_item_details('{item_id}') skipped — client is not configured "
+                "(missing/unset ABS_SERVER or per-user ABS_KEY for this credential context)"
+            )
+            return None
         self._update_session_headers()
         url = f"{self.base_url}/api/items/{item_id}"
         try:
@@ -438,8 +448,9 @@ class ABSClient:
             # populated on the expanded response per the ABS API docs.
             r = self.session.get(url, params={"expanded": 1}, timeout=self.timeout)
             if r.status_code == 200: return r.json()
-        except Exception:
-            pass
+            logger.warning(f"⚠️ ABS: Failed to fetch item details for '{item_id}' (status {r.status_code})")
+        except Exception as e:
+            logger.error(f"❌ Error getting item details: {e}", exc_info=True)
         return None
 
     def get_listening_stats(self):
