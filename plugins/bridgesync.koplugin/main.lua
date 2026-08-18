@@ -349,7 +349,7 @@ end
 
 function BridgeSync:_appendLog(level, message)
     local line = os.date("%Y-%m-%d %H:%M:%S") .. " [" .. tostring(level or "info") .. "] " .. tostring(message or "") .. "\n"
-    local current_size = tonumber(lfs.attributes(self.log_path, "size")) or 0
+    local current_size = tonumber((lfs.attributes(self.log_path, "size"))) or 0
     if current_size + #line > DEVICE_LOG_MAX_BYTES then
         os.remove(self.log_path .. ".1")
         os.rename(self.log_path, self.log_path .. ".1")
