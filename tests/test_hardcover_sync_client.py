@@ -263,7 +263,7 @@ class TestHardcoverSyncClient(unittest.TestCase):
         self.mock_hardcover_client.ensure_book_on_list.assert_not_called()
 
     def test_update_progress_calls_hardcover_api(self):
-        """Test that update_progress correctly calls Hardcover API for progress and status updates."""
+        """A status promotion updates the new read returned by Hardcover."""
         # Pre-setup matched book to skip auto-matching
         hardcover_details = HardcoverDetails(
             abs_id='test-hardcover-book',
@@ -281,6 +281,16 @@ class TestHardcoverSyncClient(unittest.TestCase):
             'page_number': 0
         }
         self.mock_hardcover_client.get_user_book.return_value = mock_user_book
+        active_read = {
+            'id': 'new-current-read-790',
+            'started_at': None,
+            'finished_at': None,
+        }
+        self.mock_hardcover_client.update_status.return_value = {
+            'id': 'user-book-id-789',
+            'status_id': 2,
+            'user_book_reads': [active_read],
+        }
 
         # Test progress > 2% should promote to "Currently Reading"
         update_request = UpdateProgressRequest(
@@ -299,7 +309,8 @@ class TestHardcoverSyncClient(unittest.TestCase):
             expected_page,
             edition_id='existing-edition-456',
             is_finished=False,
-            current_percentage=0.25
+            current_percentage=0.25,
+            active_read=active_read,
         )
 
         # Verify successful result
@@ -446,6 +457,29 @@ class TestHardcoverSyncClient(unittest.TestCase):
 
         # Verify it returns failure on API error
         self.assertFalse(result.success)
+
+    def test_rejected_progress_mutation_returns_failure(self):
+        """A false API result must not be persisted as a successful tracker write."""
+        self.database_service.save_hardcover_details(HardcoverDetails(
+            abs_id='test-hardcover-book',
+            hardcover_book_id='rejected-book-123',
+            hardcover_edition_id='rejected-edition-456',
+            hardcover_pages=150,
+            matched_by='test',
+        ))
+        self.mock_hardcover_client.get_user_book.return_value = {
+            'id': 'rejected-user-book',
+            'status_id': 2,
+        }
+        self.mock_hardcover_client.update_progress.return_value = False
+
+        result = self.hardcover_sync_client.update_progress(
+            self.test_book,
+            UpdateProgressRequest(locator_result=LocatorResult(percentage=0.6)),
+        )
+
+        self.assertFalse(result.success)
+        self.assertIsNone(result.location)
 
     def test_rate_limited_automatch_skips_without_false_no_match_log(self):
         self.mock_abs_client.get_item_details.return_value = {

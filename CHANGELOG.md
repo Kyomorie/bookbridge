@@ -8,6 +8,14 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **StoryGraph and Hardcover cooldowns now fire when their timer expires.** A
+  tracker update used to be checked only during a later sync cycle, so a
+  five-minute cooldown could silently wait for a much longer global interval.
+  BookBridge now schedules one per-book follow-up for both trackers and resets it
+  when reading resumes. Hardcover status promotions also target the new active
+  read returned by Hardcover, preventing the first progress write after *Want to
+  Read* becomes *Currently Reading* from landing on an older reading session.
+
 - **BridgeSync 0.6.4: the KOReader plugin no longer fails to start on a fresh
   install.** BridgeSync 0.6.3, shipped in 7.4.0, crashed while starting up on any
   device that did not already have a BridgeSync log file — which meant every new

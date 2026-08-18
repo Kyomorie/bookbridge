@@ -369,28 +369,35 @@ class HardcoverSyncClient(SyncClient):
         return None
 
     def _handle_status_transition(self, book, hardcover_details, current_status, percentage, is_finished):
-        """Handle status transitions based on progress percentage."""
+        """Handle status transitions and return the active read from the mutation."""
+        updated_user_book = None
         # If finished and not already marked as Read (3), promote to Read
         if is_finished and current_status != 3:
-            self.hardcover_client.update_status(
+            updated_user_book = self.hardcover_client.update_status(
                 hardcover_details.hardcover_book_id,
                 3,
                 hardcover_details.hardcover_edition_id
             )
             logger.info(f"📚 Hardcover: '{sanitize_log_data(book.abs_title)}' status promoted to Read")
-            return 3
+            current_status = 3
 
         # If progress > 2% and currently "Want to Read" (1), promote to "Currently Reading" (2)
         elif percentage > 0.02 and current_status == 1:
-            self.hardcover_client.update_status(
+            updated_user_book = self.hardcover_client.update_status(
                 hardcover_details.hardcover_book_id,
                 2,
                 hardcover_details.hardcover_edition_id
             )
             logger.info(f"📚 Hardcover: '{sanitize_log_data(book.abs_title)}' status promoted to Currently Reading")
-            return 2
+            current_status = 2
 
-        return current_status
+        reads = (
+            updated_user_book.get('user_book_reads') or []
+            if isinstance(updated_user_book, dict)
+            else []
+        )
+        active_read = reads[0] if reads else None
+        return current_status, active_read
 
     def update_progress(self, book: Book, request: UpdateProgressRequest) -> SyncResult:
         """
@@ -464,17 +471,27 @@ class HardcoverSyncClient(SyncClient):
         current_status = ub.get('status_id')
 
         # Handle status transitions
-        current_status = self._handle_status_transition(book, hardcover_details, current_status, percentage, is_finished)
+        current_status, active_read = self._handle_status_transition(
+            book, hardcover_details, current_status, percentage, is_finished
+        )
 
         # Update progress
         try:
-            self.hardcover_client.update_progress(
+            progress_kwargs = {
+                'edition_id': hardcover_details.hardcover_edition_id,
+                'is_finished': is_finished,
+                'current_percentage': percentage,
+            }
+            if active_read:
+                progress_kwargs['active_read'] = active_read
+            updated = self.hardcover_client.update_progress(
                 ub['id'],
                 page_num,
-                edition_id=hardcover_details.hardcover_edition_id,
-                is_finished=is_finished,
-                current_percentage=percentage
+                **progress_kwargs,
             )
+            if not updated:
+                logger.error("❌ Hardcover progress update was not accepted")
+                return SyncResult(None, False)
 
             # Calculate actual percentage from page number for state tracking
             actual_pct = min(page_num / total_pages, 1.0) if total_pages > 0 else percentage
@@ -498,18 +515,28 @@ class HardcoverSyncClient(SyncClient):
         current_status = ub.get('status_id')
 
         # Handle status transitions
-        current_status = self._handle_status_transition(book, hardcover_details, current_status, percentage, is_finished)
+        current_status, active_read = self._handle_status_transition(
+            book, hardcover_details, current_status, percentage, is_finished
+        )
 
         try:
             progress_seconds = int(audio_seconds * percentage)
-            self.hardcover_client.update_progress(
+            progress_kwargs = {
+                'edition_id': hardcover_details.hardcover_edition_id,
+                'is_finished': is_finished,
+                'current_percentage': percentage,
+                'audio_seconds': audio_seconds,
+            }
+            if active_read:
+                progress_kwargs['active_read'] = active_read
+            updated = self.hardcover_client.update_progress(
                 ub['id'],
                 0,  # No page number for audiobooks
-                edition_id=hardcover_details.hardcover_edition_id,
-                is_finished=is_finished,
-                current_percentage=percentage,
-                audio_seconds=audio_seconds
+                **progress_kwargs,
             )
+            if not updated:
+                logger.error("❌ Hardcover audiobook progress update was not accepted")
+                return SyncResult(None, False)
 
             updated_state = {
                 'pct': percentage,

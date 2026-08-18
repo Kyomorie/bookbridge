@@ -176,14 +176,17 @@ class SyncManager:
         # attempted this cycle (avoids re-downloading on every resolver call).
         self._storyteller_epub_ensure_attempted: set[str] = set()
         self._post_cycle_callbacks: list = []
-        # StoryGraph idle-cooldown tracker: {abs_id: {'pct': float, 'changed_at': float}}.
-        # In-memory only; on restart the first observation reseeds 'changed_at', so a post
-        # is deferred at most one cooldown window (completion still bypasses).
-        self._storygraph_cooldown: dict[str, dict] = {}
+        # StoryGraph idle-cooldown tracker: {(user_id, abs_id): progress record}.
+        # In-memory only; a restart reseeds it on the next observed movement.
+        self._storygraph_cooldown: dict[tuple[int | None, str], dict] = {}
         self._storygraph_cooldown_lock = threading.Lock()
         # Hardcover idle-cooldown tracker (same trailing-edge scheme as StoryGraph).
-        self._hardcover_cooldown: dict[str, dict] = {}
+        self._hardcover_cooldown: dict[tuple[int | None, str], dict] = {}
         self._hardcover_cooldown_lock = threading.Lock()
+        # One follow-up timer per user/book; both trackers are evaluated by the
+        # targeted cycle, so matching deadlines must not launch duplicate cycles.
+        self._tracker_cooldown_timers: dict[tuple[int | None, str], dict] = {}
+        self._tracker_cooldown_timers_lock = threading.Lock()
 
         self._setup_sync_clients(sync_clients)
         self.startup_checks()
@@ -2405,7 +2408,9 @@ class SyncManager:
 
         return False
 
-    def _handle_storygraph_cooldown(self, book, config, now: float) -> None:
+    def _handle_storygraph_cooldown(
+        self, book, config, now: float, schedule_followup: bool = True
+    ) -> None:
         """Post StoryGraph progress on a trailing-edge idle cooldown."""
         self._handle_tracker_cooldown(
             book, config, now,
@@ -2414,9 +2419,12 @@ class SyncManager:
             cooldown_env='STORYGRAPH_UPDATE_COOLDOWN_MINS',
             cooldown_store_attr='_storygraph_cooldown',
             cooldown_lock_attr='_storygraph_cooldown_lock',
+            schedule_followup=schedule_followup,
         )
 
-    def _handle_hardcover_cooldown(self, book, config, now: float) -> None:
+    def _handle_hardcover_cooldown(
+        self, book, config, now: float, schedule_followup: bool = True
+    ) -> None:
         """Post Hardcover progress on the same trailing-edge idle cooldown as StoryGraph."""
         self._handle_tracker_cooldown(
             book, config, now,
@@ -2425,11 +2433,55 @@ class SyncManager:
             cooldown_env='HARDCOVER_UPDATE_COOLDOWN_MINS',
             cooldown_store_attr='_hardcover_cooldown',
             cooldown_lock_attr='_hardcover_cooldown_lock',
+            schedule_followup=schedule_followup,
         )
+
+    def _schedule_tracker_cooldown_check(
+        self, abs_id: str, user_id: int | None, current_pct: float, delay: float
+    ) -> bool:
+        """Schedule the earliest pending tracker check for one user's book."""
+        key = (user_id, abs_id)
+        deadline = time.monotonic() + delay
+        token = object()
+        with self._tracker_cooldown_timers_lock:
+            existing = self._tracker_cooldown_timers.get(key)
+            if (existing
+                    and abs(existing['pct'] - current_pct) <= 1e-4
+                    and existing['deadline'] <= deadline + 0.1):
+                return False
+            if existing:
+                existing['timer'].cancel()
+            timer = threading.Timer(
+                delay,
+                self._run_tracker_cooldown_check,
+                args=(key, token, abs_id, user_id),
+            )
+            timer.daemon = True
+            self._tracker_cooldown_timers[key] = {
+                'pct': current_pct,
+                'deadline': deadline,
+                'timer': timer,
+                'token': token,
+            }
+            timer.start()
+        return True
+
+    def _run_tracker_cooldown_check(
+        self, key: tuple[int | None, str], token: object,
+        abs_id: str, user_id: int | None,
+    ) -> None:
+        """Run a scheduled check unless newer progress replaced its timer."""
+        with self._tracker_cooldown_timers_lock:
+            current = self._tracker_cooldown_timers.get(key)
+            if not current or current['token'] is not token:
+                return
+            del self._tracker_cooldown_timers[key]
+        self.sync_cycle(target_abs_id=abs_id, user_id=user_id)
 
     def _handle_tracker_cooldown(self, book, config, now: float, *, client_key: str,
                                  state_name: str, cooldown_env: str,
-                                 cooldown_store_attr: str, cooldown_lock_attr: str) -> None:
+                                 cooldown_store_attr: str, cooldown_lock_attr: str,
+                                 schedule_followup: bool) -> None:
         """Post a write-only tracker's progress on a trailing-edge idle cooldown.
 
         The tracker (StoryGraph/Hardcover) is intentionally excluded from the normal
@@ -2466,16 +2518,18 @@ class SyncManager:
                 return
 
             abs_id = book.abs_id
+            user_id = get_current_user_id()
+            cooldown_key = (user_id, abs_id)
             # Resolved lazily (only once the tracker is configured and progress is real)
             # so callers without cooldown state still no-op cleanly.
             cooldown_store = getattr(self, cooldown_store_attr)
             cooldown_lock = getattr(self, cooldown_lock_attr)
             with cooldown_lock:
-                rec = cooldown_store.get(abs_id)
+                rec = cooldown_store.get(cooldown_key)
                 if rec is None or abs(current_pct - rec['pct']) > EPS:
                     # Progress moved (or first observation) → (re)start the cooldown.
                     rec = {'pct': current_pct, 'changed_at': now}
-                    cooldown_store[abs_id] = rec
+                    cooldown_store[cooldown_key] = rec
                 changed_at = rec['changed_at']
 
             posted = self.database_service.get_state(abs_id, state_name)
@@ -2485,6 +2539,15 @@ class SyncManager:
 
             settled = cooldown_mins <= 0 or (now - changed_at) >= cooldown_mins * 60
             if not (is_completion or settled):
+                if schedule_followup:
+                    delay = max(0, changed_at + cooldown_mins * 60 - now)
+                    if self._schedule_tracker_cooldown_check(
+                        abs_id, user_id, current_pct, delay
+                    ):
+                        logger.debug(
+                            f"⏱️ '{abs_id}' {client_key} cooldown check scheduled "
+                            f"in {delay:.0f}s"
+                        )
                 return
 
             request = UpdateProgressRequest(LocatorResult(percentage=current_pct))
@@ -3216,8 +3279,16 @@ class SyncManager:
                 # per-cycle dispatch. Evaluate them for every active book each cycle
                 # (including idle books that early-skip below) so the trailing-edge post
                 # can fire.
-                self._handle_storygraph_cooldown(book, config, time.time())
-                self._handle_hardcover_cooldown(book, config, time.time())
+                tracker_followup = bool(target_abs_id) or any(
+                    self._state_percentage_delta(state) > 0
+                    for state in config.values()
+                )
+                self._handle_storygraph_cooldown(
+                    book, config, time.time(), schedule_followup=tracker_followup
+                )
+                self._handle_hardcover_cooldown(
+                    book, config, time.time(), schedule_followup=tracker_followup
+                )
 
                 # Check for ABS offline condition (only for audiobook mode)
                 # Check for ABS offline condition (only for audiobook mode)

@@ -695,6 +695,11 @@ class HardcoverClient:
                     id
                     status_id
                     edition_id
+                    user_book_reads(order_by: {id: desc}, limit: 1) {
+                        id
+                        started_at
+                        finished_at
+                    }
                 }
             }
         }
@@ -901,6 +906,7 @@ class HardcoverClient:
         is_finished: bool = False,
         current_percentage: float = 0.0,
         audio_seconds: int = None,
+        active_read: Optional[Dict] = None,
     ) -> bool:
         """
         Update reading progress.
@@ -918,7 +924,11 @@ class HardcoverClient:
         }
         """
 
-        read_result = self.query(read_query, {"userBookId": user_book_id})
+        read_result = (
+            {"user_book_reads": [active_read]}
+            if active_read and active_read.get("id")
+            else self.query(read_query, {"userBookId": user_book_id})
+        )
         today = self._get_today_date()
 
         # LOGIC: Only set started date if we are past 2%
