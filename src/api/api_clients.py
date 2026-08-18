@@ -265,7 +265,11 @@ class ABSClient:
         self._update_session_headers()
         url = f"{self.base_url}/api/items/{item_id}"
         try:
-            r = self.session.get(url, timeout=self.timeout)
+            # expanded=1 is required: the base (non-expanded) Library Item
+            # response does not reliably include media.audioFiles per the
+            # ABS API docs (https://api.audiobookshelf.org/), which caused
+            # this to silently return [] for valid, playable audiobooks.
+            r = self.session.get(url, params={"expanded": 1}, timeout=self.timeout)
             if r.status_code == 200:
                 data = r.json()
                 files = []
@@ -425,7 +429,10 @@ class ABSClient:
         self._update_session_headers()
         url = f"{self.base_url}/api/items/{item_id}"
         try:
-            r = self.session.get(url, timeout=self.timeout)
+            # expanded=1 mirrors get_audio_files(): callers of get_item_details
+            # read media.audioFiles / media.chapters, which are only reliably
+            # populated on the expanded response per the ABS API docs.
+            r = self.session.get(url, params={"expanded": 1}, timeout=self.timeout)
             if r.status_code == 200: return r.json()
         except Exception:
             pass
