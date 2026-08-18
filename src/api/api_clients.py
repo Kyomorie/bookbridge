@@ -277,6 +277,9 @@ class ABSClient:
                 audio_files = data.get('media', {}).get('audioFiles', [])
                 audio_files.sort(key=lambda x: (x.get('disc', 0) or 0, x.get('track', 0) or 0))
 
+                if not audio_files:
+                    logger.warning(f"⚠️ ABS item '{item_id}' returned 200 but media.audioFiles was empty")
+
                 for af in audio_files:
                     stream_url = f"{self.base_url}/api/items/{item_id}/file/{af['ino']}?token={self.token}"
                     # Return dict with stream URL and extension (default to mp3)
@@ -285,6 +288,7 @@ class ABSClient:
                         "ext": af.get("ext", "mp3")
                     })
                 return files
+            logger.warning(f"⚠️ ABS: Failed to fetch audio files for item '{item_id}' (status {r.status_code})")
             return []
         except Exception as e:
             logger.error(f"❌ Error getting audio files: {e}", exc_info=True)

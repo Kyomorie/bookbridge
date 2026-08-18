@@ -72,7 +72,29 @@ class TestABSGetAudioFilesExpanded(unittest.TestCase):
         resp.status_code = 404
         self.client.session.get.return_value = resp
 
-        self.assertEqual(self.client.get_audio_files("missing-item"), [])
+        with self.assertLogs("src.api.api_clients", level="WARNING") as captured:
+            result = self.client.get_audio_files("missing-item")
+
+        self.assertEqual(result, [])
+        self.assertTrue(
+            any("status 404" in line for line in captured.output),
+            "Expected a warning logging the failing HTTP status",
+        )
+
+    def test_get_audio_files_logs_warning_when_expanded_payload_still_empty(self):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"id": "item-999", "media": {"audioFiles": []}}
+        self.client.session.get.return_value = resp
+
+        with self.assertLogs("src.api.api_clients", level="WARNING") as captured:
+            result = self.client.get_audio_files("item-999")
+
+        self.assertEqual(result, [])
+        self.assertTrue(
+            any("audioFiles was empty" in line for line in captured.output),
+            "Expected a warning distinguishing a 200-but-empty response from a request failure",
+        )
 
     def test_get_item_details_requests_expanded_param(self):
         self.client.session.get.return_value = self._expanded_item_response()
