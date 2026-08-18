@@ -349,7 +349,7 @@ end
 
 function BridgeSync:_appendLog(level, message)
     local line = os.date("%Y-%m-%d %H:%M:%S") .. " [" .. tostring(level or "info") .. "] " .. tostring(message or "") .. "\n"
-    local current_size = tonumber(lfs.attributes(self.log_path, "size")) or 0
+    local current_size = tonumber((lfs.attributes(self.log_path, "size"))) or 0
     if current_size + #line > DEVICE_LOG_MAX_BYTES then
         os.remove(self.log_path .. ".1")
         os.rename(self.log_path, self.log_path .. ".1")
@@ -448,12 +448,30 @@ function BridgeSync:_uploadDeviceLogTail(operation, status)
 end
 
 function BridgeSync:_detectDefaultDownloadDir()
-    if lfs.attributes("/mnt/onboard", "mode") == "directory" then
-        return "/mnt/onboard/Books/BridgeManaged"
-    elseif lfs.attributes("/sdcard", "mode") == "directory" then
-        return "/sdcard/Books/BridgeManaged"
+    -- Known device storage roots, checked in order.
+    local roots = {
+        "/mnt/onboard",         -- Kobo
+        "/mnt/us",              -- Kindle
+        "/mnt/ext1",            -- PocketBook
+        "/storage/emulated/0",  -- Android
+        "/sdcard",              -- Android (legacy symlink)
+    }
+    for _, root in ipairs(roots) do
+        if lfs.attributes(root, "mode") == "directory" then
+            return root .. "/Books/BridgeManaged"
+        end
     end
-    return "/Books/BridgeManaged"
+
+    -- Desktop/emulator builds have none of the above. Prefer KOReader's own
+    -- library folder, then its data dir; never "/Books", which is at the
+    -- filesystem root and unwritable for a normal user.
+    if G_reader_settings and G_reader_settings.readSetting then
+        local home = G_reader_settings:readSetting("home_dir")
+        if type(home) == "string" and lfs.attributes(home, "mode") == "directory" then
+            return self:_normalizePath(home) .. "/BridgeManaged"
+        end
+    end
+    return self:_normalizePath(DataStorage:getDataDir()) .. "/Books/BridgeManaged"
 end
 
 function BridgeSync:_saveSettings()
@@ -806,7 +824,7 @@ end
 function BridgeSync:_ensureDirectory(path)
     local normalized = tostring(path or "")
     if normalized == "" then
-        return false
+        return false, "no folder is configured"
     end
 
     if lfs.attributes(normalized, "mode") == "directory" then
@@ -820,14 +838,21 @@ function BridgeSync:_ensureDirectory(path)
         else
             partial = partial .. "/" .. segment
         end
-        if lfs.attributes(partial, "mode") ~= "directory" then
-            local ok = lfs.mkdir(partial)
+        local mode = lfs.attributes(partial, "mode")
+        if mode == nil then
+            local ok, mkdir_err = lfs.mkdir(partial)
             if not ok and lfs.attributes(partial, "mode") ~= "directory" then
-                return false
+                return false, partial .. ": " .. tostring(mkdir_err or "mkdir failed")
             end
+        elseif mode ~= "directory" then
+            return false, partial .. " already exists and is not a folder"
         end
     end
-    return lfs.attributes(normalized, "mode") == "directory"
+
+    if lfs.attributes(normalized, "mode") ~= "directory" then
+        return false, normalized .. " could not be created"
+    end
+    return true
 end
 
 function BridgeSync:_isCooldownActive()
@@ -1550,8 +1575,14 @@ function BridgeSync:_isCurrentDocument(path)
 end
 
 function BridgeSync:_runSync()
-    if not self:_ensureDirectory(self.download_dir) then
-        error("Failed to create managed folder")
+    local dir_ok, dir_err = self:_ensureDirectory(self.download_dir)
+    if not dir_ok then
+        -- level 0: no "main.lua:NNN:" prefix, so the user sees the real reason.
+        error(T(
+            _("Cannot create the Managed Folder \"%1\" (%2). Pick a writable folder under Bridge Sync > Managed Folder."),
+            tostring(self.download_dir or ""),
+            tostring(dir_err or "unknown error")
+        ), 0)
     end
 
     local local_revision = tostring(self:_getStateScalar("revision") or "")
