@@ -76,6 +76,21 @@ logger = logging.getLogger(__name__)
 
 _STATE_FETCH_SLOW_SECONDS = 15.0
 
+# Clients that must not receive completion propagation writes.
+# StoryGraph and Hardcover are write-only trackers driven exclusively by the
+# trailing-edge idle-cooldown handlers (_handle_tracker_cooldown), which bypass
+# their cooldown and post immediately at completion. Writing to them here would
+# be a layering violation and redundant.
+# ABSEbook must also be skipped: its update_progress rejects a locator whose
+# cfi is None (which a percentage-only LocatorResult produces), so it can only
+# ever log a warning and fail — and the ABS branch's mark_finished already
+# marks the whole ABS library item finished, which covers the ebook side.
+_COMPLETION_PROPAGATION_EXCLUDED_CLIENTS: frozenset[str] = frozenset({
+    "StoryGraph",
+    "Hardcover",
+    "ABSEbook",
+})
+
 # Multi-user: per-cycle override of the active sync-client bundle. Set by
 # sync_cycle when running for a specific user; None => use the global clients.
 import contextvars as _contextvars
@@ -258,27 +273,58 @@ class SyncManager:
 
         return current
 
-    def _completion_propagation_enabled(self):
+    def _completion_propagation_enabled(self) -> bool:
         return env_truthy('SYNC_COMPLETION_PROPAGATION')
 
-    def _completion_threshold(self):
+    def _completion_threshold(self) -> float:
         try:
             value = float(os.environ.get('SYNC_COMPLETION_THRESHOLD', '99'))
         except (TypeError, ValueError):
             value = 99.0
         return max(0.0, min(value, 100.0)) / 100.0
 
-    def _propagate_completion(self, book, active_clients, leader, abs_id, title_snip):
+    def _propagate_completion(
+        self,
+        book: Book | None,
+        active_clients: dict,
+        leader: str,
+        abs_id: str,
+        title_snip: str,
+    ) -> None:
+        """Mark a book finished on non-leader clients once the leader crosses
+        the configured completion threshold.
+
+        Trackers (StoryGraph, Hardcover) and ABSEbook are excluded: trackers
+        are driven by trailing-edge idle-cooldown handlers, and ABSEbook rejects
+        a percentage-only locator. ABS uses mark_finished instead of
+        update_progress.
+        """
+        current_time = time.time()
         request = UpdateProgressRequest(LocatorResult(percentage=1.0), "Book finished", previous_location=None)
         for client_name, client in self._iter_update_targets(active_clients, leader):
+            if client_name in _COMPLETION_PROPAGATION_EXCLUDED_CLIENTS:
+                continue
             try:
                 if client_name.lower() == 'abs':
-                    client.abs_client.mark_finished(abs_id)
+                    success = client.abs_client.mark_finished(abs_id)
+                    if success:
+                        try:
+                            from src.services.write_tracker import record_write
+                            record_write('ABS', abs_id)
+                        except ImportError:
+                            pass
+                        logger.info(f"🏁 '{abs_id}' '{title_snip}' completion propagated to '{client_name}'")
+                    else:
+                        logger.warning(f"⚠️ Completion propagation failed for '{client_name}': mark_finished returned False")
                 else:
-                    client.update_progress(book, request)
-                logger.info(f"🏁 '{abs_id}' '{title_snip}' completion propagated to '{client_name}'")
+                    result = client.update_progress(book, request)
+                    if getattr(result, 'success', False):
+                        self._persist_state_snapshot(book, client_name, {'pct': 1.0}, current_time)
+                        logger.info(f"🏁 '{abs_id}' '{title_snip}' completion propagated to '{client_name}'")
+                    else:
+                        logger.warning(f"⚠️ Completion propagation failed for '{client_name}': client reported unsuccessful write")
             except Exception as e:
-                logger.warning(f"⚠️ Completion propagation failed for '{client_name}': {e}")
+                logger.warning(f"⚠️ Completion propagation failed for '{client_name}': {e}", exc_info=True)
 
     def _iter_update_targets(self, active_clients: dict, leader_name: str | None):
         """Yield non-leader clients with KoSync updated last."""

@@ -6,6 +6,29 @@ All notable changes to BookBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Finishing a book on one service can now mark it finished everywhere.** Raw
+  percentages never agree at the end of a book — an ebook's back matter is not
+  narrated — so a title you finished in one app could sit at 92-97% in another and
+  never register as read. Turn on *Propagate Completion* under Settings > Sync and,
+  once any service crosses the completion threshold (99% by default), BookBridge
+  marks the book finished on the others instead of only pushing the position. Off by
+  default, and it acts on the crossing rather than re-asserting itself every cycle.
+  StoryGraph and Hardcover are unaffected by the setting: both already post as soon
+  as a book reaches completion.
+
+- **Suggestions can now link themselves when a match is certain.** Turn on
+  *Auto-match suggestions* under Settings > Suggestions and any candidate scoring at
+  or above the threshold is linked as soon as a scan finds it, instead of waiting on
+  the Suggestions page. Off by default, and at the default threshold of 100 only an
+  identifier agreement or an identical title and author qualifies. Books whose titles
+  merely agree loosely — including two books that happen to share a folder — are
+  never linked automatically no matter what they score; those stay on the Suggestions
+  page behind their "Same folder?" badge for you to confirm. Lowering the threshold
+  below 95 is warned about in the UI, because below that the top candidate is often a
+  sequel or a different edition.
+
 ### Fixed
 
 - **StoryGraph and Hardcover cooldowns now fire when their timer expires.** A
