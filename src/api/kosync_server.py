@@ -2891,6 +2891,45 @@ def _respond_from_book_states(doc_id, book):
             )
         )
         sibling_is_ahead = sibling_pct > synced_pct + 0.0001
+
+        # KOReader's reported percentage and the bridge-synced percentage can
+        # use different position scales even for the same EPUB. The synced State
+        # XPath is generated for book.kosync_doc_id, so only compare resolved text
+        # positions when the request and device row refer to that exact hash.
+        # If resolution is unavailable, keep the existing percentage-based behavior.
+        state_doc_id = str(getattr(book, "kosync_doc_id", "") or "").strip()
+        same_document = (
+            getattr(best_doc, "document_hash", None) == doc_id
+            and state_doc_id == doc_id
+        )
+        sibling_xpath = str(getattr(best_doc, "progress", "") or "").strip()
+        synced_xpath = str(getattr(kosync_state, "xpath", "") or "").strip() if kosync_state else ""
+
+        if same_document and sibling_xpath and synced_xpath:
+            try:
+                document = _database_service.get_kosync_document(doc_id)
+                filename = getattr(document, "filename", None) if document else None
+
+                if filename:
+                    parser = _container.ebook_parser()
+                    sibling_index = parser.resolve_xpath_to_index(filename, sibling_xpath)
+                    synced_index = parser.resolve_xpath_to_index(filename, synced_xpath)
+
+                    if sibling_index is not None and synced_index is not None:
+                        sibling_is_ahead = sibling_index > synced_index
+                        logger.debug(
+                            "KOSync: canonical XPath order for %s: device=%d synced=%d",
+                            doc_id,
+                            sibling_index,
+                            synced_index,
+                        )
+            except Exception as e:
+                logger.debug(
+                    "KOSync: canonical XPath comparison unavailable for %s: %s",
+                    doc_id,
+                    e,
+                )
+
         sibling_is_equal_fallback = (
             abs(sibling_pct - synced_pct) <= 0.0001
             and not synced_has_locator
