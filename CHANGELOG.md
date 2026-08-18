@@ -4,6 +4,23 @@
 
 All notable changes to BookBridge will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **BridgeSync 0.6.4: the KOReader plugin no longer fails to start on a fresh
+  install.** BridgeSync 0.6.3, shipped in 7.4.0, crashed while starting up on any
+  device that did not already have a BridgeSync log file — which meant every new
+  installation. The plugin still appeared in KOReader's plugin list and could be
+  ticked on and off, but it never actually started: no *Bridge Sync* entry
+  appeared in the menu, and nothing synced. Devices upgraded from 0.5.4 kept
+  working, which is why this only showed up for people setting up a new device or
+  reinstalling KOReader. Fresh installs now start normally. If you are affected,
+  download the plugin again from *Settings → KOSync* and copy it over your
+  existing `bridgesync.koplugin` folder — the broken version cannot update itself,
+  because the crash happens before the updater ever runs. Reported in #370 and
+  fixed by @theryanmc in #373.
+
 ## [7.4.0] - 2026-08-17
 
 ### Added

@@ -186,11 +186,12 @@ function BridgeSync:init()
     if annotation_sync == nil then
         self.annotation_sync_enabled = true
     else
-    self.annotation_sync_enabled = annotation_sync
+        self.annotation_sync_enabled = annotation_sync
+    end
+
     local settings_version = tonumber(get_setting("settings_version")) or 0
     if settings_version < SETTINGS_VERSION then
         self:_saveSetting("settings_version", SETTINGS_VERSION)
-    end
     end
     self.current_session = nil
     

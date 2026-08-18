@@ -92,7 +92,11 @@ preload("libs/libkoreader-lfs", function()
                     return size
                 end
             end
-            return nil
+            -- Real lfs.attributes reports failure as nil + message + errno. A
+            -- bare nil here hid the 0.6.3 fresh-install crash: with no log file
+            -- yet, tonumber(lfs.attributes(path, "size")) expanded those extra
+            -- returns into tonumber's base argument and killed init().
+            return nil, path .. ": No such file or directory", 2
         end,
     }
 end)
@@ -357,6 +361,14 @@ assert(ok, "BridgeSync init failed: " .. tostring(init_error))
 assert(bridge.log_path == settings_dir .. "/bridge_sync.log",
     "BridgeSync must initialize log_path before startup logging")
 
+-- A fresh install has no stored annotation_sync_enabled. The settings-version
+-- stamp used to sit inside the else-branch of that check, so it was written
+-- only for installs that already had the key - never on a first run, leaving
+-- every fresh device at settings_version 0 for the first schema migration.
+assert(type(sqlite_values.settings_version) == "number"
+        and sqlite_values.settings_version >= 1,
+    "a fresh install must persist the settings schema version during init")
+
 bridge.server_url = "http://192.168.88.200:5758"
 local network_ok, network_err = bridge:_preflightNetwork()
 assert(network_ok, tostring(network_err))
@@ -451,7 +463,9 @@ assert(#uploaded_log_payloads == 3,
 assert(uploaded_log_payloads[2].operation == "session_upload")
 assert(uploaded_log_payloads[2].status == "failure")
 assert(uploaded_log_payloads[3].status == "success")
-assert(uploaded_log_payloads[3].plugin_version == "0.6.3")
+local plugin_meta = assert(loadfile(plugin_dir .. "/_meta.lua"))()
+assert(uploaded_log_payloads[3].plugin_version == plugin_meta.version,
+    "telemetry must report the installed _meta.lua version")
 assert(type(sqlite_values.device_log_upload_offset) == "number",
     "successful telemetry must persist the acknowledged log byte offset")
 

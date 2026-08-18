@@ -305,11 +305,17 @@ class TestKosyncEndpoints(unittest.TestCase):
 
     def test_admin_plugin_version_returns_version_without_auth(self):
         """Settings-page version endpoint returns the plugin version, no KOSync auth."""
+        import re as _re
+        from pathlib import Path as _Path
+        meta = (_Path(__file__).resolve().parents[1]
+                / 'plugins' / 'bridgesync.koplugin' / '_meta.lua')
+        expected = _re.search(r'version\s*=\s*"([^"]+)"',
+                              meta.read_text(encoding='utf-8')).group(1)
         response = self.client.get('/api/kosync-plugin/version')
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
         self.assertEqual(data.get('name'), 'bridgesync')
-        self.assertEqual(data.get('version'), '0.6.3')
+        self.assertEqual(data.get('version'), expected)
 
     def test_admin_plugin_download_serves_zip_attachment(self):
         """Settings-page download endpoint serves the plugin as a zip attachment."""
