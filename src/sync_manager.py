@@ -88,6 +88,15 @@ _library_service_override: "_contextvars.ContextVar" = _contextvars.ContextVar(
     "library_service_override", default=None
 )
 
+# Maps an audio_source name (see _get_audio_source_name) to the UserClients
+# bundle attribute holding the client responsible for that source's audio.
+_AUDIO_SOURCE_CLIENT_ATTR = {
+    "ABS": "abs_client",
+    "BookOrbit": "bookorbit_client",
+    "Storyteller": "storyteller_client",
+    "BookLore": "booklore_client",
+}
+
 
 class SyncManager:
     def __init__(self,
@@ -500,15 +509,20 @@ class SyncManager:
         if owner_id is not None and owner_id in ordered_ids:
             ordered_ids = [owner_id] + [u for u in ordered_ids if u != owner_id]
 
+        # For a shared/multi-claimant book, the preferred (e.g. owner) claimant
+        # may simply not have a personal credential configured for this book's
+        # audio source (per-user keys like ABS_KEY don't fall back to the global
+        # admin key). Skip to the next claimant in that case rather than handing
+        # back a bundle that will silently fail every ABS call; only fall back to
+        # an unconfigured bundle when no claimant is configured at all, which
+        # keeps single-claimant behavior identical to before.
+        audio_source = self._get_audio_source_name(book)
+        client_attr = _AUDIO_SOURCE_CLIENT_ATTR.get(audio_source)
+
+        fallback_bundle = None
         for user_id in ordered_ids:
             try:
                 bundle = registry.get_clients(user_id)
-                logger.debug(
-                    "Claimant bundle for '%s': user_id=%s (source: %s)",
-                    abs_id, user_id,
-                    "owner" if user_id == owner_id else "claimant",
-                )
-                return bundle
             except Exception as exc:
                 logger.warning(
                     "Could not build claimant client bundle for pending job '%s' user_id=%s: %s",
@@ -517,7 +531,28 @@ class SyncManager:
                     exc,
                     exc_info=True,
                 )
-        return None
+                continue
+
+            logger.debug(
+                "Claimant bundle for '%s': user_id=%s (source: %s)",
+                abs_id, user_id,
+                "owner" if user_id == owner_id else "claimant",
+            )
+            if fallback_bundle is None:
+                fallback_bundle = bundle
+
+            client = getattr(bundle, client_attr, None) if client_attr else None
+            is_configured = getattr(client, "is_configured", None)
+            if client is None or is_configured is None or is_configured():
+                return bundle
+
+            if len(ordered_ids) > 1:
+                logger.info(
+                    "Claimant user_id=%s for '%s' has an unconfigured %s client; trying next claimant",
+                    user_id, abs_id, audio_source,
+                )
+
+        return fallback_bundle
 
     @property
     def active_abs_client(self):
