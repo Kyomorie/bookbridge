@@ -6880,7 +6880,12 @@ def _start_suggestions_scan_job(cached_suggestions_by_abs=None, cached_no_match_
     return job_id
 
 
-def _auto_match_threshold():
+def _auto_match_threshold() -> float:
+    """Return the auto-match threshold as a float (0-100 scale).
+
+    Reads the SUGGESTIONS_AUTO_MATCH_THRESHOLD setting from the environment,
+    clamping to the valid range. Defaults to 100.0.
+    """
     try:
         value = float(os.environ.get('SUGGESTIONS_AUTO_MATCH_THRESHOLD', '100'))
     except (TypeError, ValueError):
@@ -6888,7 +6893,35 @@ def _auto_match_threshold():
     return max(0.0, min(value, 100.0))
 
 
-def _auto_match_suggestions(results, user_id):
+def _is_same_folder_match(match: dict) -> bool:
+    """Return True if the match is a same-folder candidate and should be excluded from auto-matching.
+
+    Same-folder matches (match_reason starting with 'same_folder') receive a score of 100.0
+    or 94.0 merely because the audiobook and ebook share a folder with a loose title
+    agreement (fuzzy ratio >= 45). They are explicitly surfaced for human review with a
+    'Same folder?' badge and must not be auto-linked, as a wrong link would sync a
+    reader's position into the wrong book.
+    """
+    reason = match.get('match_reason') or ''
+    return reason.startswith('same_folder')
+
+
+def _auto_match_suggestions(results: object, user_id: int | None) -> object:
+    """Auto-link suggestions whose best eligible candidate meets the threshold.
+
+    Walks the suggestions produced by a library scan, selects the highest-scoring
+    *eligible* candidate from each suggestion's matches list (excluding same-folder
+    matches), and if that candidate's score is at or above the configurable threshold,
+    links the book automatically via book_mapping_service.create_audio_mapping_from_match.
+    Suggestions that are not auto-matched remain in the list for human review.
+
+    Args:
+        results: The scan results object (expected to be a dict with 'suggestions' key).
+        user_id: Ambient user id to own the created mappings, or None.
+
+    Returns:
+        The (potentially modified) results object.
+    """
     if not env_truthy('SUGGESTIONS_AUTO_MATCH_ENABLED'):
         return results
     if not isinstance(results, dict):
@@ -6905,7 +6938,17 @@ def _auto_match_suggestions(results, user_id):
 
     for suggestion in suggestions:
         matches = suggestion.get('matches') or []
-        top = max(matches, key=lambda m: m.get('score') or 0.0) if matches else None
+        eligible_matches = [m for m in matches if not _is_same_folder_match(m)]
+        best_overall = max(matches, key=lambda m: m.get('score') or 0.0) if matches else None
+        top = max(eligible_matches, key=lambda m: m.get('score') or 0.0) if eligible_matches else None
+        if best_overall is not None and _is_same_folder_match(best_overall):
+            # The highest-scoring candidate was suppressed. Log the decision and its
+            # reason so an operator can see why a 100-scoring match was not linked.
+            logger.debug(
+                f"Auto-match excluded the top same-folder candidate for "
+                f"'{suggestion.get('abs_title')}' "
+                f"(score={best_overall.get('score') or 0.0:.1f}) — left for review"
+            )
         score = float(top.get('score') or 0.0) if top else 0.0
         if not top or score < threshold:
             remaining.append(suggestion)
@@ -6925,7 +6968,7 @@ def _auto_match_suggestions(results, user_id):
                 user_id=user_id,
             )
         except Exception as e:
-            logger.warning(f"⚠️ Auto-match failed for '{suggestion.get('abs_title')}': {e}")
+            logger.warning(f"⚠️ Auto-match failed for '{suggestion.get('abs_title')}': {e}", exc_info=True)
             remaining.append(suggestion)
             continue
         if not saved:
