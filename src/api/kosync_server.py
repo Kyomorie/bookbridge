@@ -10,6 +10,7 @@ import re
 import threading
 import time
 import zipfile
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from functools import wraps
@@ -22,6 +23,7 @@ from flask import Blueprint, jsonify, request, send_file, g
 from src.api.booklore_client import BookloreClient
 from src.api.hardcover_client import HardcoverClient
 from src.utils.cache_paths import safe_cache_path
+from src.utils.config_loader import env_truthy
 from src.utils.kosync_headers import hash_kosync_key
 from src.utils.time_utils import utcnow
 from src.utils.user_context import set_current_user_id, reset_current_user_id
@@ -100,6 +102,55 @@ _KOREADER_STATS_MERGE_LIMIT = 10000
 _BRIDGESYNC_LOG_MAX_LINES = 200
 _BRIDGESYNC_LOG_MAX_LINE_CHARS = 1000
 _BRIDGESYNC_LOG_MAX_PAYLOAD_BYTES = 64 * 1024
+
+# Cached (device_index, synced_index) pairs, keyed by the exact inputs they
+# were resolved from on the KoSync GET path.
+#
+# ``_respond_from_book_states`` is otherwise a pure-DB path, but resolving an
+# XPath to a canonical index can cost a full EPUB parse: the EbookParser LRU is
+# three entries by default and is shared with the sync scheduler, so a device
+# GET frequently misses. Both XPaths are part of the key, so a new device PUT or
+# a new bridge sync produces a new key on its own. The TTL only exists so a
+# re-stamped EPUB behind an unchanged hash cannot pin a stale answer forever.
+_XPATH_INDEX_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
+_XPATH_INDEX_CACHE_LOCK = threading.Lock()
+_XPATH_INDEX_CACHE_MAX_SIZE = 512
+_XPATH_INDEX_CACHE_TTL_SECONDS = 600.0
+
+
+def _xpath_index_cache_get(
+    key: tuple,
+) -> Optional[tuple]:
+    """Return the cached (device_index, synced_index) pair for key, else None.
+
+    A pair that failed to resolve is cached as ``(None, None)`` and returned as
+    such, so an unresolvable locator does not re-parse the EPUB on every GET.
+    A cache miss (absent or expired) returns None."""
+    now = time.monotonic()
+    with _XPATH_INDEX_CACHE_LOCK:
+        entry = _XPATH_INDEX_CACHE.get(key)
+        if entry is None:
+            return None
+        device_index, synced_index, stored_at = entry
+        if now - stored_at > _XPATH_INDEX_CACHE_TTL_SECONDS:
+            _XPATH_INDEX_CACHE.pop(key, None)
+            return None
+        _XPATH_INDEX_CACHE.move_to_end(key)
+        return device_index, synced_index
+
+
+def _xpath_index_cache_put(
+    key: tuple,
+    device_index: Optional[int],
+    synced_index: Optional[int],
+) -> None:
+    """Cache a resolved index pair, evicting the oldest entry when full."""
+    now = time.monotonic()
+    with _XPATH_INDEX_CACHE_LOCK:
+        if key not in _XPATH_INDEX_CACHE and len(_XPATH_INDEX_CACHE) >= _XPATH_INDEX_CACHE_MAX_SIZE:
+            _XPATH_INDEX_CACHE.popitem(last=False)
+        _XPATH_INDEX_CACHE[key] = (device_index, synced_index, now)
+        _XPATH_INDEX_CACHE.move_to_end(key)
 
 
 def _recent_external_put_ttl_seconds() -> int:
@@ -2905,24 +2956,79 @@ def _respond_from_book_states(doc_id, book):
         sibling_xpath = str(getattr(best_doc, "progress", "") or "").strip()
         synced_xpath = str(getattr(kosync_state, "xpath", "") or "").strip() if kosync_state else ""
 
-        if same_document and sibling_xpath and synced_xpath:
+        # KOReader's percentage and the bridge's percentage can use different
+        # position scales for the same EPUB, so a small disagreement is plausibly
+        # a scale artifact and the resolved text order is the better signal. A
+        # large gap is more likely real movement or a mis-resolved XPath, where
+        # the percentage is safer — so bound how much the comparison may overturn.
+        try:
+            pct_delta_bound = float(os.getenv("KOSYNC_XPATH_ORDER_MAX_PCT_DELTA", "0.10"))
+        except ValueError:
+            logger.warning(
+                "Invalid KOSYNC_XPATH_ORDER_MAX_PCT_DELTA=%r; using default",
+                os.getenv("KOSYNC_XPATH_ORDER_MAX_PCT_DELTA"),
+                exc_info=True,
+            )
+            pct_delta_bound = 0.10
+        within_pct_bound = abs(sibling_pct - synced_pct) <= pct_delta_bound
+
+        if (
+            env_truthy("KOSYNC_XPATH_ORDER_ENABLED")
+            and same_document
+            and sibling_xpath
+            and synced_xpath
+            and within_pct_bound
+        ):
             try:
                 document = _database_service.get_kosync_document(doc_id)
-                filename = getattr(document, "filename", None) if document else None
+                filename = str(getattr(document, "filename", "") or "").strip() if document else ""
 
-                if filename:
-                    parser = _container.ebook_parser()
-                    sibling_index = parser.resolve_xpath_to_index(filename, sibling_xpath)
-                    synced_index = parser.resolve_xpath_to_index(filename, synced_xpath)
+                # Both XPaths are resolved against this one file, but the synced
+                # State's XPath was generated against the book's own ebook file.
+                # A manual link can point kosync_doc_id at a device hash whose
+                # cached filename is a different EPUB build, and DocFragment
+                # indices need not line up across builds — so only compare when
+                # the document's file IS the book's file.
+                book_files = {
+                    str(getattr(book, "ebook_filename", "") or "").strip(),
+                    str(getattr(book, "original_ebook_filename", "") or "").strip(),
+                }
+                book_files.discard("")
+
+                if filename and filename in book_files:
+                    cache_key = (doc_id, filename, sibling_xpath, synced_xpath)
+                    cached = _xpath_index_cache_get(cache_key)
+                    if cached is not None:
+                        sibling_index, synced_index = cached
+                    else:
+                        parser = _container.ebook_parser()
+                        sibling_index = parser.resolve_xpath_to_index(filename, sibling_xpath)
+                        synced_index = parser.resolve_xpath_to_index(filename, synced_xpath)
+                        _xpath_index_cache_put(cache_key, sibling_index, synced_index)
 
                     if sibling_index is not None and synced_index is not None:
-                        sibling_is_ahead = sibling_index > synced_index
-                        logger.debug(
-                            "KOSync: canonical XPath order for %s: device=%d synced=%d",
-                            doc_id,
-                            sibling_index,
-                            synced_index,
-                        )
+                        resolved_is_ahead = sibling_index > synced_index
+                        if resolved_is_ahead != sibling_is_ahead:
+                            logger.info(
+                                "🔀 KOSync: canonical XPath order overrides percentage for %s: "
+                                "device_index=%d synced_index=%d device_pct=%.4f synced_pct=%.4f "
+                                "percentage_ahead=%s resolved_ahead=%s",
+                                doc_id,
+                                sibling_index,
+                                synced_index,
+                                sibling_pct,
+                                synced_pct,
+                                sibling_is_ahead,
+                                resolved_is_ahead,
+                            )
+                        else:
+                            logger.debug(
+                                "KOSync: canonical XPath order for %s: device=%d synced=%d",
+                                doc_id,
+                                sibling_index,
+                                synced_index,
+                            )
+                        sibling_is_ahead = resolved_is_ahead
             except Exception as e:
                 logger.debug(
                     "KOSync: canonical XPath comparison unavailable for %s: %s",

@@ -29,7 +29,31 @@ All notable changes to BookBridge will be documented in this file.
   below 95 is warned about in the UI, because below that the top candidate is often a
   sequel or a different edition.
 
+- **New: stop KOReader being pulled back when the percentages disagree.** Your
+  reader and BookBridge can measure the same EPUB on slightly different scales, so
+  a stale spot on the reader can report a *higher* percentage than the position
+  BookBridge already synced there from your audiobook — and win on the number
+  alone, dragging you backwards. Turn on *Compare text positions when percentages
+  disagree* under Settings > KOSync and BookBridge checks where the two positions
+  actually land in the text instead of trusting numbers that are not speaking the
+  same language. It only applies when both refer to the exact same file and the two
+  percentages are already close, so a genuine jump forward is still a jump forward.
+  **Off by default**, because comparing means opening and reading the book: expect a
+  few extra seconds on the first sync after you move in a book, then it is cached.
+  Contributed by @Kyomorie in #380.
+
 ### Fixed
+
+- **Positions reported at the very start of a chapter no longer drift forward.**
+  KOReader reports a position sitting on an empty structural element — the blank
+  line that opens a chapter, say — as a boundary with no text attached.
+  BookBridge could not resolve those and fell back to the reader's raw
+  percentage, which in one reported case landed roughly 7,900 characters further
+  into the book: enough to visibly push the audiobook ahead. These boundaries now
+  resolve to the structural position they actually name. Where the chapter cannot
+  be identified with confidence, BookBridge declines to guess rather than
+  resolving to the wrong chapter. Related to #276; contributed by @Kyomorie
+  in #382.
 
 - **StoryGraph and Hardcover cooldowns now fire when their timer expires.** A
   tracker update used to be checked only during a later sync cycle, so a
