@@ -208,3 +208,25 @@ def test_resolve_xpath_to_index_falls_back_to_nearby_spine_when_docfragment_drif
         "mapped reported DocFragment[13] to spine 12" in record.message
         for record in caplog.records
     )
+
+
+
+def test_resolve_xpath_to_index_empty_element_boundary_uses_lxml_position(caplog):
+    # Observed KOReader form: a chapter-opening empty <p> inside a structural
+    # <div> is reported as an element boundary (``p[1].0``), not a text node.
+    caplog.set_level(logging.DEBUG)
+    html_content = (
+        "<html><body><div>"
+        "<p></p>"
+        "<p>3.4</p>"
+        "<p>Readable text starts here.</p>"
+        "</div></body></html>"
+    )
+    parser = _parser_for_single_spine(html_content, start=50)
+
+    index = parser.resolve_xpath_to_index(
+        "book.epub", "/body/DocFragment[1]/body/div/p[1].0"
+    )
+
+    assert index == 50
+    assert any("lxml_position_fallback" in record.message for record in caplog.records)
