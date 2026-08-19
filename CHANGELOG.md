@@ -31,6 +31,29 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **KOReader no longer snaps back to an older spot when the two percentages
+  disagree.** KOReader and BookBridge can measure the same EPUB on slightly
+  different scales, so a stale position on the reader could report a *higher*
+  percentage than the position BookBridge had already synced there from your
+  audiobook — and win on the number alone. When the reader and the bridge are
+  looking at the exact same file, BookBridge now compares where the two
+  positions actually land in the text and lets that decide, instead of trusting
+  percentages that are not speaking the same language. It only does this when
+  the two are already close, so a genuine jump forward is still a jump forward,
+  and it falls back to the old behavior whenever the positions cannot be
+  resolved. Contributed by @Kyomorie in #380.
+
+- **Positions reported at the very start of a chapter no longer drift forward.**
+  KOReader reports a position sitting on an empty structural element — the blank
+  line that opens a chapter, say — as a boundary with no text attached.
+  BookBridge could not resolve those and fell back to the reader's raw
+  percentage, which in one reported case landed roughly 7,900 characters further
+  into the book: enough to visibly push the audiobook ahead. These boundaries now
+  resolve to the structural position they actually name. Where the chapter cannot
+  be identified with confidence, BookBridge declines to guess rather than
+  resolving to the wrong chapter. Related to #276; contributed by @Kyomorie
+  in #382.
+
 - **StoryGraph and Hardcover cooldowns now fire when their timer expires.** A
   tracker update used to be checked only during a later sync cycle, so a
   five-minute cooldown could silently wait for a much longer global interval.
