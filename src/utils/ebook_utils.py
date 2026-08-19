@@ -1962,8 +1962,13 @@ class EbookParser:
             # An empty element-node locator such as ``p[1].0`` still identifies
             # a structural text boundary. Let zero-offset boundaries reach the
             # existing LXML positional fallback; non-zero offsets on a textless
-            # node cannot be mapped safely.
-            if not clean_anchor and target_offset > 0:
+            # node cannot be mapped safely. Additionally, text-anchoring is what
+            # validates a drifted DocFragment match, so an empty anchor -- which
+            # has no text to validate against -- must only be trusted when the
+            # resolver stayed on the reported fragment.
+            if not clean_anchor and (
+                target_offset > 0 or target_item['spine_index'] != spine_index
+            ):
                 return None
             chapter_len = max(0, target_item['end'] - target_item['start'])
             chapter_base = target_item['start']
