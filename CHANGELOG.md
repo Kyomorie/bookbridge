@@ -29,19 +29,20 @@ All notable changes to BookBridge will be documented in this file.
   below 95 is warned about in the UI, because below that the top candidate is often a
   sequel or a different edition.
 
-### Fixed
+- **New: stop KOReader being pulled back when the percentages disagree.** Your
+  reader and BookBridge can measure the same EPUB on slightly different scales, so
+  a stale spot on the reader can report a *higher* percentage than the position
+  BookBridge already synced there from your audiobook — and win on the number
+  alone, dragging you backwards. Turn on *Compare text positions when percentages
+  disagree* under Settings > KOSync and BookBridge checks where the two positions
+  actually land in the text instead of trusting numbers that are not speaking the
+  same language. It only applies when both refer to the exact same file and the two
+  percentages are already close, so a genuine jump forward is still a jump forward.
+  **Off by default**, because comparing means opening and reading the book: expect a
+  few extra seconds on the first sync after you move in a book, then it is cached.
+  Contributed by @Kyomorie in #380.
 
-- **KOReader no longer snaps back to an older spot when the two percentages
-  disagree.** KOReader and BookBridge can measure the same EPUB on slightly
-  different scales, so a stale position on the reader could report a *higher*
-  percentage than the position BookBridge had already synced there from your
-  audiobook — and win on the number alone. When the reader and the bridge are
-  looking at the exact same file, BookBridge now compares where the two
-  positions actually land in the text and lets that decide, instead of trusting
-  percentages that are not speaking the same language. It only does this when
-  the two are already close, so a genuine jump forward is still a jump forward,
-  and it falls back to the old behavior whenever the positions cannot be
-  resolved. Contributed by @Kyomorie in #380.
+### Fixed
 
 - **Positions reported at the very start of a chapter no longer drift forward.**
   KOReader reports a position sitting on an empty structural element — the blank

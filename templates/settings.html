@@ -1592,6 +1592,18 @@
                             for the fuzzy-agreement path.</small>
                     </div>
                     <div class="checkbox-wrapper full-width">
+                        <input type="checkbox" id="kosync_xpath_order" name="KOSYNC_XPATH_ORDER_ENABLED"
+                            {% if get_bool('KOSYNC_XPATH_ORDER_ENABLED') %}checked{% endif %}>
+                        <label for="kosync_xpath_order">Compare text positions when percentages disagree</label>
+                        <small>Your reader and BookBridge can measure the same EPUB on slightly different scales, so
+                            a stale spot on the reader can report a higher percentage than the position BookBridge
+                            already synced there and win on the number alone — pulling you backwards. When enabled,
+                            BookBridge compares where the two positions actually land in the text and lets that
+                            decide. Only applies when both refer to the exact same file and the two percentages are
+                            already close. Off by default: it has to open and read the book to compare, which can add
+                            a few seconds to the first sync after you move in a book.</small>
+                    </div>
+                    <div class="checkbox-wrapper full-width">
                         <input type="checkbox" id="kosync_hash_reconcile" name="KOSYNC_HASH_RECONCILE_ENABLED"
                             {% if get_bool('KOSYNC_HASH_RECONCILE_ENABLED') %}checked{% endif %}>
                         <label for="kosync_hash_reconcile">Keep book links working after file edits</label>

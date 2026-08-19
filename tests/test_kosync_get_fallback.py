@@ -82,11 +82,23 @@ class TestKosyncGetEqualPercentageFallback(unittest.TestCase):
         with kosync_server._XPATH_INDEX_CACHE_LOCK:
             kosync_server._XPATH_INDEX_CACHE.clear()
 
+        # The same-document XPath comparison ships OFF; the tests that exercise
+        # it turn it on here and tearDown restores the process default.
+        self._prev_xpath_order = os.environ.get("KOSYNC_XPATH_ORDER_ENABLED")
+        os.environ["KOSYNC_XPATH_ORDER_ENABLED"] = "true"
+
         self.auth_headers = {
             'x-auth-user': 'testuser',
             'x-auth-key': hashlib.md5(b'testpass').hexdigest(),
             'Content-Type': 'application/json',
         }
+
+    def tearDown(self):
+        """Restore the process-wide setting so the suite stays order-independent."""
+        if self._prev_xpath_order is None:
+            os.environ.pop("KOSYNC_XPATH_ORDER_ENABLED", None)
+        else:
+            os.environ["KOSYNC_XPATH_ORDER_ENABLED"] = self._prev_xpath_order
 
     # ---- Helpers ----
 
@@ -863,3 +875,78 @@ class TestKosyncGetEqualPercentageFallback(unittest.TestCase):
         self.assertEqual(parser.resolve_xpath_to_index.call_count, 2)
         resolved = {c.args[1] for c in parser.resolve_xpath_to_index.call_args_list}
         self.assertEqual(resolved, {device_xpath, synced_xpath})
+
+
+    def test_xpath_order_disabled_by_default_skips_comparison(self):
+        """With the setting absent, the comparison never runs (shipped default)."""
+        from src.api import kosync_server
+
+        synced_xpath = "/body/DocFragment[20]/body/p[20]/text().0"
+        device_xpath = "/body/DocFragment[20]/body/p[15]/text().0"
+
+        _, primary_doc = self._setup_book_with_states(
+            kosync_state_pct=0.23,
+            kosync_xpath=synced_xpath,
+            sibling_exists=False,
+        )
+        primary_doc.percentage = 0.24
+        primary_doc.progress = device_xpath
+        primary_doc.filename = "test.epub"
+        self._db().save_kosync_document(primary_doc)
+
+        parser = MagicMock()
+        parser.resolve_xpath_to_index.side_effect = lambda _f, xpath: {
+            device_xpath: 100, synced_xpath: 200,
+        }[xpath]
+        container = MagicMock()
+        container.ebook_parser.return_value = parser
+
+        os.environ.pop("KOSYNC_XPATH_ORDER_ENABLED", None)
+        with patch.object(kosync_server, "_container", container):
+            response = self.client.get(
+                "/syncs/progress/" + ("a" * 32), headers=self.auth_headers,
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        data = response.get_json()
+        # Percentage alone decides: the device's 0.24 beats the synced 0.23.
+        self.assertEqual(data["progress"], device_xpath)
+        self.assertAlmostEqual(float(data["percentage"]), 0.24)
+        parser.resolve_xpath_to_index.assert_not_called()
+
+    def test_xpath_order_accepts_on_spelling(self):
+        """A checkbox POSTs "on", not "true" -- both must enable the gate."""
+        from src.api import kosync_server
+
+        synced_xpath = "/body/DocFragment[20]/body/p[20]/text().0"
+        device_xpath = "/body/DocFragment[20]/body/p[15]/text().0"
+
+        for spelling in ("true", "on"):
+            with self.subTest(spelling=spelling):
+                self.setUp()
+                _, primary_doc = self._setup_book_with_states(
+                    kosync_state_pct=0.23,
+                    kosync_xpath=synced_xpath,
+                    sibling_exists=False,
+                )
+                primary_doc.percentage = 0.24
+                primary_doc.progress = device_xpath
+                primary_doc.filename = "test.epub"
+                self._db().save_kosync_document(primary_doc)
+
+                parser = MagicMock()
+                parser.resolve_xpath_to_index.side_effect = lambda _f, xpath: {
+                    device_xpath: 100, synced_xpath: 200,
+                }[xpath]
+                container = MagicMock()
+                container.ebook_parser.return_value = parser
+
+                os.environ["KOSYNC_XPATH_ORDER_ENABLED"] = spelling
+                with patch.object(kosync_server, "_container", container):
+                    response = self.client.get(
+                        "/syncs/progress/" + ("a" * 32), headers=self.auth_headers,
+                    )
+
+                data = response.get_json()
+                self.assertEqual(data["progress"], synced_xpath)
+                self.assertEqual(parser.resolve_xpath_to_index.call_count, 2)

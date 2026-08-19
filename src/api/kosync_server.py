@@ -23,6 +23,7 @@ from flask import Blueprint, jsonify, request, send_file, g
 from src.api.booklore_client import BookloreClient
 from src.api.hardcover_client import HardcoverClient
 from src.utils.cache_paths import safe_cache_path
+from src.utils.config_loader import env_truthy
 from src.utils.kosync_headers import hash_kosync_key
 from src.utils.time_utils import utcnow
 from src.utils.user_context import set_current_user_id, reset_current_user_id
@@ -2971,7 +2972,13 @@ def _respond_from_book_states(doc_id, book):
             pct_delta_bound = 0.10
         within_pct_bound = abs(sibling_pct - synced_pct) <= pct_delta_bound
 
-        if same_document and sibling_xpath and synced_xpath and within_pct_bound:
+        if (
+            env_truthy("KOSYNC_XPATH_ORDER_ENABLED")
+            and same_document
+            and sibling_xpath
+            and synced_xpath
+            and within_pct_bound
+        ):
             try:
                 document = _database_service.get_kosync_document(doc_id)
                 filename = str(getattr(document, "filename", "") or "").strip() if document else ""
