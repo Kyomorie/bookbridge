@@ -44,6 +44,13 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **CWA progress updates no longer snap back when a stock Kobo opens the book.**
+  Calibre-Web Automated treats a `null` Kobo location as "keep the old location",
+  so BookBridge could pair a newly synced percentage with the Kobo's older page.
+  Opening the book then jumped to that stale page and sent its older percentage
+  back to every service. BookBridge now clears the stale Kobo locator whenever it
+  writes a percentage-only CWA update. (#364)
+
 - **Positions reported at the very start of a chapter no longer drift forward.**
   KOReader reports a position sitting on an empty structural element — the blank
   line that opens a chapter, say — as a boundary with no text attached.

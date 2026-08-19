@@ -133,7 +133,10 @@ class CWASyncApi:
                     "CurrentBookmark": {
                         "ProgressPercent": api_pct,
                         "ContentSourceProgressPercent": api_pct,
-                        "Location": None,
+                        # CWA treats null as "keep the previous Kobo locator".
+                        # Clear it so a stale KoboSpan cannot reopen and roll back
+                        # the newer percentage that BookBridge just wrote.
+                        "Location": {"Source": "", "Type": "", "Value": ""},
                     },
                     "Statistics": None,
                     "StatusInfo": {"Status": status},
