@@ -2496,6 +2496,9 @@
                         Each user has their own progress and credentials but shares the book catalog.
                         To make every matched book visible to everyone automatically, enable
                         <a href="{{ url_for('settings') }}#features" style="color:#aab4f5;">Features → Shared Library</a>.
+                        Enabling that setting only affects books matched from then on; the button below shares the
+                        <strong>existing</strong> catalog with <strong>existing</strong> users. Sharing is <strong>one-way</strong> —
+                        it cannot be un-shared in bulk.
                     </div>
                     <table class="users-table full-width">
                         <tr>
@@ -2537,6 +2540,10 @@
                         </tr>
                         {% endfor %}
                     </table>
+                    <form method="POST" action="/settings" style="margin-top: 14px;" onsubmit="return confirm('This will give every active user visibility of every book in the catalog. This cannot be undone in bulk.');">
+                        <input type="hidden" name="action" value="share_library">
+                        <button type="submit" class="u-btn u-btn-primary">📚 Share library with all users</button>
+                    </form>
                 </div>
             </div>
 
