@@ -68,6 +68,14 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Mark Complete now works on books whose title contains an apostrophe.**
+  Clicking the ✅ button on the dashboard did nothing at all for titles like
+  *Returner's Defiance* — no confirmation, no error, nothing. The apostrophe was
+  being escaped into the button's own click handler in a way that broke it, so the
+  browser silently refused to run it. Titles containing quotes, ampersands or angle
+  brackets are all handled correctly now.
+
+
 - **A broken Hardcover connection now says so once, clearly, instead of repeating
   itself.** When Hardcover stops accepting your token — it replaced long-lived
   tokens with expiring keys during its API beta, and reset the old ones without
