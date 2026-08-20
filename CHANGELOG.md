@@ -68,6 +68,18 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Startup no longer reports a connection failure for a credential you cannot
+  change.** Upgrading from single-user to multi-user copied your service logins into
+  the first admin's account, but left the originals behind in the global settings
+  where nothing can edit them. As soon as you rotated a token — a new Hardcover API
+  key, say — your syncs used the new one while the startup check kept testing the
+  old, abandoned copy and reporting it as broken, with nowhere in the UI to correct
+  it. Startup now checks the admin's own account credentials, the ones syncing
+  actually uses. A service the admin does not use is quietly skipped instead of
+  being reported as a failure, and no stored credential is altered — so a service
+  another user relies on cannot be disturbed.
+
+
 - **You can tell candidate books apart again when the title is long.** On the Add
   Book page, each candidate card carries a badge naming where it came from — ABS,
   BookOrbit, CWA and so on. A title long enough to fill the square pushed that badge

@@ -688,10 +688,63 @@ class SyncManager:
             else:
                 logger.debug(f"Sync client disabled/unconfigured: '{name}'")
 
+    def _primary_admin(self):
+        """The first active admin, or None. Used only to pick whose clients to check."""
+        if self.database_service is None:
+            return None
+        try:
+            return next(
+                (
+                    user for user in self.database_service.list_users()
+                    if getattr(user, "role", "") == "admin" and getattr(user, "active", 0)
+                ),
+                None,
+            )
+        except Exception as exc:
+            logger.debug("Could not resolve a primary admin for startup checks: %s", exc)
+            return None
+
+    def _startup_check_targets(self):
+        """Return the (name, client) pairs whose connections to verify at startup.
+
+        The global clients are built from ``os.environ``, which on a multi-user
+        install still holds the pre-migration copy of every per-user credential.
+        Those copies have no Settings UI, so they cannot be corrected and are free
+        to drift the moment a user rotates a token — at which point the global
+        client reports a connection failure for a credential nothing actually syncs
+        with. Prefer the primary admin's own clients, which are what their syncs
+        really use; fall back to the global ones when there is no admin or no
+        registry (single-user, or a test harness).
+        """
+        global_clients = dict(self.sync_clients or {})
+        if self.user_client_registry is None:
+            return list(global_clients.items())
+
+        admin = self._primary_admin()
+        if admin is None:
+            return list(global_clients.items())
+
+        try:
+            bundle = self.user_client_registry.get_clients(admin.id)
+            per_user = dict(getattr(bundle, "sync_clients", None) or {})
+        except Exception as exc:
+            logger.debug(
+                "Falling back to global clients for startup checks: %s", exc, exc_info=True
+            )
+            return list(global_clients.items())
+
+        return [(name, per_user.get(name, client)) for name, client in global_clients.items()]
+
     def startup_checks(self):
         # Check configured sync clients
-        for client_name, client in (self.sync_clients or {}).items():
+        for client_name, client in self._startup_check_targets():
             try:
+                # An unconfigured client has nothing to verify. Reporting it as a
+                # connection *failure* is misleading — it is how a service the
+                # operator does not use looks.
+                if not client.is_configured():
+                    logger.debug("Startup check skipped: '%s' is not configured", client_name)
+                    continue
                 client.check_connection()
                 logger.info(f"✅ '{client_name}' connection verified")
             except Exception as e:
