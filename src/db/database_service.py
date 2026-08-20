@@ -870,6 +870,41 @@ class DatabaseService:
                 session.add(UserBook(user_id=user_id, abs_id=abs_id))
             return len(missing)
 
+    def share_all_books_with_active_users(self) -> dict:
+        """Claim every catalog book for every active user. Returns {"users": <count>, "links": <count>}.
+
+        This is the bulk reconcile counterpart to:
+        - backfill_user_books_for_user (one user gets all books)
+        - link_book_to_all_active_users (one book goes to all users)
+
+        Idempotent: only creates missing UserBook visibility links. Progress, KoSync
+        documents, and stats remain per-user and are not affected.
+        """
+        with self.get_session() as session:
+            all_book_ids = {row[0] for row in session.query(Book.abs_id).all()}
+            if not all_book_ids:
+                user_count = session.query(User.id).filter(User.active == 1).count()
+                return {"users": user_count, "links": 0}
+
+            active_user_ids = {
+                row[0] for row in session.query(User.id).filter(User.active == 1).all()
+            }
+            if not active_user_ids:
+                return {"users": 0, "links": 0}
+
+            by_user: dict[int, set[str]] = defaultdict(set)
+            for user_id, abs_id in session.query(UserBook.user_id, UserBook.abs_id).all():
+                by_user[user_id].add(abs_id)
+
+            links_created = 0
+            for user_id in active_user_ids:
+                missing = all_book_ids - by_user.get(user_id, set())
+                for abs_id in missing:
+                    session.add(UserBook(user_id=user_id, abs_id=abs_id))
+                    links_created += 1
+
+            return {"users": len(active_user_ids), "links": links_created}
+
     def unlink_user_book(self, user_id: int, abs_id: str) -> int:
         """Remove a user's claim on a book. Returns rows deleted."""
         if user_id is None or not abs_id:

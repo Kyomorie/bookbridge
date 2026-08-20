@@ -1424,7 +1424,7 @@ def account_booklore_libraries():
 
 # User-management actions accepted by both the legacy /admin/users page and the
 # Settings → Users tab (which posts to /settings).
-_USER_ADMIN_ACTIONS = {'create', 'reset_password', 'toggle_active', 'delete'}
+_USER_ADMIN_ACTIONS = {'create', 'reset_password', 'toggle_active', 'delete', 'share_library'}
 
 
 def _apply_user_admin_action(form):
@@ -1509,6 +1509,21 @@ def _apply_user_admin_action(form):
                     message = f"Deleted '{target.username}'"
                 else:
                     error = "User not found"
+        elif action == 'share_library':
+            if not env_truthy('SHARE_ALL_BOOKS_WITH_ALL_USERS'):
+                error = "Enable Features → Shared Library first, then share the existing catalog."
+            else:
+                result = database_service.share_all_books_with_active_users()
+                links = result.get('links', 0)
+                users = result.get('users', 0)
+                logger.info(
+                    "🔗 Shared %d existing book link(s) across %d active user(s) (share-all-books reconcile)",
+                    links, users,
+                )
+                if links:
+                    message = f"Shared {links} book link(s) across {users} user(s)"
+                else:
+                    message = f"All {users} user(s) already see the full library"
     except Exception as e:
         error = f"Action failed: {e}"
     return message, error

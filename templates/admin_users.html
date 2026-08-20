@@ -78,6 +78,15 @@
     </div>
 
     <div class="card">
+        <h2>Shared library</h2>
+        <p>Shares the existing catalog with all active users. Requires the Shared Library setting (Features → Shared Library). This is one-way and cannot be undone in bulk.</p>
+        <form method="POST" onsubmit="return confirm('This will give every active user visibility of every book in the catalog. This cannot be undone in bulk.');">
+            <input type="hidden" name="action" value="share_library">
+            <button type="submit" class="btn btn-secondary btn-sm">📚 Share library with all users</button>
+        </form>
+    </div>
+
+    <div class="card">
         <h2>Create user</h2>
         <form method="POST" class="create-grid">
             <input type="hidden" name="action" value="create">

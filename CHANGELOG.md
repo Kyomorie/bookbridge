@@ -8,6 +8,20 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **You can now share an existing library with the people who already have
+  accounts.** *Shared Library* only ever applied going forward: it gave the full
+  catalog to accounts created after you switched it on, and shared each book as it
+  was matched. Anyone already signed up kept seeing only their own books, and the
+  only way to widen their access was to delete and recreate them — which throws
+  away their reading progress and their saved logins. Settings > Users now has a
+  **Share library with all users** button that hands every book already in the
+  catalog to every active user in one go, no deletions involved. It needs *Shared
+  Library* switched on first, since otherwise books matched from then on would
+  drift straight back out of sync. Only visibility is shared: everyone keeps their
+  own progress, their own KoSync documents and their own stats. Note that it is
+  one-way — there is no bulk un-share — so the button asks for confirmation.
+  (#384)
+
 - **Finishing a book on one service can now mark it finished everywhere.** Raw
   percentages never agree at the end of a book — an ebook's back matter is not
   narrated — so a title you finished in one app could sit at 92-97% in another and
