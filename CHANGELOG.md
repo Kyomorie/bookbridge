@@ -68,6 +68,16 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **You can tell candidate books apart again when the title is long.** On the Add
+  Book page, each candidate card carries a badge naming where it came from — ABS,
+  BookOrbit, CWA and so on. A title long enough to fill the square pushed that badge
+  outside the card, where it was invisible, so a library holding the same book in
+  several places offered a row of identical-looking choices with no way to tell
+  which was which. Cards now grow to fit, very long titles are trimmed with an
+  ellipsis (the full text is still there on hover), and the source badge is always
+  visible. (#381)
+
+
 - **Mark Complete now works on books whose title contains an apostrophe.**
   Clicking the ✅ button on the dashboard did nothing at all for titles like
   *Returner's Defiance* — no confirmation, no error, nothing. The apostrophe was
