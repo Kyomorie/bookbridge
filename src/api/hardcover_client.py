@@ -19,6 +19,7 @@ from datetime import date
 
 import requests
 
+from src.utils.logging_utils import get_persistent_condition_logger
 from src.utils.string_utils import author_match_floor, calculate_similarity, clean_book_title
 from src.utils.user_config import resolve_setting
 
@@ -59,6 +60,95 @@ class HardcoverClient:
         elif not isinstance(me, dict):
             me = None
         return me
+
+    # Persistent-condition keys, one per failure shape. Hardcover produced three
+    # distinct shapes in a single day during its API beta (401 invalid_token after
+    # a key reset, 500 from their own backend, and a Hasura session-variable
+    # error), so keeping them separate means a new shape still surfaces loudly
+    # instead of hiding behind an already-counted one.
+    _CONDITION_KEYS = (
+        "hardcover_api:auth",
+        "hardcover_api:server",
+        "hardcover_api:http",
+        "hardcover_api:graphql",
+    )
+    _MAX_LOGGED_BODY = 300
+
+    def _token_hint(self) -> str:
+        """Actionable next step, tailored to which kind of credential is configured.
+
+        Hardcover replaced long-lived JWTs with `hc_pat_` personal access tokens
+        and reset the old ones without notice during the API beta, so the useful
+        advice differs by token kind.
+        """
+        token = self.token or ""
+        if token.startswith("hc_pat_"):
+            return (
+                "Hardcover rejected this personal access token — confirm it has not "
+                "expired and regenerate it in Hardcover account settings if needed."
+            )
+        if token.count(".") == 2:
+            return (
+                "The configured Hardcover token is a legacy JWT. Hardcover resets "
+                "these without notice during its API beta — generate a new hc_pat_ "
+                "key in Hardcover account settings and save it under "
+                "Account -> Integrations."
+            )
+        return "Check the Hardcover token under Account -> Integrations."
+
+    @classmethod
+    def _short_body(cls, response) -> str:
+        """Response text trimmed for logs.
+
+        Hardcover answers a failed request with a full HTML error page; dumping it
+        buried the useful line. The `❌ HTTP {status}: ` prefix is unchanged so the
+        greppable contract holds.
+        """
+        text = (getattr(response, "text", "") or "").strip()
+        if "<html" in text[:200].lower():
+            title = ""
+            lowered = text.lower()
+            start = lowered.find("<title>")
+            if start != -1:
+                end = lowered.find("</title>", start)
+                if end != -1:
+                    title = text[start + 7:end].strip()
+            text = title or "HTML error page"
+        text = " ".join(text.split())
+        if len(text) > cls._MAX_LOGGED_BODY:
+            text = text[:cls._MAX_LOGGED_BODY] + "…"
+        return text
+
+    def _note_api_failure(self, key: str, message: str, *, response=None) -> None:
+        """Report a Hardcover API failure once, then quietly until it recovers."""
+        suffix = ""
+        if response is not None:
+            request_id = ""
+            try:
+                request_id = response.headers.get("X-Request-Id", "") or ""
+            except Exception:
+                request_id = ""
+            status = getattr(response, "status_code", None)
+            if status is not None and 500 <= int(status) < 600:
+                suffix = (
+                    " — this is an error inside Hardcover, not a configuration "
+                    "problem; retry later"
+                )
+                if request_id:
+                    suffix += f" (Hardcover request id {request_id})"
+            elif status in (401, 403):
+                suffix = f" — {self._token_hint()}"
+        get_persistent_condition_logger().warn(
+            logger, key, f"{message}{suffix}", level=logging.ERROR,
+        )
+
+    def _note_api_success(self) -> None:
+        """Announce recovery for any failure shape that had been firing."""
+        condition_logger = get_persistent_condition_logger()
+        for key in self._CONDITION_KEYS:
+            condition_logger.resolve(
+                logger, key, "✅ Hardcover API reachable again",
+            )
 
     @staticmethod
     def _is_read_only_graphql(query: str) -> bool:
@@ -119,9 +209,14 @@ class HardcoverClient:
                 if response.status_code == 200:
                     data = response.json()
                     if data.get("data"):
+                        self._note_api_success()
                         return data["data"]
                     if data.get("errors"):
-                        logger.error(f"❌ GraphQL errors: {data['errors']}")
+                        self._note_api_failure(
+                            "hardcover_api:graphql",
+                            f"❌ GraphQL errors: {data['errors']}",
+                            response=response,
+                        )
                     return None
 
                 if response.status_code == 429 and is_read_only:
@@ -139,7 +234,18 @@ class HardcoverClient:
                         f"Hardcover read query throttled after {max_attempts} attempts"
                     )
 
-                logger.error(f"❌ HTTP {response.status_code}: {response.text}")
+                status = response.status_code
+                if status in (401, 403):
+                    key = "hardcover_api:auth"
+                elif 500 <= status < 600:
+                    key = "hardcover_api:server"
+                else:
+                    key = "hardcover_api:http"
+                self._note_api_failure(
+                    key,
+                    f"❌ HTTP {status}: {self._short_body(response)}",
+                    response=response,
+                )
                 return None
         except HardcoverRateLimitError:
             raise

@@ -68,6 +68,19 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **A broken Hardcover connection now says so once, clearly, instead of repeating
+  itself.** When Hardcover stops accepting your token — it replaced long-lived
+  tokens with expiring keys during its API beta, and reset the old ones without
+  warning — the log used to repeat the same failure at error level on every attempt,
+  pasting in Hardcover's entire HTML error page and offering no idea what to do. The
+  first failure is now reported in full with the next step spelled out (generate a
+  new `hc_pat_` key if your token is a legacy one, or check expiry if it is already
+  a new-style key), repeats drop to debug so they stop drowning the log, and
+  recovery is announced when Hardcover starts answering again. Errors coming from
+  inside Hardcover are labelled as theirs and carry their request id, so there is
+  something concrete to report to them.
+
+
 - **CWA progress updates no longer snap back when a stock Kobo opens the book.**
   Calibre-Web Automated treats a `null` Kobo location as "keep the old location",
   so BookBridge could pair a newly synced percentage with the Kobo's older page.
