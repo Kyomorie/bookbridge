@@ -852,6 +852,32 @@
                             </div>
                         </div>
                     </details>
+
+                    <details class="advanced-sub full-width">
+                        <summary>Advanced — cross-device progress</summary>
+                        <div class="section-body" style="padding: 12px 0 0;">
+                            <div class="form-group full-width">
+                                <label>Backward progress from another device</label>
+                                <select name="KOSYNC_FURTHEST_WINS">
+                                    <option value="true" {% if get_val('KOSYNC_FURTHEST_WINS', 'true')|lower == 'true' %}selected{% endif %}>
+                                        Protect current progress (recommended)
+                                    </option>
+                                    <option value="false" {% if get_val('KOSYNC_FURTHEST_WINS', 'true')|lower != 'true' %}selected{% endif %}>
+                                        Allow the backward move
+                                    </option>
+                                </select>
+                                <div class="help-text"
+                                    style="background:rgba(255,152,0,.10);border:1px solid rgba(255,152,0,.35);border-radius:8px;padding:10px 12px;margin-top:8px;">
+                                    A backward move from the same reader is accepted when KoSync can identify it by its device ID.
+                                    The recommended protection blocks a lower position arriving from a <strong>different</strong>
+                                    reader, so merely opening a stale Kindle/Kobo after listening cannot pull your progress
+                                    backwards. Choose <em>Allow the backward move</em> if you intentionally switch readers and need
+                                    that newer action to move everyone back — for example after a sleep timer. With that option,
+                                    simply opening an out-of-date second reader can also become the new position.
+                                </div>
+                            </div>
+                        </div>
+                    </details>
                 </div>
             </div>
 
