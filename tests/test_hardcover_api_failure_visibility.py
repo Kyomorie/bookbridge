@@ -69,7 +69,11 @@ class HardcoverFailureVisibilityTestCase(unittest.TestCase):
             return HardcoverClient(credentials={})
 
     def _query(self, client, response):
-        with patch("src.api.hardcover_client.requests.post", return_value=response):
+        # Sleep is patched out: a 5xx read is retried with backoff, and real waits
+        # would add seconds to the suite for no coverage.
+        with patch("src.api.hardcover_client.time.sleep"), patch(
+            "src.api.hardcover_client.requests.post", return_value=response
+        ):
             return client.query("{ me { id } }")
 
 
@@ -239,3 +243,84 @@ class TestBodyTrimming(HardcoverFailureVisibilityTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTransientServerErrorRetry(HardcoverFailureVisibilityTestCase):
+    """Hardcover's beta API fails in clusters; reads should ride over a blip.
+
+    Measured 2026-08-20: 4/20 success on an identical query, longest failure
+    streak 12. Their docs mark 503 "safe to retry".
+    """
+
+    def _query_with(self, client, responses):
+        with patch("src.api.hardcover_client.time.sleep") as slept, patch(
+            "src.api.hardcover_client.requests.post", side_effect=responses
+        ) as posted:
+            return client.query("{ me { id } }"), posted, slept
+
+    def test_read_recovers_when_a_retry_succeeds(self):
+        client = self._client()
+        ok = _response(200, json_body={"data": {"me": {"id": 30726}}})
+
+        result, posted, _ = self._query_with(
+            client, [_response(500, _500_BODY), ok]
+        )
+
+        self.assertEqual(result, {"me": {"id": 30726}})
+        self.assertEqual(posted.call_count, 2)
+
+    def test_read_gives_up_after_bounded_attempts(self):
+        client = self._client()
+        responses = [_response(500, _500_BODY) for _ in range(5)]
+
+        with self.assertLogs("src.api.hardcover_client", level="ERROR") as captured:
+            result, posted, _ = self._query_with(client, responses)
+
+        self.assertIsNone(result)
+        self.assertEqual(posted.call_count, 3, "retries must stay bounded")
+        self.assertTrue(any("❌ HTTP 500: " in line for line in captured.output))
+
+    def test_retry_backs_off_between_attempts(self):
+        client = self._client()
+        responses = [_response(500, _500_BODY) for _ in range(3)]
+
+        _result, _posted, slept = self._query_with(client, responses)
+
+        self.assertEqual(slept.call_count, 2)
+
+    def test_retry_after_header_is_honoured(self):
+        client = self._client()
+        responses = [
+            _response(503, "", headers={"Retry-After": "7"}),
+            _response(200, json_body={"data": {"me": {"id": 30726}}}),
+        ]
+
+        _result, _posted, slept = self._query_with(client, responses)
+
+        slept.assert_called_once_with(7.0)
+
+    def test_a_mutation_is_never_retried_on_5xx(self):
+        """A write may already have applied server-side — retrying could double it."""
+        client = self._client()
+
+        with patch("src.api.hardcover_client.time.sleep"), patch(
+            "src.api.hardcover_client.requests.post",
+            side_effect=[_response(500, _500_BODY) for _ in range(3)],
+        ) as posted:
+            result = client.query("mutation { insert_user_book(object: {}) { id } }")
+
+        self.assertIsNone(result)
+        self.assertEqual(posted.call_count, 1)
+
+    def test_auth_failure_is_not_retried(self):
+        """A 401 will not fix itself; retrying just burns the rate limit."""
+        client = self._client()
+
+        with patch("src.api.hardcover_client.time.sleep"), patch(
+            "src.api.hardcover_client.requests.post",
+            side_effect=[_response(401, _401_BODY) for _ in range(3)],
+        ) as posted:
+            result = client.query("{ me { id } }")
+
+        self.assertIsNone(result)
+        self.assertEqual(posted.call_count, 1)

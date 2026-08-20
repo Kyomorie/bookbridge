@@ -234,6 +234,26 @@ class HardcoverClient:
                         f"Hardcover read query throttled after {max_attempts} attempts"
                     )
 
+                # Hardcover's beta API returns transient 5xx in long clusters (measured
+                # 4/20 success with a 12-request failure streak on 2026-08-20), and
+                # their docs mark 503 as safe to retry. Reads are retried; a mutation
+                # is never retried on 5xx because the write may already have applied.
+                if (
+                    500 <= response.status_code < 600
+                    and is_read_only
+                    and attempt < max_attempts
+                ):
+                    delay = self._get_retry_delay(response, attempt)
+                    logger.debug(
+                        "Hardcover returned %s on a read query. Retrying in %.1fs (attempt %d/%d).",
+                        response.status_code,
+                        delay,
+                        attempt,
+                        max_attempts,
+                    )
+                    time.sleep(delay)
+                    continue
+
                 status = response.status_code
                 if status in (401, 403):
                     key = "hardcover_api:auth"
