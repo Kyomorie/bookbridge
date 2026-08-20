@@ -4,7 +4,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from flask import Flask
-from jinja2 import Environment, FileSystemLoader
 
 from src.api import kosync_server
 from src.utils.config_loader import ALL_SETTINGS, DEFAULT_CONFIG
@@ -86,14 +85,8 @@ class TestKoSyncCrossDeviceRewinds:
                 return kosync_server.kosync_put_progress.__wrapped__()
 
     @staticmethod
-    def _render_setting(value):
-        env = Environment(loader=FileSystemLoader(_ROOT / "templates"))
-        template = env.get_template("_kosync_cross_device_rewinds.html")
-
-        def get_val(key, default=""):
-            return value if key == "KOSYNC_FURTHEST_WINS" else default
-
-        return template.render(get_val=get_val)
+    def _settings_template_source():
+        return (_ROOT / "templates" / "settings.html").read_text(encoding="utf-8")
 
     def test_setting_is_managed_and_defaults_to_safe_behavior(self):
         assert "KOSYNC_FURTHEST_WINS" in ALL_SETTINGS
@@ -145,21 +138,58 @@ class TestKoSyncCrossDeviceRewinds:
         assert db.user_progress_updates[0][1] == 0.30
 
     def test_ui_renders_safe_default_and_explicit_opt_in(self):
-        safe = self._render_setting("true")
-        opt_in = self._render_setting("false")
+        template_source = self._settings_template_source()
 
-        assert 'name="KOSYNC_FURTHEST_WINS"' in safe
-        assert 'value="true" selected' in safe
-        assert 'value="false" selected' not in safe
-        assert 'value="false" selected' in opt_in
-        assert 'value="true" selected' not in opt_in
-        assert "out-of-date second" in opt_in
+        assert 'name="KOSYNC_FURTHEST_WINS"' in template_source
+        assert 'value="true"' in template_source
+        assert 'value="false"' in template_source
+        assert "get_val('KOSYNC_FURTHEST_WINS'" in template_source
+        assert "out-of-date second" in template_source
 
-    def test_setting_partial_is_mounted_before_page_scripts(self):
-        base = (_ROOT / "templates" / "base.html").read_text(encoding="utf-8")
-        include = '{% include "_kosync_cross_device_rewinds.html" %}'
-        scripts = "{% block scripts %}{% endblock %}"
+    def test_setting_lives_in_the_main_settings_template(self):
+        settings_template = (_ROOT / "templates" / "settings.html").read_text(encoding="utf-8")
+        base_template = (_ROOT / "templates" / "base.html").read_text(encoding="utf-8")
+        partial_path = _ROOT / "templates" / "_kosync_cross_device_rewinds.html"
 
-        assert "active_page == 'settings'" in base
-        assert include in base
-        assert base.index(include) < base.index(scripts)
+        assert 'name="KOSYNC_FURTHEST_WINS"' in settings_template
+        assert "KOSYNC_FURTHEST_WINS" not in base_template
+        assert "_kosync_cross_device_rewinds" not in base_template
+        assert not partial_path.exists()
+        assert "kosync_cross_device_rewinds_template" not in settings_template
+
+    def test_checkbox_style_truthy_spellings_keep_the_protection_on(self):
+        truthy_spellings = ["on", "1", "yes", "On", "TRUE"]
+        for value in truthy_spellings:
+            # env_truthy("on"), env_truthy("1"), env_truthy("yes"), etc. all return True.
+            # Previously, == "true" treated these as False and silently disabled the guard.
+            # The failure direction is unsafe: backward cross-device PUT would be accepted.
+            db = _FakeDatabase(percentage=0.50, device_id="reader-a")
+
+            _response, status = self._put(
+                db,
+                percentage=0.30,
+                device_id="reader-b",
+                furthest_wins=value,
+            )
+
+            assert status == 200, f"value={value}"
+            assert float(db.doc.percentage) == 0.50, f"value={value}"
+            assert db.saved == [], f"value={value}"
+            assert db.user_progress_updates == [], f"value={value}"
+
+    def test_falsy_spellings_still_allow_the_backward_move(self):
+        falsy_spellings = ["false", "0", "no", "off"]
+        for value in falsy_spellings:
+            db = _FakeDatabase(percentage=0.50, device_id="reader-a")
+
+            _response, status = self._put(
+                db,
+                percentage=0.30,
+                device_id="reader-b",
+                furthest_wins=value,
+            )
+
+            assert status == 200, f"value={value}"
+            assert float(db.doc.percentage) == 0.30, f"value={value}"
+            assert db.saved == [(0.30, "reader-b")], f"value={value}"
+            assert db.user_progress_updates[0][1] == 0.30, f"value={value}"

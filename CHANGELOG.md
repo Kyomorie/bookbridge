@@ -8,6 +8,16 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **You can now choose what happens when an out-of-date reader reports going
+  backwards.** BookBridge has always protected your position here: if a second
+  device sends a *lower* percentage than the one already synced, it is ignored, so
+  opening a stale Kindle or Kobo after listening cannot drag your progress back.
+  Moving backwards on the *same* reader has always been honoured. That protection
+  was previously fixed in place; it is now a setting under Settings > KOSync >
+  *Advanced — cross-device progress*, still protected by default. Switch it to
+  *Allow the backward move* only if you deliberately move backwards by picking up a
+  different reader and want that to win. Contributed by @Kyomorie in #391.
+
 - **You can now share an existing library with the people who already have
   accounts.** *Shared Library* only ever applied going forward: it gave the full
   catalog to accounts created after you switched it on, and shared each book as it

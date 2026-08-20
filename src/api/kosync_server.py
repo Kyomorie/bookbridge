@@ -1610,7 +1610,7 @@ def kosync_put_progress():
             return _defer_kosync_book_access(doc_hash, linked, source="put")
 
     # Optional "furthest wins" protection
-    furthest_wins = os.environ.get('KOSYNC_FURTHEST_WINS', 'true').lower() == 'true'
+    furthest_wins = env_truthy('KOSYNC_FURTHEST_WINS', 'true')
     force_update = data.get('force', False)
     is_internal = _is_internal_kosync_device(device, device_id)
     request_user_id = getattr(g, 'kosync_user_id', None)
