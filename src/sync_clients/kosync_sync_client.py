@@ -8,7 +8,6 @@ from src.db.models import Book, State
 from src.utils.ebook_utils import EbookParser
 from src.utils.config_loader import env_truthy
 from src.utils.kosync_canonical import (
-    install_persistent_xpath_cache,
     prewarm_xpath_order_cache,
     resolve_canonical_position,
 )
@@ -31,7 +30,6 @@ class KoSyncSyncClient(SyncClient):
         self.kosync_client = kosync_client
         self.ebook_parser = ebook_parser
         self.delta_kosync_thresh = float(os.getenv("SYNC_DELTA_KOSYNC_PERCENT", 1)) / 100.0
-        install_persistent_xpath_cache(self.ebook_parser)
 
     def is_configured(self) -> bool:
         return self.kosync_client.is_configured()

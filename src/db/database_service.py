@@ -7,10 +7,11 @@ import json
 import logging
 import os
 import re
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from contextlib import contextmanager
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,7 @@ from .models import (
     Setting,
     KosyncDocument,
     KosyncUserProgress,
+    KosyncXpathOrderCache,
     PendingSuggestion,
     BookloreBook,
     ReadingSession,
@@ -1877,6 +1879,102 @@ class DatabaseService:
             for row in rows:
                 session.expunge(row)
             return rows
+
+    def get_kosync_xpath_order(self, key_hash: str, file_key: str) -> Optional[Tuple[int, int]]:
+        """Get the cached (device_index, synced_index) tuple for a key_hash.
+
+        This is a pure cache read. A file_key mismatch is a deliberate miss —
+        the row is only valid for the exact EPUB version it was computed from,
+        so a replaced or edited book must miss rather than return stale indices.
+        """
+        if not key_hash or not file_key:
+            return None
+        with self.get_session() as session:
+            row = session.query(KosyncXpathOrderCache).filter(
+                KosyncXpathOrderCache.key_hash == key_hash
+            ).first()
+            if not row:
+                return None
+            if str(row.file_key or "") != file_key:
+                return None
+            return (row.device_index, row.synced_index)
+
+    def save_kosync_xpath_order(self, key_hash: str, document_hash: str, filename: str,
+                                device_xpath: str, synced_xpath: str, device_index: int,
+                                synced_index: int, file_key: str,
+                                ttl_seconds: float, max_per_document: int) -> bool:
+        """Upsert one xpath order cache row and prune the table.
+
+        Returns True when the row was written, False on invalid input.
+
+        Mirrors the behavior of _persist_pair in kosync_canonical.py:
+        - Rejects falsy key_hash/file_key or None indices
+        - Coerces indices to int, rejects negative values
+        - Uses float unix timestamp for updated_at (not DateTime)
+        - Upserts by key_hash, leaving identity columns (document_hash, filename,
+          device_xpath, synced_xpath) unchanged on conflict
+        - Prunes rows older than ttl_seconds
+        - Keeps only max_per_document most recent rows per document_hash
+        """
+        if not key_hash or not file_key:
+            return False
+        if device_index is None or synced_index is None:
+            return False
+        try:
+            device_index = int(device_index)
+            synced_index = int(synced_index)
+        except (TypeError, ValueError):
+            return False
+        if device_index < 0 or synced_index < 0:
+            return False
+
+        now = time.time()
+        with self.get_session() as session:
+            # Upsert by key_hash
+            existing = session.query(KosyncXpathOrderCache).filter(
+                KosyncXpathOrderCache.key_hash == key_hash
+            ).first()
+            if existing:
+                existing.device_index = device_index
+                existing.synced_index = synced_index
+                existing.file_key = file_key
+                existing.updated_at = now
+            else:
+                new_row = KosyncXpathOrderCache(
+                    key_hash=key_hash,
+                    document_hash=document_hash,
+                    filename=filename,
+                    device_xpath=device_xpath,
+                    synced_xpath=synced_xpath,
+                    device_index=device_index,
+                    synced_index=synced_index,
+                    file_key=file_key,
+                    updated_at=now,
+                )
+                session.add(new_row)
+
+            # Prune: delete rows older than ttl_seconds
+            cutoff = now - ttl_seconds
+            session.query(KosyncXpathOrderCache).filter(
+                KosyncXpathOrderCache.updated_at < cutoff
+            ).delete(synchronize_session=False)
+
+            # Prune: keep only max_per_document most recent rows per document_hash
+            # Select ids to keep
+            keep_ids = session.query(KosyncXpathOrderCache.id).filter(
+                KosyncXpathOrderCache.document_hash == document_hash
+            ).order_by(
+                KosyncXpathOrderCache.updated_at.desc(),
+                KosyncXpathOrderCache.id.desc()
+            ).limit(max_per_document).all()
+            keep_id_set = {row[0] for row in keep_ids}
+            if keep_id_set:
+                session.query(KosyncXpathOrderCache).filter(
+                    KosyncXpathOrderCache.document_hash == document_hash,
+                    ~KosyncXpathOrderCache.id.in_(keep_id_set)
+                ).delete(synchronize_session=False)
+
+            return True
 
     def delete_kosync_data_for_book(self, abs_id: str) -> tuple[int, int]:
         """Delete every KoSync document and per-user progress row for a book.
