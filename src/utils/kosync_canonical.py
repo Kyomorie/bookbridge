@@ -23,18 +23,13 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import text
+from src.utils.logging_utils import get_persistent_condition_logger
 
 logger = logging.getLogger(__name__)
-
-_CACHE_TABLE = "kosync_xpath_order_cache"
-_INSTALL_LOCK = threading.Lock()
-_INSTALLED = False
 _EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kosync-canonical")
 _PREWARM_LOCK = threading.Lock()
 _PENDING_PREWARMS: dict[tuple, tuple] = {}
@@ -116,71 +111,48 @@ def _persist_pair(cache_key: tuple, device_index: Optional[int], synced_index: O
     # parser may be able to resolve the exact same pair later.
     if device_index is None or synced_index is None:
         return
-    try:
-        device_index = int(device_index)
-        synced_index = int(synced_index)
-    except (TypeError, ValueError):
-        return
-    if device_index < 0 or synced_index < 0:
-        return
 
     db = _database_service()
     if db is None or not file_key:
         return
     try:
-        now = time.time()
         document_hash = str(cache_key[0])
-        with db.get_session() as session:
-            session.execute(text(f"""
-                INSERT INTO {_CACHE_TABLE}
-                    (key_hash, document_hash, filename, device_xpath, synced_xpath,
-                     device_index, synced_index, file_key, updated_at)
-                VALUES
-                    (:key_hash, :document_hash, :filename, :device_xpath, :synced_xpath,
-                     :device_index, :synced_index, :file_key, :updated_at)
-                ON CONFLICT(key_hash) DO UPDATE SET
-                    device_index = excluded.device_index,
-                    synced_index = excluded.synced_index,
-                    file_key = excluded.file_key,
-                    updated_at = excluded.updated_at
-            """), {
-                "key_hash": _pair_hash(cache_key),
-                "document_hash": document_hash,
-                "filename": str(cache_key[1]),
-                "device_xpath": str(cache_key[2]),
-                "synced_xpath": str(cache_key[3]),
-                "device_index": device_index,
-                "synced_index": synced_index,
-                "file_key": file_key,
-                "updated_at": now,
-            })
-
-            # Page turns can create a lot of exact pairs over time.  Keep the
-            # persistent layer bounded; the in-memory #386 cache remains the
-            # short-lived cache for everything else.
-            session.execute(text(f"""
-                DELETE FROM {_CACHE_TABLE}
-                WHERE updated_at < :cutoff
-            """), {"cutoff": now - _PERSISTED_CACHE_TTL_SECONDS})
-            session.execute(text(f"""
-                DELETE FROM {_CACHE_TABLE}
-                WHERE document_hash = :document_hash
-                  AND id NOT IN (
-                      SELECT id FROM {_CACHE_TABLE}
-                      WHERE document_hash = :document_hash
-                      ORDER BY updated_at DESC, id DESC
-                      LIMIT :keep
-                  )
-            """), {
-                "document_hash": document_hash,
-                "keep": _PERSISTED_MAX_PER_DOCUMENT,
-            })
+        success = db.save_kosync_xpath_order(
+            key_hash=_pair_hash(cache_key),
+            document_hash=document_hash,
+            filename=str(cache_key[1]),
+            device_xpath=str(cache_key[2]),
+            synced_xpath=str(cache_key[3]),
+            device_index=device_index,
+            synced_index=synced_index,
+            file_key=file_key,
+            ttl_seconds=_PERSISTED_CACHE_TTL_SECONDS,
+            max_per_document=_PERSISTED_MAX_PER_DOCUMENT,
+        )
+        if success:
+            get_persistent_condition_logger().resolve(
+                logger,
+                "kosync_xpath_order_cache",
+                "✅ KoSync XPath order cache available again",
+            )
     except Exception as exc:
-        # Old DB before migration, transient locks, etc. must never affect sync.
-        logger.debug("KoSync persistent canonical cache write unavailable: %s", exc)
+        get_persistent_condition_logger().warn(
+            logger,
+            "kosync_xpath_order_cache",
+            f"⚠️ KoSync XPath order cache unavailable: {exc}",
+            exc_info=True,
+        )
 
 
-def _load_pair(cache_key: tuple, parser) -> Optional[tuple[Optional[int], Optional[int]]]:
+def load_persisted_pair(cache_key: tuple, parser) -> Optional[tuple[Optional[int], Optional[int]]]:
+    """Load a persisted XPath order pair from the cache.
+
+    Pairs resolved by the GET path are **not** persisted, because that path has
+    no before/after file-version proof spanning its parse, so persisting them
+    could bind pre-replacement indices to a file that changed mid-parse.
+    Only `_prewarm_once`, whose two resolutions both pass
+    `resolve_canonical_position`'s file-stability checks, persists.
+    """
     db = _database_service()
     if db is None:
         return None
@@ -188,59 +160,22 @@ def _load_pair(cache_key: tuple, parser) -> Optional[tuple[Optional[int], Option
         current_key = canonical_file_key(parser, str(cache_key[1]))
         if not current_key:
             return None
-        with db.get_session() as session:
-            row = session.execute(text(f"""
-                SELECT device_index, synced_index, file_key
-                FROM {_CACHE_TABLE}
-                WHERE key_hash = :key_hash
-            """), {"key_hash": _pair_hash(cache_key)}).first()
-        if not row or str(row.file_key or "") != current_key:
-            return None
-        return row.device_index, row.synced_index
+        result = db.get_kosync_xpath_order(_pair_hash(cache_key), current_key)
+        if result is not None:
+            get_persistent_condition_logger().resolve(
+                logger,
+                "kosync_xpath_order_cache",
+                "✅ KoSync XPath order cache available again",
+            )
+        return result
     except Exception as exc:
-        logger.debug("KoSync persistent canonical cache read unavailable: %s", exc)
+        get_persistent_condition_logger().warn(
+            logger,
+            "kosync_xpath_order_cache",
+            f"⚠️ KoSync XPath order cache unavailable: {exc}",
+            exc_info=True,
+        )
         return None
-
-
-def install_persistent_xpath_cache(parser) -> None:
-    """Layer persistent lookup/storage underneath #386's in-memory pair cache.
-
-    This wraps only the cache helpers.  ``_respond_from_book_states`` and all of
-    its safety gates (feature flag, same-file check, percentage bound) remain
-    byte-for-byte unchanged.
-    """
-    global _INSTALLED
-    with _INSTALL_LOCK:
-        if _INSTALLED:
-            return
-        try:
-            server = _server_module()
-            original_get = server._xpath_index_cache_get
-            original_put = server._xpath_index_cache_put
-        except Exception as exc:
-            logger.debug("KoSync persistent canonical cache install unavailable: %s", exc)
-            return
-
-        def wrapped_get(cache_key):
-            cached = original_get(cache_key)
-            if cached is not None:
-                return cached
-            if not isinstance(cache_key, tuple) or len(cache_key) != 4:
-                return None
-            persisted = _load_pair(cache_key, parser)
-            if persisted is None:
-                return None
-            original_put(cache_key, persisted[0], persisted[1])
-            return persisted
-
-        # Deliberately leave #386's put helper untouched.  A pair resolved by
-        # the existing GET path does not carry a before/after file-version key,
-        # so persisting it here could bind pre-replacement indices to a file that
-        # changed during that parse.  Only the explicitly prewarmed path below
-        # persists pairs after both XPath resolutions pass the file-stability
-        # checks in ``resolve_canonical_position``.
-        server._xpath_index_cache_get = wrapped_get
-        _INSTALLED = True
 
 
 def _current_user_id():

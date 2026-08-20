@@ -134,14 +134,9 @@ class KoSyncSyncClientCanonicalTests(unittest.TestCase):
         )
 
     def _client(self, transport, parser):
-        # Construct without modifying the real kosync_server module/cache hooks;
-        # this test covers only the SyncClient integration point.
-        original = self.mod.install_persistent_xpath_cache
-        self.mod.install_persistent_xpath_cache = lambda _parser: None
-        try:
-            return self.mod.KoSyncSyncClient(transport, parser)
-        finally:
-            self.mod.install_persistent_xpath_cache = original
+        # Construction no longer has global side effects: the persistent cache is
+        # consulted explicitly by kosync_server, not installed from __init__.
+        return self.mod.KoSyncSyncClient(transport, parser)
 
     def test_bridge_write_resolves_and_prewarms_exact_safe_xpath(self):
         parser = FakeParser(self.path)

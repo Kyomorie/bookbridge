@@ -24,6 +24,7 @@ from src.api.booklore_client import BookloreClient
 from src.api.hardcover_client import HardcoverClient
 from src.utils.cache_paths import safe_cache_path
 from src.utils.config_loader import env_truthy
+from src.utils.kosync_canonical import load_persisted_pair
 from src.utils.kosync_headers import hash_kosync_key
 from src.utils.time_utils import utcnow
 from src.utils.user_context import set_current_user_id, reset_current_user_id
@@ -125,18 +126,34 @@ def _xpath_index_cache_get(
 
     A pair that failed to resolve is cached as ``(None, None)`` and returned as
     such, so an unresolvable locator does not re-parse the EPUB on every GET.
-    A cache miss (absent or expired) returns None."""
+    A cache miss (absent or expired) falls through to the persistent per-file
+    cache before giving up; only pairs prewarmed by the write path are ever
+    persisted there, so a GET-time resolution stays RAM-only."""
     now = time.monotonic()
     with _XPATH_INDEX_CACHE_LOCK:
         entry = _XPATH_INDEX_CACHE.get(key)
-        if entry is None:
-            return None
-        device_index, synced_index, stored_at = entry
-        if now - stored_at > _XPATH_INDEX_CACHE_TTL_SECONDS:
+        if entry is not None:
+            device_index, synced_index, stored_at = entry
+            if now - stored_at <= _XPATH_INDEX_CACHE_TTL_SECONDS:
+                _XPATH_INDEX_CACHE.move_to_end(key)
+                return device_index, synced_index
             _XPATH_INDEX_CACHE.pop(key, None)
+
+    # RAM miss. The persistent lookup runs OUTSIDE the cache lock — that lock is
+    # never held across I/O. A cache read must not raise into the GET path.
+    if not isinstance(key, tuple) or len(key) != 4:
+        return None
+    try:
+        if _container is None:
             return None
-        _XPATH_INDEX_CACHE.move_to_end(key)
-        return device_index, synced_index
+        parser = _container.ebook_parser()
+    except Exception:
+        return None
+    persisted = load_persisted_pair(key, parser)
+    if persisted is None:
+        return None
+    _xpath_index_cache_put(key, persisted[0], persisted[1])
+    return persisted
 
 
 def _xpath_index_cache_put(
