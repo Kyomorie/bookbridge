@@ -1060,6 +1060,30 @@ class HardcoverClient:
         # LOGIC: Only set started date if we are past 2%
         should_start = current_percentage > 0.02
 
+        latest_read = None
+        if read_result and read_result.get("user_book_reads"):
+            latest_read = read_result["user_book_reads"][0]
+
+        # Hardcover keeps rereads as separate user_book_read rows. A completed row
+        # is historical data: never rewrite it with a later reading position.
+        if latest_read and latest_read.get("finished_at"):
+            # A repeated completion write is just the same finished state coming
+            # around the sync loop again. Likewise, very small progress can be a
+            # reset/noise signal; wait for the existing >2% start threshold before
+            # treating it as evidence of an actual reread.
+            if is_finished or not should_start:
+                logger.debug(
+                    "Hardcover: preserving completed read %s; no new reread progress yet",
+                    latest_read.get("id"),
+                )
+                return True
+
+            logger.info(
+                "🔄 Hardcover: Starting a new read instead of overwriting completed read %s",
+                latest_read.get("id"),
+            )
+            read_result = {"user_book_reads": []}
+
         if (
             read_result
             and read_result.get("user_book_reads")
