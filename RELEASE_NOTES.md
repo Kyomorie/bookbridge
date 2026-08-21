@@ -14,6 +14,10 @@ contributors.
   library with all users** button that hands the whole catalog to every active user
   at once. Visibility only — progress, KoSync documents and stats stay per-user.
   (#384)
+- **Change an existing account between user and admin.** Settings → Users gains a
+  *Make admin* / *Make user* button, so widening or restricting someone's access no
+  longer means deleting and recreating them and losing their progress and saved
+  logins. A promoted admin keeps using their own service accounts. (#385)
 - **Propagate Completion.** Percentages never agree at the end of a book, so a title
   you finished in one app can sit at 92–97% in another. Turn it on under
   Settings → Sync and finishing anywhere marks the book finished everywhere. Off by
@@ -72,3 +76,10 @@ migration is additive — one table caching KOReader XPath ordering.
   over the existing `bridgesync.koplugin` folder.
 - **Every new setting defaults to current behavior**, so an install that changes
   nothing behaves as it did.
+- **Admins no longer inherit the global service credentials.** Those settings are
+  the primary admin's own logins mirrored outward, so a *second* admin with blank
+  integration fields used to sync against the primary admin's Audiobookshelf,
+  Grimmory, BookOrbit and CWA accounts. Only the primary admin inherits now. If you
+  created a second admin account and left its Integrations blank, fill them in under
+  *Settings → Users → Integrations* — that account's services are skipped until you
+  do. Single-admin installs are unaffected.

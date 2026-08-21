@@ -28,7 +28,11 @@ from src.utils.kosync_canonical import load_persisted_pair
 from src.utils.kosync_headers import hash_kosync_key
 from src.utils.time_utils import utcnow
 from src.utils.user_context import set_current_user_id, reset_current_user_id
-from src.utils.user_config import _ALLOW_GLOBAL_FALLBACK_KEY, resolve_setting
+from src.utils.user_config import (
+    _ALLOW_GLOBAL_FALLBACK_KEY,
+    global_fallback_allowed,
+    resolve_setting,
+)
 from src.utils.string_utils import calculate_similarity, clean_book_title
 from src.services.llm_matching import judge_best_candidate
 from src.db.models import State
@@ -327,15 +331,16 @@ def _split_csv(value: str) -> list[str]:
 def _manifest_fallback_allowed(user_id) -> bool:
     """Whether manifest collection resolution may fall back to the global config.
 
-    Mirrors the app-wide policy (see _bind_request_user_context): admins inherit
-    the shared os.environ settings/credentials, regular users are isolated to
-    their own so one reader's shelves/lists never bleed into another's manifest."""
+    Mirrors the app-wide policy (see _bind_request_user_context): only the
+    primary admin inherits the shared os.environ settings/credentials, every
+    other user is isolated to their own so one reader's shelves/lists never
+    bleed into another's manifest."""
     try:
         user = _database_service.get_user(user_id) if _database_service else None
     except Exception as e:
         logger.warning("Manifest fallback-policy lookup failed (user_id=%s): %s", user_id, e, exc_info=True)
         return False
-    return bool(user and getattr(user, "is_admin", False))
+    return global_fallback_allowed(_database_service, user)
 
 
 def _booklore_credentials_for_manifest(user_id):

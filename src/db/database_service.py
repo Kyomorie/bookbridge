@@ -308,6 +308,22 @@ class DatabaseService:
             user.active = 1 if active else 0
             return True
 
+    def set_user_role(self, user_id: int, role: str) -> bool:
+        """Set a user's role to 'admin' or 'user'. Returns False if not found."""
+        normalized = (role or "").strip().lower()
+        if normalized not in ('admin', 'user'):
+            raise ValueError(f"Invalid role: {role}")
+        with self.get_session() as session:
+            user = session.query(User).filter(User.id == user_id).first()
+            if not user:
+                return False
+            user.role = normalized
+            # A role change can move which account is the primary admin, and the
+            # default-user id is cached for the process lifetime, so recompute it
+            # on next access — same reason delete_user clears it.
+            self._default_uid = None
+            return True
+
     def set_username(self, user_id: int, new_username: str) -> tuple:
         """Rename a user. Returns (ok, error_message). Enforces uniqueness
         (case-insensitive) and a non-empty name."""
@@ -1287,6 +1303,17 @@ class DatabaseService:
                     or session.query(User).order_by(User.id).first())
             self._default_uid = user.id if user else None
         return self._default_uid
+
+    def is_primary_admin(self, user_id: int) -> bool:
+        """Whether this user is the primary admin.
+
+        The primary admin owns un-scoped state and is the account the engine's
+        global settings are mirrored from (ENGINE_MIRROR_KEYS), so it is the only
+        account allowed to inherit the global configuration.
+        """
+        if user_id is None:
+            return False
+        return user_id == self._default_user_id()
 
     def get_state(self, abs_id: str, client_name: str, user_id: int = None) -> Optional[State]:
         """Get a specific state by book + client (+ user)."""

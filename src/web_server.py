@@ -34,6 +34,7 @@ from src.utils.user_context import (
     get_current_user_credentials, get_current_user_id,
 )
 from src.utils.user_config import user_setting
+from src.utils.user_config import global_fallback_allowed as _global_fallback_allowed
 
 from src.utils.config_loader import ConfigLoader, env_truthy
 from src.utils.cache_paths import safe_cache_path
@@ -861,10 +862,12 @@ def _bind_request_user_context(user):
     # Mark whether global (admin) env fallback is permitted. Without this flag,
     # resolve_setting's `... is False` guard reads None on a non-admin's creds
     # and silently falls back to the admin's global values (per-user leak). Only
-    # admins inherit the global config; regular users are isolated. This ambient
-    # dict is also what _spawn_user_background copies onto worker threads.
+    # the primary admin inherits the global config — it is their own account
+    # mirrored outward — so every other user, second admins included, is
+    # isolated. This ambient dict is also what _spawn_user_background copies
+    # onto worker threads.
     creds = dict(creds)
-    creds[_ALLOW_GLOBAL_FALLBACK_KEY] = bool(getattr(user, "is_admin", False))
+    creds[_ALLOW_GLOBAL_FALLBACK_KEY] = _global_fallback_allowed(database_service, user)
     g._uctx_id_token = set_current_user_id(user.id)
     g._uctx_creds_token = set_current_user_credentials(creds)
 
@@ -1162,7 +1165,7 @@ def account_integrations():
         groups=PER_USER_FIELD_GROUPS,
         creds=creds,
         master=master,
-        allow_master_fallback=bool(getattr(user, "is_admin", False)),
+        allow_master_fallback=_global_fallback_allowed(database_service, user),
         message=message,
         account_user=user,
         user_test_services=_USER_TEST_SERVICES,
@@ -1256,7 +1259,7 @@ def admin_user_integrations(user_id):
         groups=PER_USER_FIELD_GROUPS,
         creds=creds,
         master=master,
-        allow_master_fallback=bool(getattr(target, "is_admin", False)),
+        allow_master_fallback=_global_fallback_allowed(database_service, target),
         message=message,
         target_user=target,
         user_test_services=_USER_TEST_SERVICES,
@@ -1309,7 +1312,7 @@ def _posted_user_test_credentials(target, submitted):
 
     stored = database_service.get_user_credentials(target.id) or {}
     creds = {k: v for k, v in stored.items() if k in PER_USER_CREDENTIAL_KEYS}
-    creds[_ALLOW_GLOBAL_FALLBACK_KEY] = bool(getattr(target, "is_admin", False))
+    creds[_ALLOW_GLOBAL_FALLBACK_KEY] = _global_fallback_allowed(database_service, target)
 
     field_types = {
         key: ftype
@@ -1490,6 +1493,43 @@ def _apply_user_admin_action(form):
                     except Exception:
                         pass
                     message = f"{'Disabled' if disabling else 'Enabled'} '{target.username}'"
+        elif action == 'set_role':
+            uid = int(form.get('user_id'))
+            new_role = (form.get('role') or '').strip().lower()
+            target = database_service.get_user(uid)
+            demoting = new_role == 'user'
+            if not target:
+                error = "User not found"
+            elif new_role not in ('admin', 'user'):
+                error = "Invalid role"
+            elif target.role == new_role:
+                error = f"'{target.username}' is already {new_role}"
+            elif demoting and database_service.is_primary_admin(uid):
+                # The global service settings are this account mirrored outward
+                # (ENGINE_MIRROR_KEYS) and it owns un-scoped rows, so demoting it
+                # would leave the engine authenticating as a regular user.
+                error = "Can't demote the primary admin — the global service settings belong to that account"
+            elif demoting and _active_admin_count() <= 1:
+                error = "Can't demote the last active admin"
+            else:
+                database_service.set_user_role(uid, new_role)
+                # The cached client bundle carries the global-fallback flag, which
+                # this change flips.
+                try:
+                    container.user_client_registry().invalidate(uid)
+                except Exception:
+                    pass
+                logger.info(
+                    "👤 Role change: '%s' is now '%s'",
+                    sanitize_log_data(target.username), new_role,
+                )
+                if demoting:
+                    message = f"'{target.username}' is now a regular user"
+                else:
+                    message = (
+                        f"'{target.username}' is now an admin. They still use their own "
+                        f"service logins — set them under Integrations."
+                    )
         elif action == 'delete':
             uid = int(form.get('user_id'))
             target = database_service.get_user(uid)
@@ -1541,12 +1581,17 @@ def admin_users():
         message, error = _apply_user_admin_action(request.form)
 
     users = database_service.list_users()
+    try:
+        primary_admin_id = database_service._default_user_id()
+    except Exception:
+        primary_admin_id = None
     return render_template(
         'admin_users.html',
         users=users,
         message=message,
         error=error,
         current_user_id=current_user().id,
+        primary_admin_id=primary_admin_id,
     )
 
 
@@ -3742,12 +3787,17 @@ def settings():
     except Exception:
         users = []
     cu = current_user()
+    try:
+        primary_admin_id = database_service._default_user_id()
+    except Exception:
+        primary_admin_id = None
 
     response = make_response(render_template('settings.html',
                          message=message,
                          is_error=is_error,
                          users=users,
                          current_user_id=(cu.id if cu else None),
+                         primary_admin_id=primary_admin_id,
                          user_message=user_message,
                          user_error=user_error))
     response.headers['Cache-Control'] = 'no-store, max-age=0'

@@ -64,6 +64,14 @@
                         <input type="hidden" name="user_id" value="{{ u.id }}">
                         <button type="submit" class="btn btn-secondary btn-sm">{{ 'Disable' if u.active else 'Enable' }}</button>
                     </form>
+                    {% if u.id != primary_admin_id %}
+                    <form method="POST" onsubmit='return confirm({{ ('Make this account a regular user? They lose admin access to every book, user and setting.' if u.role == 'admin' else 'Make this account an administrator? Admins manage every book, user and setting. They keep using their own service logins — an admin does not inherit yours.') | tojson }});'>
+                        <input type="hidden" name="action" value="set_role">
+                        <input type="hidden" name="user_id" value="{{ u.id }}">
+                        <input type="hidden" name="role" value="{{ 'user' if u.role == 'admin' else 'admin' }}">
+                        <button type="submit" class="btn btn-secondary btn-sm">{{ 'Make user' if u.role == 'admin' else 'Make admin' }}</button>
+                    </form>
+                    {% endif %}
                     {% if u.id != current_user_id %}
                     <form method="POST" onsubmit="return confirm('Delete {{ u.username }}? Their progress/credentials are removed.');">
                         <input type="hidden" name="action" value="delete">

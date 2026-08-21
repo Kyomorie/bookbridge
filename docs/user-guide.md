@@ -32,7 +32,9 @@ The **Account** page is where you manage your own login and reader-specific setu
 - Shared engine settings, such as service URLs, poll intervals, and daemon behavior, still live in **Settings**.
 - BookFusion can be linked from **My Integrations** with the device-link button; a separate Calibre API key enables uploading local EPUBs to BookFusion.
 
-Regular readers do not inherit an admin's account credentials when their own fields are blank. This keeps one reader's BookFusion, Grimmory, BookOrbit, tracker, or KOSync account from being used for another reader by accident.
+Readers do not inherit anyone else's account credentials when their own fields are blank. This keeps one reader's BookFusion, Grimmory, BookOrbit, tracker, or KOSync account from being used for another reader by accident. Only the **primary admin** — the first admin account, whose logins the engine's shared settings are copied from — falls back to the server-wide values; a second admin account needs its own logins like anyone else.
+
+Admins can change an existing account between **user** and **admin** from **Settings -> Users** with the *Make admin* / *Make user* button. Promoting someone does not hand over your service logins, and it leaves their books, progress and saved credentials untouched. The primary admin and the last remaining active admin cannot be demoted.
 
 ---
 

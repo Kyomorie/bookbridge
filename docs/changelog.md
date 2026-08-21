@@ -11,6 +11,7 @@ A maintenance release for 7.4.0. The headline is **the BridgeSync plugin starts 
 ### What's New
 
 - **Share an existing library with the people who already have accounts.** Settings → Users gains a **Share library with all users** button that hands the whole catalog to every active user at once, instead of *Shared Library* only applying to accounts created afterwards. Visibility only. (#384)
+- **Change an existing account between user and admin.** Settings → Users gains a *Make admin* / *Make user* button, instead of delete-and-recreate being the only way to widen access. A promoted admin keeps using their own service accounts — admins no longer inherit the global service credentials, which belong to the primary admin. (#385)
 - **Propagate Completion.** Finishing a book on one service can mark it finished everywhere, since raw percentages never agree at the end of a book. Off by default, under Settings → Sync. Contributed by [@benjitobz](https://github.com/benjitobz). (#374)
 - **Auto-match suggestions.** High-confidence candidates link themselves as a scan finds them. Off by default; loose title matches and same-folder candidates are never linked automatically. Contributed by [@benjitobz](https://github.com/benjitobz). (#375)
 - **Cross-device rewind policy.** The protection that ignores a lower percentage from a second device is now a setting, still on by default. Contributed by [@Kyomorie](https://github.com/Kyomorie). (#391)
@@ -29,7 +30,7 @@ A maintenance release for 7.4.0. The headline is **the BridgeSync plugin starts 
 
 ### Upgrade Notes
 
-Restart to apply the database migration (automatic on container start) and re-download the BridgeSync plugin on each KOReader device — 0.6.3 cannot update itself. Every new setting defaults to current behavior.
+Restart to apply the database migration (automatic on container start) and re-download the BridgeSync plugin on each KOReader device — 0.6.3 cannot update itself. Every new setting defaults to current behavior. If you run a **second admin account** with blank Integrations, fill them in: admins no longer inherit the primary admin's service logins, so that account's services are skipped until it has its own.
 
 ---
 

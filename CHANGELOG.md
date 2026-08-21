@@ -17,6 +17,15 @@ KOReader position handling, CWA, Audiobookshelf and the BridgeSync plugin.
   active user in one go — visibility only; progress, KoSync documents and stats
   stay per-user. (#384)
 
+- **You can now change an existing account between user and admin.** Settings →
+  Users gains a *Make admin* / *Make user* button per account, so widening or
+  restricting someone's access no longer means deleting and recreating them —
+  which threw away their reading progress and their saved service logins. A
+  promoted admin keeps using **their own** service accounts: admins no longer
+  inherit the global service credentials, which are the primary admin's own
+  logins mirrored outward. The primary admin cannot be demoted, and neither can
+  the last active admin. (#385)
+
 - **Finishing a book on one service can now mark it finished everywhere.** Raw
   percentages never agree at the end of a book, so a title you finished in one app
   could sit at 92–97% in another. Turn on *Propagate Completion* under
