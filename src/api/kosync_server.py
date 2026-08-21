@@ -1005,10 +1005,10 @@ def _update_grouped_kosync_session(book, doc_hash: str, device: str, device_id: 
 
 def _kosync_debounce_loop() -> None:
     """Check every 10s for books that stopped receiving KoSync PUTs."""
-    debounce_seconds = _get_kosync_put_debounce_seconds()
     while True:
         time.sleep(10)
         now = time.time()
+        debounce_seconds = _get_kosync_put_debounce_seconds()
         _flush_stale_kosync_sessions(now)
         to_sync = []
 
