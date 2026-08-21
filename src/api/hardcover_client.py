@@ -1024,22 +1024,11 @@ class HardcoverClient:
         """Get today's date in YYYY-MM-DD format for Hardcover API."""
         return date.today().isoformat()
 
-    def update_progress(
-        self,
-        user_book_id: int,
-        page: int,
-        edition_id: int = None,
-        is_finished: bool = False,
-        current_percentage: float = 0.0,
-        audio_seconds: int = None,
-        active_read: Optional[Dict] = None,
-    ) -> bool:
+    def get_latest_read(self, user_book_id: int) -> Optional[Dict]:
+        """Fetch the most recent user_book_read row for the given user_book_id.
+
+        Returns the read dict with id, started_at, finished_at when present, otherwise None.
         """
-        Update reading progress.
-        Uses current_percentage > 0.02 (2%) to decide when to set 'started_at'.
-        For audiobook editions, pass audio_seconds to use progress_seconds instead of progress_pages.
-        """
-        # First check if there's an existing read
         read_query = """
         query ($userBookId: Int!) {
             user_book_reads(where: { user_book_id: { _eq: $userBookId }}, order_by: {id: desc}, limit: 1) {
@@ -1049,32 +1038,58 @@ class HardcoverClient:
             }
         }
         """
+        result = self.query(read_query, {"userBookId": user_book_id})
+        if result and result.get("user_book_reads"):
+            return result["user_book_reads"][0]
+        return None
 
-        read_result = (
-            {"user_book_reads": [active_read]}
+    def update_progress(
+        self,
+        user_book_id: int,
+        page: int,
+        edition_id: int = None,
+        is_finished: bool = False,
+        current_percentage: float = 0.0,
+        audio_seconds: int = None,
+        active_read: Optional[Dict] = None,
+        allow_new_read: bool = False,
+    ) -> bool:
+        """
+        Update reading progress.
+        Uses current_percentage > 0.02 (2%) to decide when to set 'started_at'.
+        For audiobook editions, pass audio_seconds to use progress_seconds instead of progress_pages.
+
+        Args:
+            allow_new_read: When True, the caller has confirmed from BookBridge's own
+                cross-cycle progress state that a genuine re-read is underway. Without
+                this flag, a completed read (finished_at set) is left untouched.
+                Default False is the safe direction.
+        """
+        # active_read and get_latest_read both yield a bare read dict; wrap once.
+        latest_read = (
+            active_read
             if active_read and active_read.get("id")
-            else self.query(read_query, {"userBookId": user_book_id})
+            else self.get_latest_read(user_book_id)
         )
+        read_result = {"user_book_reads": [latest_read] if latest_read else []}
         today = self._get_today_date()
 
         # LOGIC: Only set started date if we are past 2%
         should_start = current_percentage > 0.02
 
-        latest_read = None
-        if read_result and read_result.get("user_book_reads"):
-            latest_read = read_result["user_book_reads"][0]
-
         # Hardcover keeps rereads as separate user_book_read rows. A completed row
         # is historical data: never rewrite it with a later reading position.
         if latest_read and latest_read.get("finished_at"):
-            # A repeated completion write is just the same finished state coming
-            # around the sync loop again. Likewise, very small progress can be a
-            # reset/noise signal; wait for the existing >2% start threshold before
-            # treating it as evidence of an actual reread.
-            if is_finished or not should_start:
-                logger.debug(
-                    "Hardcover: preserving completed read %s; no new reread progress yet",
+            if not allow_new_read:
+                # Persistent-condition log: this fires on every sync cycle for every
+                # finished book, so use the repo's persistent-condition logger to avoid
+                # flooding INFO or hiding the override at DEBUG.
+                get_persistent_condition_logger().warn(
+                    logger,
+                    f"hardcover_preserve_completed_read:{latest_read.get('id')}",
+                    "Hardcover: Preserving completed read %s (finished_at set); no re-read confirmed via allow_new_read flag",
                     latest_read.get("id"),
+                    level=logging.INFO,
                 )
                 return True
 

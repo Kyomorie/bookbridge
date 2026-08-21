@@ -68,6 +68,21 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Re-reading a book no longer overwrites the read you already finished, and a
+  stale reader no longer invents one.** Hardcover keeps each read of a book as its
+  own record, but BookBridge only ever wrote to the newest one — so picking a
+  finished book back up overwrote the record of the first time you read it, dates
+  and all. A completed read is now closed for good: BookBridge never writes to one
+  again, and starts a fresh read instead. Deciding *when* you have actually started
+  re-reading takes care, because a low position on its own does not mean you have:
+  a KOReader left closed at 4%, sitting untouched while you finished the audiobook
+  elsewhere, reports that same 4% the next time you open it. Acting on that one
+  reading would put a re-read on your Hardcover profile that never happened.
+  BookBridge therefore waits for the position to actually move forward across two
+  sync cycles before recording a re-read, and a stale reader that simply gets
+  corrected back to where you really are never creates anything. Contributed by
+  @Kyomorie in #398 (#390).
+
 - **Startup no longer reports a connection failure for a credential you cannot
   change.** Upgrading from single-user to multi-user copied your service logins into
   the first admin's account, but left the originals behind in the global settings

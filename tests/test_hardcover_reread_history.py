@@ -49,6 +49,7 @@ class TestHardcoverRereadHistory(unittest.TestCase):
             50,
             edition_id=44,
             current_percentage=0.25,
+            allow_new_read=True,
         )
 
         self.assertTrue(updated)
@@ -115,6 +116,7 @@ class TestHardcoverRereadHistory(unittest.TestCase):
             edition_id=44,
             current_percentage=0.25,
             audio_seconds=3600,
+            allow_new_read=True,
         )
 
         self.assertTrue(updated)
@@ -124,6 +126,32 @@ class TestHardcoverRereadHistory(unittest.TestCase):
         self.assertEqual(variables["editionId"], 44)
         self.assertEqual(variables["startedAt"], "2026-08-20")
         self.assertIsNone(variables["finishedAt"])
+
+
+    def test_midrange_progress_without_opt_in_writes_nothing(self):
+        """A finished read is never rewritten from a position alone.
+
+        Mid-range progress against a completed read used to be read as evidence
+        of a reread. Confirming a reread is now the caller's job, so without
+        ``allow_new_read`` the completed read is left exactly as it is.
+        """
+        self.client.query = Mock(
+            return_value={"user_book_reads": [self._completed_read()]}
+        )
+
+        updated = self.client.update_progress(
+            11,
+            100,
+            edition_id=44,
+            current_percentage=0.5,
+        )
+
+        self.assertTrue(updated)
+        self.client.query.assert_called_once()
+        query, variables = self.client.query.call_args.args
+        self.assertIn("user_book_reads", query)
+        self.assertNotIn("mutation", query)
+        self.assertEqual(variables, {"userBookId": 11})
 
 
 if __name__ == "__main__":

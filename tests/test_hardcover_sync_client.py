@@ -41,6 +41,7 @@ class TestHardcoverSyncClient(unittest.TestCase):
 
         # Configure hardcover client mock
         self.mock_hardcover_client.is_configured.return_value = True
+        self.mock_hardcover_client.get_latest_read.return_value = None
 
         # Create HardcoverSyncClient instance
         self.hardcover_sync_client = HardcoverSyncClient(
@@ -307,6 +308,7 @@ class TestHardcoverSyncClient(unittest.TestCase):
         self.mock_hardcover_client.update_progress.assert_called_with(
             'user-book-id-789',
             expected_page,
+            allow_new_read=False,
             edition_id='existing-edition-456',
             is_finished=False,
             current_percentage=0.25,
@@ -335,6 +337,12 @@ class TestHardcoverSyncClient(unittest.TestCase):
             'page_number': 95
         }
         self.mock_hardcover_client.get_user_book.return_value = mock_user_book
+        open_read = {
+            'id': 'open-read-1',
+            'started_at': '2026-01-01',
+            'finished_at': None,
+        }
+        self.mock_hardcover_client.get_latest_read.return_value = open_read
 
         # Test finished book (>99% progress)
         update_request = UpdateProgressRequest(
@@ -351,6 +359,8 @@ class TestHardcoverSyncClient(unittest.TestCase):
         self.mock_hardcover_client.update_progress.assert_called_with(
             'finished-user-book',
             expected_page,
+            active_read=open_read,
+            allow_new_read=False,
             edition_id='finished-edition-456',
             is_finished=True,
             current_percentage=0.995
