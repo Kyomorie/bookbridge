@@ -4,6 +4,35 @@ For the full history of changes, please refer to the **[GitHub Releases](https:/
 
 ---
 
+## [7.4.1]
+
+A maintenance release for 7.4.0. The headline is **the BridgeSync plugin starts on a fresh install again** — 0.6.3 crashed before it ever ran on any device without an existing BridgeSync log file, which meant every new KOReader setup. It also stops Hardcover losing the read you already finished, keeps a stock Kobo from dragging CWA progress back, and adds five opt-in settings.
+
+### What's New
+
+- **Share an existing library with the people who already have accounts.** Settings → Users gains a **Share library with all users** button that hands the whole catalog to every active user at once, instead of *Shared Library* only applying to accounts created afterwards. Visibility only. (#384)
+- **Propagate Completion.** Finishing a book on one service can mark it finished everywhere, since raw percentages never agree at the end of a book. Off by default, under Settings → Sync. Contributed by [@benjitobz](https://github.com/benjitobz). (#374)
+- **Auto-match suggestions.** High-confidence candidates link themselves as a scan finds them. Off by default; loose title matches and same-folder candidates are never linked automatically. Contributed by [@benjitobz](https://github.com/benjitobz). (#375)
+- **Cross-device rewind policy.** The protection that ignores a lower percentage from a second device is now a setting, still on by default. Contributed by [@Kyomorie](https://github.com/Kyomorie). (#391)
+- **Compare text positions when percentages disagree**, for when a reader and BookBridge measure the same EPUB on slightly different scales. Off by default. Contributed by [@Kyomorie](https://github.com/Kyomorie). (#380)
+
+### Fixed
+
+- **BridgeSync 0.6.4 starts on a fresh install (#370)**, with better managed-folder detection and error reporting. Fixed by [@theryanmc](https://github.com/theryanmc). (#373, #377)
+- **Re-reading a book no longer overwrites the read you already finished (#390)**, and a stale reader at a low percentage no longer invents one. Contributed by [@Kyomorie](https://github.com/Kyomorie). (#398)
+- **A broken Hardcover connection is reported once, clearly, with the next step**, and transient failures are retried.
+- **Startup checks the admin's own credentials**, not the abandoned global copies left by the multi-user upgrade, so a rotated token no longer reports as broken.
+- **Positions at the very start of a chapter no longer drift forward (#276)**. Contributed by [@Kyomorie](https://github.com/Kyomorie). (#382)
+- **CWA progress no longer snaps back when a stock Kobo opens the book (#364)**, and **Audiobookshelf lookups ask for the expanded record** so audio files and chapters are present — contributed by [@TheSingularis](https://github.com/TheSingularis). (#371)
+- **Mark Complete works on titles containing an apostrophe**, the source badge stays visible on long Add Book titles (#381), and tracker cooldowns fire when their timer expires.
+- **KOReader position comparisons survive a restart**, now that XPath ordering is persisted and prewarmed. Contributed by [@Kyomorie](https://github.com/Kyomorie). (#389)
+
+### Upgrade Notes
+
+Restart to apply the database migration (automatic on container start) and re-download the BridgeSync plugin on each KOReader device — 0.6.3 cannot update itself. Every new setting defaults to current behavior.
+
+---
+
 ## [7.4.0]
 
 The headline is **positions you can trust again**: an audiobook transcribed from a partial download used to align happily against the part it received, and a position saved by the Audiobookshelf mobile app couldn't be read at all. Both are fixed, along with the cases where a book got stuck at 100% and every reset came straight back. KOReader device sync is also usable immediately after a restart — the first sync on a 400-book library went from about ten minutes to effectively instant — and a book's link to your reader now survives editing its metadata.

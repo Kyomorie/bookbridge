@@ -4,166 +4,104 @@
 
 All notable changes to BookBridge will be documented in this file.
 
-## [Unreleased]
+## [7.4.1] - 2026-08-21
+
+A maintenance release for 7.4.0: five opt-in additions, and fixes across Hardcover,
+KOReader position handling, CWA, Audiobookshelf and the BridgeSync plugin.
 
 ### Added
 
-- **You can now choose what happens when an out-of-date reader reports going
-  backwards.** BookBridge has always protected your position here: if a second
-  device sends a *lower* percentage than the one already synced, it is ignored, so
-  opening a stale Kindle or Kobo after listening cannot drag your progress back.
-  Moving backwards on the *same* reader has always been honoured. That protection
-  was previously fixed in place; it is now a setting under Settings > KOSync >
-  *Advanced — cross-device progress*, still protected by default. Switch it to
-  *Allow the backward move* only if you deliberately move backwards by picking up a
-  different reader and want that to win. Contributed by @Kyomorie in #391.
-
-- **You can now share an existing library with the people who already have
-  accounts.** *Shared Library* only ever applied going forward: it gave the full
-  catalog to accounts created after you switched it on, and shared each book as it
-  was matched. Anyone already signed up kept seeing only their own books, and the
-  only way to widen their access was to delete and recreate them — which throws
-  away their reading progress and their saved logins. Settings > Users now has a
-  **Share library with all users** button that hands every book already in the
-  catalog to every active user in one go, no deletions involved. It needs *Shared
-  Library* switched on first, since otherwise books matched from then on would
-  drift straight back out of sync. Only visibility is shared: everyone keeps their
-  own progress, their own KoSync documents and their own stats. Note that it is
-  one-way — there is no bulk un-share — so the button asks for confirmation.
-  (#384)
+- **Share an existing library with the people who already have accounts.**
+  *Shared Library* only ever applied going forward. Settings → Users now has a
+  **Share library with all users** button that hands the whole catalog to every
+  active user in one go — visibility only; progress, KoSync documents and stats
+  stay per-user. (#384)
 
 - **Finishing a book on one service can now mark it finished everywhere.** Raw
-  percentages never agree at the end of a book — an ebook's back matter is not
-  narrated — so a title you finished in one app could sit at 92-97% in another and
-  never register as read. Turn on *Propagate Completion* under Settings > Sync and,
-  once any service crosses the completion threshold (99% by default), BookBridge
-  marks the book finished on the others instead of only pushing the position. Off by
-  default, and it acts on the crossing rather than re-asserting itself every cycle.
-  StoryGraph and Hardcover are unaffected by the setting: both already post as soon
-  as a book reaches completion.
+  percentages never agree at the end of a book, so a title you finished in one app
+  could sit at 92–97% in another. Turn on *Propagate Completion* under
+  Settings → Sync. Off by default, threshold 99%. Contributed by
+  [@benjitobz](https://github.com/benjitobz) in #374.
 
 - **Suggestions can now link themselves when a match is certain.** Turn on
-  *Auto-match suggestions* under Settings > Suggestions and any candidate scoring at
-  or above the threshold is linked as soon as a scan finds it, instead of waiting on
-  the Suggestions page. Off by default, and at the default threshold of 100 only an
-  identifier agreement or an identical title and author qualifies. Books whose titles
-  merely agree loosely — including two books that happen to share a folder — are
-  never linked automatically no matter what they score; those stay on the Suggestions
-  page behind their "Same folder?" badge for you to confirm. Lowering the threshold
-  below 95 is warned about in the UI, because below that the top candidate is often a
-  sequel or a different edition.
+  *Auto-match suggestions* under Settings → Suggestions and candidates at or above
+  the threshold are linked as a scan finds them. Off by default; loosely-matching
+  titles and same-folder candidates are never linked automatically. Contributed by
+  [@benjitobz](https://github.com/benjitobz) in #375.
 
-- **New: stop KOReader being pulled back when the percentages disagree.** Your
-  reader and BookBridge can measure the same EPUB on slightly different scales, so
-  a stale spot on the reader can report a *higher* percentage than the position
-  BookBridge already synced there from your audiobook — and win on the number
-  alone, dragging you backwards. Turn on *Compare text positions when percentages
-  disagree* under Settings > KOSync and BookBridge checks where the two positions
-  actually land in the text instead of trusting numbers that are not speaking the
-  same language. It only applies when both refer to the exact same file and the two
-  percentages are already close, so a genuine jump forward is still a jump forward.
-  **Off by default**, because comparing means opening and reading the book: expect a
-  few extra seconds on the first sync after you move in a book, then it is cached.
-  Contributed by @Kyomorie in #380.
+- **You can now choose what happens when an out-of-date reader reports going
+  backwards.** A second device sending a *lower* percentage has always been
+  ignored so a stale Kindle or Kobo cannot drag your progress back; that
+  protection is now a setting under Settings → KOSync, still on by default.
+  Contributed by [@Kyomorie](https://github.com/Kyomorie) in #391.
+
+- **Optionally compare text positions when percentages disagree.** Your reader and
+  BookBridge can measure the same EPUB on slightly different scales, letting a
+  stale spot win on the number alone. Turn on *Compare text positions when
+  percentages disagree* under Settings → KOSync to check where the positions
+  actually land in the text. **Off by default** — comparing means opening the book,
+  so expect a few extra seconds on the first sync after you move. Contributed by
+  [@Kyomorie](https://github.com/Kyomorie) in #380.
 
 ### Fixed
 
-- **Re-reading a book no longer overwrites the read you already finished, and a
-  stale reader no longer invents one.** Hardcover keeps each read of a book as its
-  own record, but BookBridge only ever wrote to the newest one — so picking a
-  finished book back up overwrote the record of the first time you read it, dates
-  and all. A completed read is now closed for good: BookBridge never writes to one
-  again, and starts a fresh read instead. Deciding *when* you have actually started
-  re-reading takes care, because a low position on its own does not mean you have:
-  a KOReader left closed at 4%, sitting untouched while you finished the audiobook
-  elsewhere, reports that same 4% the next time you open it. Acting on that one
-  reading would put a re-read on your Hardcover profile that never happened.
-  BookBridge therefore waits for the position to actually move forward across two
-  sync cycles before recording a re-read, and a stale reader that simply gets
-  corrected back to where you really are never creates anything. Contributed by
-  @Kyomorie in #398 (#390).
+- **Re-reading a book no longer overwrites the read you already finished**, and a
+  stale reader no longer invents one. A completed Hardcover read is never written
+  to again, and a re-read is recorded only once the position actually moves
+  forward — so a KOReader left closed at 4% cannot put a re-read on your profile.
+  Contributed by [@Kyomorie](https://github.com/Kyomorie) in #398 (#390).
+
+- **A broken Hardcover connection now says so once, clearly, with the next step**,
+  instead of repeating the same failure and Hardcover's entire HTML error page on
+  every attempt. Transient 5xx errors are retried, and recovery is announced.
 
 - **Startup no longer reports a connection failure for a credential you cannot
-  change.** Upgrading from single-user to multi-user copied your service logins into
-  the first admin's account, but left the originals behind in the global settings
-  where nothing can edit them. As soon as you rotated a token — a new Hardcover API
-  key, say — your syncs used the new one while the startup check kept testing the
-  old, abandoned copy and reporting it as broken, with nowhere in the UI to correct
-  it. Startup now checks the admin's own account credentials, the ones syncing
-  actually uses. A service the admin does not use is quietly skipped instead of
-  being reported as a failure, and no stored credential is altered — so a service
-  another user relies on cannot be disturbed.
+  change.** The upgrade to multi-user left copies of your service logins in the
+  global settings, where nothing can edit them; startup now checks the admin's own
+  account credentials — the ones syncing actually uses.
 
-
-- **You can tell candidate books apart again when the title is long.** On the Add
-  Book page, each candidate card carries a badge naming where it came from — ABS,
-  BookOrbit, CWA and so on. A title long enough to fill the square pushed that badge
-  outside the card, where it was invisible, so a library holding the same book in
-  several places offered a row of identical-looking choices with no way to tell
-  which was which. Cards now grow to fit, very long titles are trimmed with an
-  ellipsis (the full text is still there on hover), and the source badge is always
-  visible. (#381)
-
-
-- **Mark Complete now works on books whose title contains an apostrophe.**
-  Clicking the ✅ button on the dashboard did nothing at all for titles like
-  *Returner's Defiance* — no confirmation, no error, nothing. The apostrophe was
-  being escaped into the button's own click handler in a way that broke it, so the
-  browser silently refused to run it. Titles containing quotes, ampersands or angle
-  brackets are all handled correctly now.
-
-
-- **A broken Hardcover connection now says so once, clearly, instead of repeating
-  itself.** When Hardcover stops accepting your token — it replaced long-lived
-  tokens with expiring keys during its API beta, and reset the old ones without
-  warning — the log used to repeat the same failure at error level on every attempt,
-  pasting in Hardcover's entire HTML error page and offering no idea what to do. The
-  first failure is now reported in full with the next step spelled out (generate a
-  new `hc_pat_` key if your token is a legacy one, or check expiry if it is already
-  a new-style key), repeats drop to debug so they stop drowning the log, and
-  recovery is announced when Hardcover starts answering again. Errors coming from
-  inside Hardcover are labelled as theirs and carry their request id, so there is
-  something concrete to report to them.
-
+- **Positions reported at the very start of a chapter no longer drift forward.**
+  KOReader reports a position on an empty structural element as a boundary with no
+  text attached; those fell back to raw percentage, which in one reported case
+  landed roughly 7,900 characters further into the book. Contributed by
+  [@Kyomorie](https://github.com/Kyomorie) in #382 (#276).
 
 - **CWA progress updates no longer snap back when a stock Kobo opens the book.**
   Calibre-Web Automated treats a `null` Kobo location as "keep the old location",
-  so BookBridge could pair a newly synced percentage with the Kobo's older page.
-  Opening the book then jumped to that stale page and sent its older percentage
-  back to every service. BookBridge now clears the stale Kobo locator whenever it
-  writes a percentage-only CWA update. (#364)
+  so a new percentage could be paired with an older page. A percentage-only write
+  now clears the stale locator. (#364)
 
-- **Positions reported at the very start of a chapter no longer drift forward.**
-  KOReader reports a position sitting on an empty structural element — the blank
-  line that opens a chapter, say — as a boundary with no text attached.
-  BookBridge could not resolve those and fell back to the reader's raw
-  percentage, which in one reported case landed roughly 7,900 characters further
-  into the book: enough to visibly push the audiobook ahead. These boundaries now
-  resolve to the structural position they actually name. Where the chapter cannot
-  be identified with confidence, BookBridge declines to guess rather than
-  resolving to the wrong chapter. Related to #276; contributed by @Kyomorie
-  in #382.
+- **Audiobookshelf item lookups now ask for the expanded record**, so audio files
+  and chapters are present rather than missing; lookup failures are logged instead
+  of swallowed, and background work on a shared book falls through to a user who
+  is actually configured. Contributed by
+  [@TheSingularis](https://github.com/TheSingularis) in #371.
 
-- **StoryGraph and Hardcover cooldowns now fire when their timer expires.** A
-  tracker update used to be checked only during a later sync cycle, so a
-  five-minute cooldown could silently wait for a much longer global interval.
-  BookBridge now schedules one per-book follow-up for both trackers and resets it
-  when reading resumes. Hardcover status promotions also target the new active
-  read returned by Hardcover, preventing the first progress write after *Want to
-  Read* becomes *Currently Reading* from landing on an older reading session.
+- **Mark Complete now works on books whose title contains an apostrophe.**
+  Clicking ✅ on the dashboard did nothing at all for titles like *Returner's
+  Defiance* — no confirmation, no error.
+
+- **You can tell candidate books apart again when the title is long.** A title
+  long enough to fill the card pushed the source badge out of sight on the Add
+  Book page. (#381)
+
+- **StoryGraph and Hardcover cooldowns now fire when their timer expires**,
+  instead of waiting for the next global sync cycle.
 
 - **BridgeSync 0.6.4: the KOReader plugin no longer fails to start on a fresh
-  install.** BridgeSync 0.6.3, shipped in 7.4.0, crashed while starting up on any
-  device that did not already have a BridgeSync log file — which meant every new
-  installation. The plugin still appeared in KOReader's plugin list and could be
-  ticked on and off, but it never actually started: no *Bridge Sync* entry
-  appeared in the menu, and nothing synced. Devices upgraded from 0.5.4 kept
-  working, which is why this only showed up for people setting up a new device or
-  reinstalling KOReader. Fresh installs now start normally. If you are affected,
-  download the plugin again from *Settings → KOSync* and copy it over your
-  existing `bridgesync.koplugin` folder — the broken version cannot update itself,
-  because the crash happens before the updater ever runs. Reported in #370 and
-  fixed by @theryanmc in #373.
+  install.** 0.6.3, shipped in 7.4.0, crashed at startup on any device without an
+  existing BridgeSync log file, so the plugin appeared in the list but never ran.
+  Download the plugin again from *Settings → KOSync* — the broken version cannot
+  update itself. Managed-folder detection and error reporting are improved in the
+  same version. Reported in #370; fixed by
+  [@theryanmc](https://github.com/theryanmc) in #373 and #377.
+
+### Changed
+
+- **KOReader XPath ordering is now persisted and prewarmed**, so position
+  comparisons survive a restart instead of being rebuilt book by book. Adds one
+  database migration, applied automatically on start. Contributed by
+  [@Kyomorie](https://github.com/Kyomorie) in #389.
 
 ## [7.4.0] - 2026-08-17
 
