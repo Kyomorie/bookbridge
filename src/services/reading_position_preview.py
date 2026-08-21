@@ -9,14 +9,21 @@ The returned payload never contains a raw ebook path, locator, or character inde
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
+logger = logging.getLogger(__name__)
 
 _AUDIO_CLIENTS = {"abs", "bookloreaudio", "bookorbitaudio"}
+# Write-only trackers never lead a sync, and the percentage stored against them is
+# an echo of what BookBridge last pushed there — never an observed reading
+# position. They must not be offered as the source of a preview.
+_WRITE_ONLY_CLIENTS = {"hardcover", "storygraph"}
 _SOURCE_LABELS = {
     "abs": "Audiobookshelf",
+    "absebook": "Audiobookshelf (ebook)",
     "kosync": "KoSync",
     "storyteller": "Storyteller",
     "booklore": "Grimmory",
@@ -41,8 +48,6 @@ def _client_key(name: str | None) -> str:
     key = str(name or "").strip().lower()
     if key.startswith("kosync") or key == "bridgesync_plugin":
         return "kosync"
-    if key in {"abs", "absebook"}:
-        return "abs"
     return key
 
 
@@ -62,7 +67,10 @@ def _as_float(value) -> Optional[float]:
 
 
 def _select_state(states: Iterable, last_leader: str | None):
-    states = list(states or [])
+    states = [
+        state for state in (states or [])
+        if _client_key(getattr(state, "client_name", None)) not in _WRITE_ONLY_CLIENTS
+    ]
     if not states:
         return None
 
@@ -138,6 +146,11 @@ def _resolve_precise_or_mapped_position(
         try:
             index = alignment_service.get_char_for_time(getattr(book, "abs_id", ""), timestamp)
         except Exception:
+            logger.warning(
+                "Reading position preview: audio alignment lookup failed for %s",
+                getattr(book, "abs_id", ""),
+                exc_info=True,
+            )
             index = None
         if index is not None:
             return _ResolvedPosition(index, "mapped", "Mapped · audio alignment"), failures
@@ -155,10 +168,12 @@ def _bounded_excerpt(full_text: str, index: int, context: int) -> tuple[str, str
     after = full_text[index:min(len(full_text), index + context)]
 
     # The canonical parser already normalizes chapter text substantially, but
-    # collapse remaining line breaks/tabs for a compact dashboard excerpt.  Do it
-    # independently on both sides so the marker still represents the boundary.
-    before = re.sub(r"\s+", " ", before).strip()
-    after = re.sub(r"\s+", " ", after).strip()
+    # collapse remaining line breaks/tabs for a compact dashboard excerpt.  Only
+    # the OUTER edges are trimmed: stripping the marker-facing edges deletes the
+    # space the position sits on, so a boundary renders as "several|notches" and
+    # reads as though the marker landed mid-word.
+    before = re.sub(r"\s+", " ", before).lstrip()
+    after = re.sub(r"\s+", " ", after).rstrip()
     return before, after
 
 
@@ -212,6 +227,11 @@ def build_reading_position_preview(
         book_path = ebook_parser.resolve_book_path(filename)
         full_text, _spine_map = ebook_parser.extract_text_and_map(book_path)
     except Exception:
+        logger.warning(
+            "Reading position preview: could not read ebook text for %s",
+            getattr(book, "abs_id", ""),
+            exc_info=True,
+        )
         full_text = ""
 
     if not full_text:

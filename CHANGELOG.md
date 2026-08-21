@@ -8,6 +8,16 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **Library cards can now show you the text around your current position.** On any
+  book with an ebook, *Show position* beside the progress bar opens a short excerpt
+  with a marker at the spot you are synced to — enough to recognise where you are
+  without opening a reader. BookBridge uses the exact XPath or CFI when your reader
+  saved one, maps an audiobook position through the stored audio↔ebook alignment
+  when it did not, and clearly labels a percentage-only estimate as approximate
+  rather than implying it is exact. The excerpt is only loaded when you ask for it,
+  is scoped to your own books, and is not offered for audiobook-only mappings.
+  Contributed by @Kyomorie in #397 (#394).
+
 - **Sort your library by when you added a book.**
   The sort menu has a *Date Added* option, and the arrow beside it flips between
   newest and oldest first — so the books you just matched can sit at the top

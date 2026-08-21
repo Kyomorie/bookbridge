@@ -11,6 +11,9 @@
     function createPreviewUi(card) {
         if (!card || card.querySelector('[data-position-preview-toggle]')) return;
         if (card.dataset.syncMode === 'audiobook_only') return;
+        // No ebook file on the card means nothing can be resolved; offering the
+        // button would only ever return the "file is not available" state.
+        if (!card.dataset.filename) return;
         const absId = card.dataset.absId || '';
         if (!absId) return;
         const info = card.querySelector('.book-info');
