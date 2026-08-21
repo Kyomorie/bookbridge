@@ -81,6 +81,25 @@ def test_xpath_is_preferred_and_marker_context_is_bounded():
     assert len(result["after"]) <= 120
 
 
+def test_kavita_leader_uses_exact_xpath_and_display_label():
+    parser = FakeParser()
+    parser.xpath_result = 260
+    state = _state(
+        client="kavita",
+        percentage=0.42,
+        xpath="/body/DocFragment[2]/body/p[3]/text().0",
+    )
+
+    result = build_reading_position_preview(
+        book=_book(), states=[state], last_leader="Kavita", ebook_parser=parser,
+    )
+
+    assert result["status"] == "exact"
+    assert result["source"] == "Kavita"
+    assert result["percentage"] == 42.0
+    assert parser.xpath_calls
+
+
 def test_cfi_is_used_when_xpath_is_absent():
     parser = FakeParser()
     parser.cfi_result = 150

@@ -656,10 +656,15 @@ class KOReaderDeviceSyncService:
             return False
 
     def _download_from_kavita(self, book, source_filename: str, cache_path: Path) -> bool:
+        source_name = str(getattr(book, "ebook_source", "") or "").strip().lower()
+        if source_name != "kavita":
+            return False
         if not self.kavita_client or not self.kavita_client.is_configured():
             return False
 
-        kavita_id = self._decode_kavita_filename(source_filename)
+        kavita_id = str(getattr(book, "ebook_source_id", "") or "").strip()
+        if not kavita_id:
+            kavita_id = self._decode_kavita_filename(source_filename)
         if not kavita_id:
             try:
                 match = self.kavita_client.find_book_by_filename(source_filename, allow_refresh=False)

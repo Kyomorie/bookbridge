@@ -20,6 +20,7 @@ CANONICAL_SERVICES = [
     "Grimmory",
     "BookFusion",
     "BookOrbit",
+    "Kavita",
     "Readest",
     "Calibre-Web Automated",
     "Hardcover",

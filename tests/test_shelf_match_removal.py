@@ -25,9 +25,16 @@ class TestShelveMatchedEbook(unittest.TestCase):
         self.bookorbit._shelf_key.side_effect = (
             lambda name: (name or "").strip().lower()
         )
+        self.kavita = Mock()
+        self.kavita.is_configured.return_value = True
+        self.kavita.add_book_id_to_shelf.return_value = True
+        self.kavita._shelf_key.side_effect = (
+            lambda name: (name or "").strip().casefold()
+        )
         container = Mock()
         container.booklore_client.return_value = self.booklore
         container.bookorbit_client.return_value = self.bookorbit
+        container.kavita_client.return_value = self.kavita
 
         self._container_patch = patch.object(web_server, "container", container)
         self._shelf_patch = patch.object(web_server, "BOOKLORE_SHELF_NAME", "Kobo")
@@ -80,6 +87,25 @@ class TestShelveMatchedEbook(unittest.TestCase):
 
         self.bookorbit.add_book_id_to_shelf.assert_called_once_with(17, "Kobo")
         self.bookorbit.remove_book_id_from_shelf.assert_not_called()
+
+    def test_kavita_moves_matched_chapter_out_of_watch_collection(self):
+        with patch.object(
+            web_server,
+            "user_setting",
+            side_effect=lambda key, default=None: (
+                "BookBridge" if key == "KAVITA_COLLECTION_NAME" else default
+            ),
+        ), patch.dict(
+            os.environ,
+            {
+                "KAVITA_SHELF_WATCH_ENABLED": "true",
+                "KAVITA_SHELF_WATCH_NAME": "Up Next",
+            },
+        ):
+            web_server._shelve_matched_ebook("book.epub", "Kavita", 23)
+
+        self.kavita.add_book_id_to_shelf.assert_called_once_with(23, "BookBridge")
+        self.kavita.remove_book_id_from_shelf.assert_called_once_with(23, "Up Next")
 
     def test_noop_when_booklore_not_configured(self):
         self.booklore.is_configured.return_value = False

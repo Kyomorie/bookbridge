@@ -32,16 +32,17 @@ class HardcoverSyncClient(SyncClient):
     This integrates Hardcover as a proper sync client in the sync cycle.
     """
 
-    def __init__(self, hardcover_client: HardcoverClient, ebook_parser: EbookParser, abs_client=None, database_service=None, ollama_client=None, booklore_client=None, bookorbit_client=None):
+    def __init__(self, hardcover_client: HardcoverClient, ebook_parser: EbookParser, abs_client=None, database_service=None, ollama_client=None, booklore_client=None, bookorbit_client=None, kavita_client=None):
         super().__init__(ebook_parser)
         self.hardcover_client = hardcover_client
         self.abs_client = abs_client  # For fetching book metadata
         self.database_service = database_service
         self.ollama_client = ollama_client
         # Library clients let us read a library-hosted EPUB's embedded ISBN/author
-        # when the file isn't on local disk (BookOrbit/Grimmory ebook-only + ABS-linked).
+        # when the file isn't on local disk (BookOrbit/Grimmory/Kavita ebook-only + ABS-linked).
         self.booklore_client = booklore_client
         self.bookorbit_client = bookorbit_client
+        self.kavita_client = kavita_client
         self._grimmory_list_sync_attempted = set()
 
     def is_configured(self) -> bool:
@@ -105,7 +106,11 @@ class HardcoverSyncClient(SyncClient):
         # Supplement from the EPUB when there's no ABS item, or ABS lacks a usable ISBN.
         if not item or not isbn:
             ebook_meta = resolve_ebook_identifiers(
-                self.ebook_parser, book, self.booklore_client, self.bookorbit_client
+                self.ebook_parser,
+                book,
+                self.booklore_client,
+                self.bookorbit_client,
+                self.kavita_client,
             )
             title = title or ebook_meta.get('title') or book.abs_title or ""
             author = author or ebook_meta.get('author') or ""

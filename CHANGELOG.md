@@ -8,6 +8,13 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **Kavita can now participate as a full ebook source and reading client.** BookBridge
+  can search and import Kavita EPUBs, download them to managed KOReader devices,
+  match them by their KOReader hash, synchronize progress in both directions, manage
+  the configured collection for shelf-watch and forge workflows, proxy covers, and
+  use Kavita books for Hardcover and StoryGraph metadata. Kavita credentials and
+  library/collection choices are per-user; polling and shelf-watch controls follow
+  the same model as Grimmory and BookOrbit.
 - **Library cards can now show you the text around your current position.** On any
   book with an ebook, *Show position* beside the progress bar opens a short excerpt
   with a marker at the spot you are synced to — enough to recognise where you are

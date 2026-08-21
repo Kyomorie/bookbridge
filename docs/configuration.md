@@ -274,6 +274,46 @@ BookOrbit notes:
     docker exec abs_kosync python -m scripts.migrate_grimmory_to_bookorbit --apply
     ```
 
+#### Kavita
+
+Kavita is a supported EPUB source and bidirectional reading-progress client. It can
+provide books to Match, Batch Match, Suggestions, Forge, managed KOReader devices,
+and ebook-only mappings. BookBridge uses Kavita's native KOReader progress endpoint,
+so the same Kavita position is visible in its web reader and other compatible
+clients.
+
+| Setting | Env Var | Default | Notes |
+| --- | --- | --- | --- |
+| Enable | `KAVITA_ENABLED` | `false` | Turns on Kavita catalog and progress support. |
+| Server URL | `KAVITA_SERVER` | empty | Internal/reachable Kavita base URL used by BookBridge. |
+| Browser URL | `KAVITA_WEB_URL` | empty | Optional public URL used for dashboard links; falls back to Server URL. |
+| Auth Key | `KAVITA_API_KEY` | empty | Per-reader Kavita auth key from **User Settings -> 3rd Party Clients**. Treat it like a password. |
+| Library ID | `KAVITA_LIBRARY_ID` | empty | Per-reader optional numeric library ID; blank searches all EPUB libraries visible to that key. |
+| Collection Name | `KAVITA_COLLECTION_NAME` | `BookBridge` | Per-reader collection that successfully matched books are moved to. |
+| Poll Mode | `KAVITA_POLL_MODE` | `global` | `global` uses the main sync cycle. `custom` polls Kavita separately. |
+| Poll Interval | `KAVITA_POLL_SECONDS` | `300` | Used when Poll Mode is `custom`. |
+
+Optional "Up Next" collection watch — add an EPUB to a Kavita collection and the
+bridge auto-matches it on the next poll:
+
+| Setting | Env Var | Default | Notes |
+| --- | --- | --- | --- |
+| Watch a Collection | `KAVITA_SHELF_WATCH_ENABLED` | `false` | Turns on auto-matching from a watched Kavita collection. |
+| Collection Name | `KAVITA_SHELF_WATCH_NAME` | `Up Next` | Books placed here are auto-matched and moved to the collection above on success. |
+| Match Threshold | `KAVITA_SHELF_WATCH_THRESHOLD` | `95` | Minimum match confidence (60–100) before a book is auto-linked. |
+| Rescan Interval (Hours) | `KAVITA_SHELF_WATCH_RESCAN_HOURS` | `24` | How often a still-unmatched book is retried. |
+
+Kavita notes:
+
+- Create a non-expiring auth key for each reader in Kavita under **User Settings ->
+  3rd Party Clients**, then save it under **Account -> My Integrations -> Kavita**.
+- The Kavita user behind the key must be able to read/download the selected library
+  and manage collections if collection workflows are enabled.
+- Kavita support is ebook-only. Grimmory and BookOrbit remain the library-server
+  choices when the audio side of a mapping also comes from that service.
+- Only EPUB chapters participate; comic/archive and PDF progress models are outside
+  this integration.
+
 #### Calibre-Web Automated (CWA)
 
 CWA is a supported ebook source and optional Kobo-sync progress source. Use it to search/download ebooks from Calibre-Web Automated, and enable Kobo sync when you want stock Kobo readers or KOReader-via-CWA to participate in progress sync.

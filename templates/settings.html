@@ -1210,6 +1210,81 @@
             </div>
 
 
+            <!-- Kavita (Optional) -->
+            <div class="settings-section" data-svc="kavita">
+                {% set kavita_configured = get_val('KAVITA_SERVER') != '' %}
+                {% set kavita_enabled = get_bool('KAVITA_ENABLED') %}
+                <div class="section-header">
+                    <div class="svc-left">
+                        <span class="svc-chev">â–¶</span>
+                        <div class="svc-chip">KV</div>
+                        <div class="svc-title">
+                            <h3>Kavita</h3>
+                            <div class="svc-desc">Ebook library &amp; reading positions</div>
+                        </div>
+                    </div>
+                    <div class="header-tail">
+                        {% if kavita_configured %}<span class="pill ok">Configured</span>
+                        {% else %}<span class="pill off">Not configured</span>{% endif %}
+                        <div class="toggle-switch-wrapper">
+                            <span class="toggle-label">Enable</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="toggle_kavita" name="KAVITA_ENABLED"
+                                    onchange="toggleSection('kavita_body', this.checked)" {% if kavita_enabled %}checked{% endif %}>
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div id="kavita_body" class="section-body {% if not kavita_enabled %}collapsed{% endif %}">
+                    <div class="form-group full-width">
+                        <label>Server URL</label>
+                        <input type="text" name="KAVITA_SERVER" value="{{ get_val('KAVITA_SERVER') }}">
+                    </div>
+                    <div class="form-group full-width">
+                        <label>Public URL <span style="font-weight:400;opacity:.65;">(optional)</span></label>
+                        <input type="text" name="KAVITA_WEB_URL" value="{{ get_val('KAVITA_WEB_URL') }}">
+                        <div class="help-text">Used for browser links when the server URL is internal-only. Empty uses the server URL.</div>
+                    </div>
+                    <div class="form-group full-width">
+                        <div class="help-text" style="background:rgba(102,126,234,.08);border:1px solid rgba(102,126,234,.25);border-radius:8px;padding:10px 12px;">
+                            <strong>Per-user account.</strong> Set each user's Kavita authentication key, optional Library ID,
+                            and destination Collection under
+                            <a href="{{ url_for('settings') }}#users" style="color:#aab4f5;">Settings â†’ Users â†’ (user) â†’ Integrations</a>.
+                            Generate the authentication key in Kavita's user settings. The server URL and poll settings here stay global.
+                        </div>
+                    </div>
+
+                    <div class="full-width" style="margin: 10px 0; border-top: 1px solid rgba(255,255,255,0.1);"></div>
+                    <h4 class="full-width" style="font-size: 14px; color: #fff; margin-bottom: -10px;">"Up Next" Collection Auto-Match</h4>
+                    <div class="checkbox-wrapper full-width">
+                        <input type="checkbox" id="kavita_shelf_watch" name="KAVITA_SHELF_WATCH_ENABLED"
+                            onchange="toggleSection('kavita_shelf_watch_body', this.checked)"
+                            {% if get_bool('KAVITA_SHELF_WATCH_ENABLED') %}checked{% endif %}>
+                        <label for="kavita_shelf_watch">Watch a Kavita collection for auto-matching</label>
+                    </div>
+                    <div id="kavita_shelf_watch_body" class="full-width" {% if not get_bool('KAVITA_SHELF_WATCH_ENABLED') %}style="display:none;"{% endif %}>
+                        <div class="form-group full-width">
+                            <label>Watch Collection Name</label>
+                            <input type="text" name="KAVITA_SHELF_WATCH_NAME"
+                                value="{{ get_val('KAVITA_SHELF_WATCH_NAME', 'Up Next') }}" placeholder="Up Next">
+                            <div class="help-text">Books placed in this Kavita collection are auto-matched and moved to the user's configured destination collection on success.</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Auto-Match Threshold (%)</label>
+                            <input type="number" name="KAVITA_SHELF_WATCH_THRESHOLD" min="60" max="100"
+                                value="{{ get_val('KAVITA_SHELF_WATCH_THRESHOLD', '95') }}">
+                        </div>
+                        <div class="form-group">
+                            <label>Rescan Cooldown (hours)</label>
+                            <input type="number" name="KAVITA_SHELF_WATCH_RESCAN_HOURS" min="1"
+                                value="{{ get_val('KAVITA_SHELF_WATCH_RESCAN_HOURS', '24') }}">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+
             <!-- Readest Highlight Sync (engine knobs; account is per-user) -->
             <div class="settings-section" data-svc="readest">
                 <div class="section-header">
@@ -2039,6 +2114,24 @@
                         </div>
                         {% endif %}
 
+                        {% if get_bool('KAVITA_ENABLED') %}
+                        <div class="form-group" style="align-items: center;">
+                            <label>Kavita Poll Mode</label>
+                            <select name="KAVITA_POLL_MODE" id="kavita_poll_mode"
+                                    onchange="togglePollSeconds('kavita_poll_seconds_row', this.value)">
+                                <option value="global" {% if get_val('KAVITA_POLL_MODE', 'global') == 'global' %}selected{% endif %}>Global</option>
+                                <option value="custom" {% if get_val('KAVITA_POLL_MODE') == 'custom' %}selected{% endif %}>Custom</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="kavita_poll_seconds_row"
+                             {% if get_val('KAVITA_POLL_MODE') != 'custom' %}style="opacity: 0.45; pointer-events: none;"{% endif %}>
+                            <label>Kavita Poll Interval (seconds)</label>
+                            <input type="number" name="KAVITA_POLL_SECONDS" min="10"
+                                   value="{{ get_val('KAVITA_POLL_SECONDS', '300') }}">
+                            <div class="help-text">Recommended: 300s for Kavita.</div>
+                        </div>
+                        {% endif %}
+
                         {% if get_bool('BOOKFUSION_ENABLED') %}
                         <div class="form-group" style="align-items: center;">
                             <label>BookFusion Poll Mode</label>
@@ -2717,6 +2810,7 @@
             storyteller: ['STORYTELLER_ENABLED', 'STORYTELLER_API_URL', 'STORYTELLER_USER', 'STORYTELLER_PASSWORD'],
             booklore: ['BOOKLORE_ENABLED', 'BOOKLORE_SERVER', 'BOOKLORE_USER', 'BOOKLORE_PASSWORD'],
             bookorbit: ['BOOKORBIT_ENABLED', 'BOOKORBIT_SERVER', 'BOOKORBIT_USER', 'BOOKORBIT_PASSWORD'],
+            kavita: ['KAVITA_ENABLED', 'KAVITA_SERVER', 'KAVITA_API_KEY'],
             bookfusion: ['BOOKFUSION_ENABLED', 'BOOKFUSION_API_URL', 'BOOKFUSION_ACCESS_TOKEN'],
             cwa: ['CWA_ENABLED', 'CWA_SERVER', 'CWA_USERNAME', 'CWA_PASSWORD', 'CWA_SYNC_TOKEN'],
             hardcover: ['HARDCOVER_ENABLED', 'HARDCOVER_TOKEN'],

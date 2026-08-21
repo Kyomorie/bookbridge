@@ -30,6 +30,7 @@ _SOURCE_LABELS = {
     "bookloreaudio": "Grimmory Audio",
     "bookorbit": "BookOrbit",
     "bookorbitaudio": "BookOrbit Audio",
+    "kavita": "Kavita",
     "bookfusion": "BookFusion",
     "cwa": "CWA",
     "readest": "Readest",

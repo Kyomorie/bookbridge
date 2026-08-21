@@ -45,11 +45,12 @@ HARDLINK_STAGE_MODE = "hardlink"
 VALID_STAGE_MODES = {DEFAULT_STAGE_MODE, HARDLINK_STAGE_MODE}
 
 class ForgeService:
-    def __init__(self, database_service, abs_client, booklore_client, storyteller_client, library_service, ebook_parser, transcriber, alignment_service, bookorbit_client=None, sync_clients=None):
+    def __init__(self, database_service, abs_client, booklore_client, storyteller_client, library_service, ebook_parser, transcriber, alignment_service, bookorbit_client=None, kavita_client=None, sync_clients=None):
         self.database_service = database_service
         self.abs_client = abs_client
         self.booklore_client = booklore_client
         self.bookorbit_client = bookorbit_client
+        self.kavita_client = kavita_client
         self.sync_clients = sync_clients
         self.storyteller_client = storyteller_client
         self.library_service = library_service
@@ -109,6 +110,7 @@ class ForgeService:
             "grimmory": "Booklore",
             "booklore": "Booklore",
             "bookorbit": "BookOrbit",
+            "kavita": "Kavita",
             "abs": "ABS",
             "cwa": "CWA",
             "local file": "Local File",
@@ -136,6 +138,7 @@ class ForgeService:
             transcriber=self.transcriber,
             alignment_service=self.alignment_service,
             bookorbit_client=getattr(client_bundle, "bookorbit_client", self.bookorbit_client),
+            kavita_client=getattr(client_bundle, "kavita_client", self.kavita_client),
             sync_clients=getattr(client_bundle, "sync_clients", self.sync_clients),
         )
         worker.active_tasks = self.active_tasks
@@ -161,6 +164,18 @@ class ForgeService:
                 if added is False:
                     logger.warning(
                         "Auto-Forge: failed to add '%s' to the BookOrbit shelf",
+                        shelf_filename,
+                    )
+        elif ebook_source == 'kavita':
+            if self.kavita_client and self.kavita_client.is_configured():
+                ebook_source_id = getattr(book, 'ebook_source_id', None)
+                if ebook_source_id:
+                    added = self.kavita_client.add_book_id_to_shelf(ebook_source_id)
+                else:
+                    added = self.kavita_client.add_to_shelf(shelf_filename)
+                if added is False:
+                    logger.warning(
+                        "Auto-Forge: failed to add '%s' to the Kavita collection",
                         shelf_filename,
                     )
         elif self.booklore_client and self.booklore_client.is_configured():
@@ -985,6 +1000,15 @@ class ForgeService:
                         logger.error(f"❌ Forge: BookOrbit download failed for '{bookorbit_id}'")
                 else:
                     logger.error(f"❌ Forge: BookOrbit client/id unavailable for '{bookorbit_id}'")
+            elif source == 'Kavita':
+                kavita_id = text_item.get('kavita_id') or text_item.get('source_id')
+                content = self.kavita_client.download_book(kavita_id) if self.kavita_client and kavita_id else None
+                if content:
+                    epub_path.write_bytes(content)
+                    text_success = True
+                    logger.info("Forge: Kavita epub downloaded")
+                else:
+                    logger.error("Forge: Kavita download failed for '%s'", kavita_id or 'unknown')
             elif source == 'ABS':
                 abs_item_id = text_item.get('abs_id')
                 if abs_item_id:
@@ -1217,6 +1241,13 @@ class ForgeService:
                     epub_path.write_bytes(content)
                 else:
                     logger.error(f"❌ Auto-Forge: BookOrbit download failed for '{bookorbit_id or 'unknown'}'")
+            elif source == 'Kavita':
+                kavita_id = text_item.get('kavita_id') or text_item.get('source_id')
+                content = self.kavita_client.download_book(kavita_id) if self.kavita_client and kavita_id else None
+                if content:
+                    epub_path.write_bytes(content)
+                else:
+                    logger.error("Auto-Forge: Kavita download failed for '%s'", kavita_id or 'unknown')
             elif source == 'ABS':
                 ebook_files = self.abs_client.get_ebook_files(text_item.get('abs_id'))
                 if ebook_files: self.abs_client.download_file(ebook_files[0]['stream_url'], epub_path)
@@ -1687,6 +1718,7 @@ class ForgeService:
                     text_source = self._normalize_text_source(text_item.get('source'))
                     source_id_key = {
                         'BookOrbit': 'bookorbit_id',
+                        'Kavita': 'kavita_id',
                         'Booklore': 'booklore_id',
                         'ABS': 'abs_id',
                         'CWA': 'cwa_id',
@@ -1745,6 +1777,7 @@ class ForgeService:
             'original_ebook_filename': original,
             'booklore_id': source_id,
             'bookorbit_id': source_id,
+            'kavita_id': source_id,
             'cwa_id': source_id,
             'abs_id': source_id,
             'source_id': source_id,

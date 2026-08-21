@@ -39,6 +39,8 @@ PER_USER_CREDENTIAL_KEYS = frozenset({
     "BOOKORBIT_SHELF_NAME",
     # BookOrbit KOReader-sync account (annotation hub spoke; kosync-style creds)
     "BOOKORBIT_KOSYNC_USER", "BOOKORBIT_KOSYNC_KEY", "BOOKORBIT_KOSYNC_OWNER",
+    # Kavita (auth key identifies the Kavita user; collection/library are user choices)
+    "KAVITA_ENABLED", "KAVITA_API_KEY", "KAVITA_LIBRARY_ID", "KAVITA_COLLECTION_NAME",
     # Grimmory / BookLore (account + the user's own shelf/library)
     "BOOKLORE_USER", "BOOKLORE_PASSWORD", "BOOKLORE_ENABLED",
     "BOOKLORE_SHELF_NAME", "BOOKLORE_LIBRARY_ID", "BOOKLORE_ANNOTATION_SYNC",
@@ -65,6 +67,7 @@ ENGINE_MIRROR_KEYS = (
     "ABS_KEY", "ABS_LIBRARY_ID",
     "BOOKLORE_USER", "BOOKLORE_PASSWORD", "BOOKLORE_SHELF_NAME", "BOOKLORE_LIBRARY_ID",
     "BOOKORBIT_USER", "BOOKORBIT_PASSWORD", "BOOKORBIT_SHELF_NAME",
+    "KAVITA_API_KEY", "KAVITA_LIBRARY_ID", "KAVITA_COLLECTION_NAME",
     "CWA_USERNAME", "CWA_PASSWORD", "CWA_SYNC_TOKEN",
 )
 
@@ -133,6 +136,12 @@ PER_USER_FIELD_GROUPS = [
         ("BOOKORBIT_KOSYNC_USER", "KOReader sync username (highlight sync)", "text"),
         ("BOOKORBIT_KOSYNC_KEY", "KOReader sync password (highlight sync)", "secret"),
         ("BOOKORBIT_KOSYNC_OWNER", "KOReader sync owner (must match BookOrbit username)", "text"),
+    ]),
+    ("Kavita", [
+        ("KAVITA_ENABLED", "Enabled", "bool"),
+        ("KAVITA_API_KEY", "Authentication key", "secret"),
+        ("KAVITA_LIBRARY_ID", "Library ID (optional; blank uses all libraries)", "text"),
+        ("KAVITA_COLLECTION_NAME", "Collection name (synced books moved here)", "text"),
     ]),
     ("Readest", [
         ("READEST_ANNOTATION_SYNC", "Highlight sync", "bool"),
