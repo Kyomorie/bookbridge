@@ -329,6 +329,54 @@ class TestSharedCatalogDatabaseHelpers(unittest.TestCase):
         self.assertTrue(self.db.is_user_linked(self.bob.id, "ab-2"))
         self.assertEqual(self.db.backfill_user_books_for_user(self.bob.id), 0)
 
+    def test_share_all_books_with_active_users_skips_inactive(self):
+        """Share all books with active users; inactive carol should not get links."""
+        result = self.db.share_all_books_with_active_users()
+
+        self.assertEqual(result, {"users": 2, "links": 4})
+        self.assertTrue(self.db.is_user_linked(self.alice.id, "ab-1"))
+        self.assertTrue(self.db.is_user_linked(self.alice.id, "ab-2"))
+        self.assertTrue(self.db.is_user_linked(self.bob.id, "ab-1"))
+        self.assertTrue(self.db.is_user_linked(self.bob.id, "ab-2"))
+        self.assertFalse(self.db.is_user_linked(self.carol.id, "ab-1"))
+        self.assertFalse(self.db.is_user_linked(self.carol.id, "ab-2"))
+
+    def test_share_all_books_with_active_users_is_idempotent(self):
+        """Second call should return links == 0 while users remains 2."""
+        self.db.share_all_books_with_active_users()
+        result = self.db.share_all_books_with_active_users()
+
+        self.assertEqual(result["links"], 0)
+        self.assertEqual(result["users"], 2)
+
+    def test_share_all_books_with_active_users_counts_only_missing_links(self):
+        """Pre-link bob to ab-1; only 3 new links should be created."""
+        self.db.link_user_book(self.bob.id, "ab-1")
+
+        result = self.db.share_all_books_with_active_users()
+
+        self.assertEqual(result["links"], 3)
+        self.assertEqual(result["users"], 2)
+        self.assertTrue(self.db.is_user_linked(self.bob.id, "ab-1"))
+        self.assertTrue(self.db.is_user_linked(self.bob.id, "ab-2"))
+        self.assertTrue(self.db.is_user_linked(self.alice.id, "ab-1"))
+        self.assertTrue(self.db.is_user_linked(self.alice.id, "ab-2"))
+
+    def test_share_all_books_with_active_users_with_no_active_users(self):
+        """Disable alice and bob; result should be 0 users, 0 links."""
+        self.db.set_user_active(self.alice.id, False)
+        self.db.set_user_active(self.bob.id, False)
+
+        result = self.db.share_all_books_with_active_users()
+
+        self.assertEqual(result, {"users": 0, "links": 0})
+        self.assertFalse(self.db.is_user_linked(self.alice.id, "ab-1"))
+        self.assertFalse(self.db.is_user_linked(self.alice.id, "ab-2"))
+        self.assertFalse(self.db.is_user_linked(self.bob.id, "ab-1"))
+        self.assertFalse(self.db.is_user_linked(self.bob.id, "ab-2"))
+        self.assertFalse(self.db.is_user_linked(self.carol.id, "ab-1"))
+        self.assertFalse(self.db.is_user_linked(self.carol.id, "ab-2"))
+
 
 class TestPublicLinkBase(unittest.TestCase):
     """PR #366 added *_WEB_URL, but only some rendered links honoured it.

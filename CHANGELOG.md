@@ -4,6 +4,122 @@
 
 All notable changes to BookBridge will be documented in this file.
 
+## [7.4.1] - 2026-08-21
+
+A maintenance release for 7.4.0: five opt-in additions, and fixes across Hardcover,
+KOReader position handling, CWA, Audiobookshelf and the BridgeSync plugin.
+
+### Added
+
+- **Share an existing library with the people who already have accounts.**
+  *Shared Library* only ever applied going forward. Settings → Users now has a
+  **Share library with all users** button that hands the whole catalog to every
+  active user in one go — visibility only; progress, KoSync documents and stats
+  stay per-user. (#384)
+
+- **You can now change an existing account between user and admin.** Settings →
+  Users gains a *Make admin* / *Make user* button per account, so widening or
+  restricting someone's access no longer means deleting and recreating them —
+  which threw away their reading progress and their saved service logins. A
+  promoted admin keeps using **their own** service accounts: admins no longer
+  inherit the global service credentials, which are the primary admin's own
+  logins mirrored outward. The primary admin cannot be demoted, and neither can
+  the last active admin. (#385)
+
+- **Finishing a book on one service can now mark it finished everywhere.** Raw
+  percentages never agree at the end of a book, so a title you finished in one app
+  could sit at 92–97% in another. Turn on *Propagate Completion* under
+  Settings → Sync. Off by default, threshold 99%. Contributed by
+  [@benjitobz](https://github.com/benjitobz) in #374.
+
+- **Suggestions can now link themselves when a match is certain.** Turn on
+  *Auto-match suggestions* under Settings → Suggestions and candidates at or above
+  the threshold are linked as a scan finds them. Off by default; loosely-matching
+  titles and same-folder candidates are never linked automatically. Contributed by
+  [@benjitobz](https://github.com/benjitobz) in #375.
+
+- **You can now choose what happens when an out-of-date reader reports going
+  backwards.** A second device sending a *lower* percentage has always been
+  ignored so a stale Kindle or Kobo cannot drag your progress back; that
+  protection is now a setting under Settings → KOSync, still on by default.
+  Contributed by [@Kyomorie](https://github.com/Kyomorie) in #391.
+
+- **Optionally compare text positions when percentages disagree.** Your reader and
+  BookBridge can measure the same EPUB on slightly different scales, letting a
+  stale spot win on the number alone. Turn on *Compare text positions when
+  percentages disagree* under Settings → KOSync to check where the positions
+  actually land in the text. **Off by default** — comparing means opening the book,
+  so expect a few extra seconds on the first sync after you move. Contributed by
+  [@Kyomorie](https://github.com/Kyomorie) in #380.
+
+### Fixed
+
+- **Saving settings no longer writes junk rows into your configuration.** The save
+  handler persisted every field the form posted, including ones that are not
+  settings at all — most notably the CSRF token every form carries, so each save
+  stored a fresh token as if it were config. Only registered settings are saved
+  now, and a field that looks like a setting but is registered nowhere is logged
+  by name instead of being silently stored. (`KOSYNC_PUT_DEBOUNCE_SECONDS` was
+  half-registered and is now properly declared.)
+
+- **Re-reading a book no longer overwrites the read you already finished**, and a
+  stale reader no longer invents one. A completed Hardcover read is never written
+  to again, and a re-read is recorded only once the position actually moves
+  forward — so a KOReader left closed at 4% cannot put a re-read on your profile.
+  Contributed by [@Kyomorie](https://github.com/Kyomorie) in #398 (#390).
+
+- **A broken Hardcover connection now says so once, clearly, with the next step**,
+  instead of repeating the same failure and Hardcover's entire HTML error page on
+  every attempt. Transient 5xx errors are retried, and recovery is announced.
+
+- **Startup no longer reports a connection failure for a credential you cannot
+  change.** The upgrade to multi-user left copies of your service logins in the
+  global settings, where nothing can edit them; startup now checks the admin's own
+  account credentials — the ones syncing actually uses.
+
+- **Positions reported at the very start of a chapter no longer drift forward.**
+  KOReader reports a position on an empty structural element as a boundary with no
+  text attached; those fell back to raw percentage, which in one reported case
+  landed roughly 7,900 characters further into the book. Contributed by
+  [@Kyomorie](https://github.com/Kyomorie) in #382 (#276).
+
+- **CWA progress updates no longer snap back when a stock Kobo opens the book.**
+  Calibre-Web Automated treats a `null` Kobo location as "keep the old location",
+  so a new percentage could be paired with an older page. A percentage-only write
+  now clears the stale locator. (#364)
+
+- **Audiobookshelf item lookups now ask for the expanded record**, so audio files
+  and chapters are present rather than missing; lookup failures are logged instead
+  of swallowed, and background work on a shared book falls through to a user who
+  is actually configured. Contributed by
+  [@TheSingularis](https://github.com/TheSingularis) in #371.
+
+- **Mark Complete now works on books whose title contains an apostrophe.**
+  Clicking ✅ on the dashboard did nothing at all for titles like *Returner's
+  Defiance* — no confirmation, no error.
+
+- **You can tell candidate books apart again when the title is long.** A title
+  long enough to fill the card pushed the source badge out of sight on the Add
+  Book page. (#381)
+
+- **StoryGraph and Hardcover cooldowns now fire when their timer expires**,
+  instead of waiting for the next global sync cycle.
+
+- **BridgeSync 0.6.4: the KOReader plugin no longer fails to start on a fresh
+  install.** 0.6.3, shipped in 7.4.0, crashed at startup on any device without an
+  existing BridgeSync log file, so the plugin appeared in the list but never ran.
+  Download the plugin again from *Settings → KOSync* — the broken version cannot
+  update itself. Managed-folder detection and error reporting are improved in the
+  same version. Reported in #370; fixed by
+  [@theryanmc](https://github.com/theryanmc) in #373 and #377.
+
+### Changed
+
+- **KOReader XPath ordering is now persisted and prewarmed**, so position
+  comparisons survive a restart instead of being rebuilt book by book. Adds one
+  database migration, applied automatically on start. Contributed by
+  [@Kyomorie](https://github.com/Kyomorie) in #389.
+
 ## [7.4.0] - 2026-08-17
 
 ### Added

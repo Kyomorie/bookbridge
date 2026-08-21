@@ -40,6 +40,7 @@ from src.utils.user_context import (
     set_current_user_id, reset_current_user_id,
     set_current_user_credentials, reset_current_user_credentials,
 )
+from src.utils.config_loader import env_truthy
 from src.utils.storyteller_transcript import StorytellerTranscript
 # Logging utilities (placed at top to ensure availability during sync)
 from src.utils.cache_paths import safe_cache_path
@@ -75,6 +76,21 @@ logger = logging.getLogger(__name__)
 
 _STATE_FETCH_SLOW_SECONDS = 15.0
 
+# Clients that must not receive completion propagation writes.
+# StoryGraph and Hardcover are write-only trackers driven exclusively by the
+# trailing-edge idle-cooldown handlers (_handle_tracker_cooldown), which bypass
+# their cooldown and post immediately at completion. Writing to them here would
+# be a layering violation and redundant.
+# ABSEbook must also be skipped: its update_progress rejects a locator whose
+# cfi is None (which a percentage-only LocatorResult produces), so it can only
+# ever log a warning and fail — and the ABS branch's mark_finished already
+# marks the whole ABS library item finished, which covers the ebook side.
+_COMPLETION_PROPAGATION_EXCLUDED_CLIENTS: frozenset[str] = frozenset({
+    "StoryGraph",
+    "Hardcover",
+    "ABSEbook",
+})
+
 # Multi-user: per-cycle override of the active sync-client bundle. Set by
 # sync_cycle when running for a specific user; None => use the global clients.
 import contextvars as _contextvars
@@ -87,6 +103,15 @@ _client_bundle_override: "_contextvars.ContextVar" = _contextvars.ContextVar(
 _library_service_override: "_contextvars.ContextVar" = _contextvars.ContextVar(
     "library_service_override", default=None
 )
+
+# Maps an audio_source name (see _get_audio_source_name) to the UserClients
+# bundle attribute holding the client responsible for that source's audio.
+_AUDIO_SOURCE_CLIENT_ATTR = {
+    "ABS": "abs_client",
+    "BookOrbit": "bookorbit_client",
+    "Storyteller": "storyteller_client",
+    "BookLore": "booklore_client",
+}
 
 
 class SyncManager:
@@ -167,14 +192,17 @@ class SyncManager:
         # attempted this cycle (avoids re-downloading on every resolver call).
         self._storyteller_epub_ensure_attempted: set[str] = set()
         self._post_cycle_callbacks: list = []
-        # StoryGraph idle-cooldown tracker: {abs_id: {'pct': float, 'changed_at': float}}.
-        # In-memory only; on restart the first observation reseeds 'changed_at', so a post
-        # is deferred at most one cooldown window (completion still bypasses).
-        self._storygraph_cooldown: dict[str, dict] = {}
+        # StoryGraph idle-cooldown tracker: {(user_id, abs_id): progress record}.
+        # In-memory only; a restart reseeds it on the next observed movement.
+        self._storygraph_cooldown: dict[tuple[int | None, str], dict] = {}
         self._storygraph_cooldown_lock = threading.Lock()
         # Hardcover idle-cooldown tracker (same trailing-edge scheme as StoryGraph).
-        self._hardcover_cooldown: dict[str, dict] = {}
+        self._hardcover_cooldown: dict[tuple[int | None, str], dict] = {}
         self._hardcover_cooldown_lock = threading.Lock()
+        # One follow-up timer per user/book; both trackers are evaluated by the
+        # targeted cycle, so matching deadlines must not launch duplicate cycles.
+        self._tracker_cooldown_timers: dict[tuple[int | None, str], dict] = {}
+        self._tracker_cooldown_timers_lock = threading.Lock()
 
         self._setup_sync_clients(sync_clients)
         self.startup_checks()
@@ -244,6 +272,59 @@ class SyncManager:
                         return candidate
 
         return current
+
+    def _completion_propagation_enabled(self) -> bool:
+        return env_truthy('SYNC_COMPLETION_PROPAGATION')
+
+    def _completion_threshold(self) -> float:
+        try:
+            value = float(os.environ.get('SYNC_COMPLETION_THRESHOLD', '99'))
+        except (TypeError, ValueError):
+            value = 99.0
+        return max(0.0, min(value, 100.0)) / 100.0
+
+    def _propagate_completion(
+        self,
+        book: Book | None,
+        active_clients: dict,
+        leader: str,
+        abs_id: str,
+        title_snip: str,
+    ) -> None:
+        """Mark a book finished on non-leader clients once the leader crosses
+        the configured completion threshold.
+
+        Trackers (StoryGraph, Hardcover) and ABSEbook are excluded: trackers
+        are driven by trailing-edge idle-cooldown handlers, and ABSEbook rejects
+        a percentage-only locator. ABS uses mark_finished instead of
+        update_progress.
+        """
+        current_time = time.time()
+        request = UpdateProgressRequest(LocatorResult(percentage=1.0), "Book finished", previous_location=None)
+        for client_name, client in self._iter_update_targets(active_clients, leader):
+            if client_name in _COMPLETION_PROPAGATION_EXCLUDED_CLIENTS:
+                continue
+            try:
+                if client_name.lower() == 'abs':
+                    success = client.abs_client.mark_finished(abs_id)
+                    if success:
+                        try:
+                            from src.services.write_tracker import record_write
+                            record_write('ABS', abs_id)
+                        except ImportError:
+                            pass
+                        logger.info(f"🏁 '{abs_id}' '{title_snip}' completion propagated to '{client_name}'")
+                    else:
+                        logger.warning(f"⚠️ Completion propagation failed for '{client_name}': mark_finished returned False")
+                else:
+                    result = client.update_progress(book, request)
+                    if getattr(result, 'success', False):
+                        self._persist_state_snapshot(book, client_name, {'pct': 1.0}, current_time)
+                        logger.info(f"🏁 '{abs_id}' '{title_snip}' completion propagated to '{client_name}'")
+                    else:
+                        logger.warning(f"⚠️ Completion propagation failed for '{client_name}': client reported unsuccessful write")
+            except Exception as e:
+                logger.warning(f"⚠️ Completion propagation failed for '{client_name}': {e}", exc_info=True)
 
     def _iter_update_targets(self, active_clients: dict, leader_name: str | None):
         """Yield non-leader clients with KoSync updated last."""
@@ -500,15 +581,20 @@ class SyncManager:
         if owner_id is not None and owner_id in ordered_ids:
             ordered_ids = [owner_id] + [u for u in ordered_ids if u != owner_id]
 
+        # For a shared/multi-claimant book, the preferred (e.g. owner) claimant
+        # may simply not have a personal credential configured for this book's
+        # audio source (per-user keys like ABS_KEY don't fall back to the global
+        # admin key). Skip to the next claimant in that case rather than handing
+        # back a bundle that will silently fail every ABS call; only fall back to
+        # an unconfigured bundle when no claimant is configured at all, which
+        # keeps single-claimant behavior identical to before.
+        audio_source = self._get_audio_source_name(book)
+        client_attr = _AUDIO_SOURCE_CLIENT_ATTR.get(audio_source)
+
+        fallback_bundle = None
         for user_id in ordered_ids:
             try:
                 bundle = registry.get_clients(user_id)
-                logger.debug(
-                    "Claimant bundle for '%s': user_id=%s (source: %s)",
-                    abs_id, user_id,
-                    "owner" if user_id == owner_id else "claimant",
-                )
-                return bundle
             except Exception as exc:
                 logger.warning(
                     "Could not build claimant client bundle for pending job '%s' user_id=%s: %s",
@@ -517,7 +603,28 @@ class SyncManager:
                     exc,
                     exc_info=True,
                 )
-        return None
+                continue
+
+            logger.debug(
+                "Claimant bundle for '%s': user_id=%s (source: %s)",
+                abs_id, user_id,
+                "owner" if user_id == owner_id else "claimant",
+            )
+            if fallback_bundle is None:
+                fallback_bundle = bundle
+
+            client = getattr(bundle, client_attr, None) if client_attr else None
+            is_configured = getattr(client, "is_configured", None)
+            if client is None or is_configured is None or is_configured():
+                return bundle
+
+            if len(ordered_ids) > 1:
+                logger.info(
+                    "Claimant user_id=%s for '%s' has an unconfigured %s client; trying next claimant",
+                    user_id, abs_id, audio_source,
+                )
+
+        return fallback_bundle
 
     @property
     def active_abs_client(self):
@@ -581,10 +688,63 @@ class SyncManager:
             else:
                 logger.debug(f"Sync client disabled/unconfigured: '{name}'")
 
+    def _primary_admin(self):
+        """The first active admin, or None. Used only to pick whose clients to check."""
+        if self.database_service is None:
+            return None
+        try:
+            return next(
+                (
+                    user for user in self.database_service.list_users()
+                    if getattr(user, "role", "") == "admin" and getattr(user, "active", 0)
+                ),
+                None,
+            )
+        except Exception as exc:
+            logger.debug("Could not resolve a primary admin for startup checks: %s", exc)
+            return None
+
+    def _startup_check_targets(self):
+        """Return the (name, client) pairs whose connections to verify at startup.
+
+        The global clients are built from ``os.environ``, which on a multi-user
+        install still holds the pre-migration copy of every per-user credential.
+        Those copies have no Settings UI, so they cannot be corrected and are free
+        to drift the moment a user rotates a token — at which point the global
+        client reports a connection failure for a credential nothing actually syncs
+        with. Prefer the primary admin's own clients, which are what their syncs
+        really use; fall back to the global ones when there is no admin or no
+        registry (single-user, or a test harness).
+        """
+        global_clients = dict(self.sync_clients or {})
+        if self.user_client_registry is None:
+            return list(global_clients.items())
+
+        admin = self._primary_admin()
+        if admin is None:
+            return list(global_clients.items())
+
+        try:
+            bundle = self.user_client_registry.get_clients(admin.id)
+            per_user = dict(getattr(bundle, "sync_clients", None) or {})
+        except Exception as exc:
+            logger.debug(
+                "Falling back to global clients for startup checks: %s", exc, exc_info=True
+            )
+            return list(global_clients.items())
+
+        return [(name, per_user.get(name, client)) for name, client in global_clients.items()]
+
     def startup_checks(self):
         # Check configured sync clients
-        for client_name, client in (self.sync_clients or {}).items():
+        for client_name, client in self._startup_check_targets():
             try:
+                # An unconfigured client has nothing to verify. Reporting it as a
+                # connection *failure* is misleading — it is how a service the
+                # operator does not use looks.
+                if not client.is_configured():
+                    logger.debug("Startup check skipped: '%s' is not configured", client_name)
+                    continue
                 client.check_connection()
                 logger.info(f"✅ '{client_name}' connection verified")
             except Exception as e:
@@ -2370,7 +2530,9 @@ class SyncManager:
 
         return False
 
-    def _handle_storygraph_cooldown(self, book, config, now: float) -> None:
+    def _handle_storygraph_cooldown(
+        self, book, config, now: float, schedule_followup: bool = True
+    ) -> None:
         """Post StoryGraph progress on a trailing-edge idle cooldown."""
         self._handle_tracker_cooldown(
             book, config, now,
@@ -2379,9 +2541,12 @@ class SyncManager:
             cooldown_env='STORYGRAPH_UPDATE_COOLDOWN_MINS',
             cooldown_store_attr='_storygraph_cooldown',
             cooldown_lock_attr='_storygraph_cooldown_lock',
+            schedule_followup=schedule_followup,
         )
 
-    def _handle_hardcover_cooldown(self, book, config, now: float) -> None:
+    def _handle_hardcover_cooldown(
+        self, book, config, now: float, schedule_followup: bool = True
+    ) -> None:
         """Post Hardcover progress on the same trailing-edge idle cooldown as StoryGraph."""
         self._handle_tracker_cooldown(
             book, config, now,
@@ -2390,11 +2555,55 @@ class SyncManager:
             cooldown_env='HARDCOVER_UPDATE_COOLDOWN_MINS',
             cooldown_store_attr='_hardcover_cooldown',
             cooldown_lock_attr='_hardcover_cooldown_lock',
+            schedule_followup=schedule_followup,
         )
+
+    def _schedule_tracker_cooldown_check(
+        self, abs_id: str, user_id: int | None, current_pct: float, delay: float
+    ) -> bool:
+        """Schedule the earliest pending tracker check for one user's book."""
+        key = (user_id, abs_id)
+        deadline = time.monotonic() + delay
+        token = object()
+        with self._tracker_cooldown_timers_lock:
+            existing = self._tracker_cooldown_timers.get(key)
+            if (existing
+                    and abs(existing['pct'] - current_pct) <= 1e-4
+                    and existing['deadline'] <= deadline + 0.1):
+                return False
+            if existing:
+                existing['timer'].cancel()
+            timer = threading.Timer(
+                delay,
+                self._run_tracker_cooldown_check,
+                args=(key, token, abs_id, user_id),
+            )
+            timer.daemon = True
+            self._tracker_cooldown_timers[key] = {
+                'pct': current_pct,
+                'deadline': deadline,
+                'timer': timer,
+                'token': token,
+            }
+            timer.start()
+        return True
+
+    def _run_tracker_cooldown_check(
+        self, key: tuple[int | None, str], token: object,
+        abs_id: str, user_id: int | None,
+    ) -> None:
+        """Run a scheduled check unless newer progress replaced its timer."""
+        with self._tracker_cooldown_timers_lock:
+            current = self._tracker_cooldown_timers.get(key)
+            if not current or current['token'] is not token:
+                return
+            del self._tracker_cooldown_timers[key]
+        self.sync_cycle(target_abs_id=abs_id, user_id=user_id)
 
     def _handle_tracker_cooldown(self, book, config, now: float, *, client_key: str,
                                  state_name: str, cooldown_env: str,
-                                 cooldown_store_attr: str, cooldown_lock_attr: str) -> None:
+                                 cooldown_store_attr: str, cooldown_lock_attr: str,
+                                 schedule_followup: bool) -> None:
         """Post a write-only tracker's progress on a trailing-edge idle cooldown.
 
         The tracker (StoryGraph/Hardcover) is intentionally excluded from the normal
@@ -2431,16 +2640,18 @@ class SyncManager:
                 return
 
             abs_id = book.abs_id
+            user_id = get_current_user_id()
+            cooldown_key = (user_id, abs_id)
             # Resolved lazily (only once the tracker is configured and progress is real)
             # so callers without cooldown state still no-op cleanly.
             cooldown_store = getattr(self, cooldown_store_attr)
             cooldown_lock = getattr(self, cooldown_lock_attr)
             with cooldown_lock:
-                rec = cooldown_store.get(abs_id)
+                rec = cooldown_store.get(cooldown_key)
                 if rec is None or abs(current_pct - rec['pct']) > EPS:
                     # Progress moved (or first observation) → (re)start the cooldown.
                     rec = {'pct': current_pct, 'changed_at': now}
-                    cooldown_store[abs_id] = rec
+                    cooldown_store[cooldown_key] = rec
                 changed_at = rec['changed_at']
 
             posted = self.database_service.get_state(abs_id, state_name)
@@ -2450,6 +2661,15 @@ class SyncManager:
 
             settled = cooldown_mins <= 0 or (now - changed_at) >= cooldown_mins * 60
             if not (is_completion or settled):
+                if schedule_followup:
+                    delay = max(0, changed_at + cooldown_mins * 60 - now)
+                    if self._schedule_tracker_cooldown_check(
+                        abs_id, user_id, current_pct, delay
+                    ):
+                        logger.debug(
+                            f"⏱️ '{abs_id}' {client_key} cooldown check scheduled "
+                            f"in {delay:.0f}s"
+                        )
                 return
 
             request = UpdateProgressRequest(LocatorResult(percentage=current_pct))
@@ -3181,8 +3401,16 @@ class SyncManager:
                 # per-cycle dispatch. Evaluate them for every active book each cycle
                 # (including idle books that early-skip below) so the trailing-edge post
                 # can fire.
-                self._handle_storygraph_cooldown(book, config, time.time())
-                self._handle_hardcover_cooldown(book, config, time.time())
+                tracker_followup = bool(target_abs_id) or any(
+                    self._state_percentage_delta(state) > 0
+                    for state in config.values()
+                )
+                self._handle_storygraph_cooldown(
+                    book, config, time.time(), schedule_followup=tracker_followup
+                )
+                self._handle_hardcover_cooldown(
+                    book, config, time.time(), schedule_followup=tracker_followup
+                )
 
                 # Check for ABS offline condition (only for audiobook mode)
                 # Check for ABS offline condition (only for audiobook mode)
@@ -3605,6 +3833,16 @@ class SyncManager:
                         f"Re-match it in the dashboard to resume syncing"
                     )
                     continue
+
+                threshold = self._completion_threshold()
+                previous_leader_pct = getattr(leader_state, 'previous_pct', None)
+                if (
+                    self._completion_propagation_enabled()
+                    and leader_pct is not None
+                    and leader_pct >= threshold
+                    and (previous_leader_pct is None or previous_leader_pct < threshold)
+                ):
+                    self._propagate_completion(book, active_clients, leader, abs_id, title_snip)
 
                 # Save states directly to database service using State models
                 current_time = time.time()

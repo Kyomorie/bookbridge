@@ -5,6 +5,7 @@ from flask import Blueprint, flash, g, jsonify, redirect, request, url_for
 
 from src.db.models import StorygraphDetails
 from src.utils.ebook_utils import resolve_ebook_identifiers
+from src.utils.user_config import global_fallback_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +42,12 @@ def _active_user_clients(container):
     try:
         return container.user_client_registry().get_clients(user.id)
     except Exception as exc:
-        # A logged-in NON-admin whose per-user bundle can't be built must NOT
-        # silently fall through to the global (admin) client — that would land
-        # their StoryGraph write on the admin's account. Admins share the global
-        # config, so for them the fallback is safe.
-        if getattr(user, "is_admin", False):
-            logger.debug("Falling back to global StoryGraph route clients for admin: %s", exc)
+        # A user whose per-user bundle can't be built must NOT silently fall
+        # through to the global (admin) client — that would land their StoryGraph
+        # write on the primary admin's account. Only the primary admin shares
+        # the global config, so only for them is the fallback safe.
+        if global_fallback_allowed(_database_service, user):
+            logger.debug("Falling back to global StoryGraph route clients for the primary admin: %s", exc)
             return None
         logger.error(
             "Could not build per-user StoryGraph clients for user %s: %s",

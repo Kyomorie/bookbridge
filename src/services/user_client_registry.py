@@ -12,7 +12,11 @@ import logging
 import threading
 from dataclasses import dataclass, field
 
-from src.utils.user_config import PER_USER_CREDENTIAL_KEYS, _ALLOW_GLOBAL_FALLBACK_KEY
+from src.utils.user_config import (
+    PER_USER_CREDENTIAL_KEYS,
+    _ALLOW_GLOBAL_FALLBACK_KEY,
+    global_fallback_allowed,
+)
 
 from src.api.api_clients import ABSClient, KoSyncClient
 from src.api.storyteller_api import StorytellerAPIClient
@@ -83,7 +87,7 @@ class UserClientRegistry:
         stored = self.database_service.get_user_credentials(user_id) or {}
         creds = {k: v for k, v in stored.items() if k in PER_USER_CREDENTIAL_KEYS}
         user = self.database_service.get_user(user_id)
-        creds[_ALLOW_GLOBAL_FALLBACK_KEY] = bool(user and getattr(user, "is_admin", False))
+        creds[_ALLOW_GLOBAL_FALLBACK_KEY] = global_fallback_allowed(self.database_service, user)
         return creds
 
     def get_clients(self, user_id: int) -> UserClients:

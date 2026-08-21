@@ -34,8 +34,9 @@ from src.utils.user_context import (
     get_current_user_credentials, get_current_user_id,
 )
 from src.utils.user_config import user_setting
+from src.utils.user_config import global_fallback_allowed as _global_fallback_allowed
 
-from src.utils.config_loader import ConfigLoader, env_truthy
+from src.utils.config_loader import ConfigLoader, KNOWN_SETTING_KEYS, env_truthy
 from src.utils.cache_paths import safe_cache_path
 from src.utils.logging_utils import memory_log_handler, LOG_PATH
 from src.utils.logging_utils import sanitize_log_data
@@ -861,10 +862,12 @@ def _bind_request_user_context(user):
     # Mark whether global (admin) env fallback is permitted. Without this flag,
     # resolve_setting's `... is False` guard reads None on a non-admin's creds
     # and silently falls back to the admin's global values (per-user leak). Only
-    # admins inherit the global config; regular users are isolated. This ambient
-    # dict is also what _spawn_user_background copies onto worker threads.
+    # the primary admin inherits the global config — it is their own account
+    # mirrored outward — so every other user, second admins included, is
+    # isolated. This ambient dict is also what _spawn_user_background copies
+    # onto worker threads.
     creds = dict(creds)
-    creds[_ALLOW_GLOBAL_FALLBACK_KEY] = bool(getattr(user, "is_admin", False))
+    creds[_ALLOW_GLOBAL_FALLBACK_KEY] = _global_fallback_allowed(database_service, user)
     g._uctx_id_token = set_current_user_id(user.id)
     g._uctx_creds_token = set_current_user_credentials(creds)
 
@@ -1162,7 +1165,7 @@ def account_integrations():
         groups=PER_USER_FIELD_GROUPS,
         creds=creds,
         master=master,
-        allow_master_fallback=bool(getattr(user, "is_admin", False)),
+        allow_master_fallback=_global_fallback_allowed(database_service, user),
         message=message,
         account_user=user,
         user_test_services=_USER_TEST_SERVICES,
@@ -1256,7 +1259,7 @@ def admin_user_integrations(user_id):
         groups=PER_USER_FIELD_GROUPS,
         creds=creds,
         master=master,
-        allow_master_fallback=bool(getattr(target, "is_admin", False)),
+        allow_master_fallback=_global_fallback_allowed(database_service, target),
         message=message,
         target_user=target,
         user_test_services=_USER_TEST_SERVICES,
@@ -1309,7 +1312,7 @@ def _posted_user_test_credentials(target, submitted):
 
     stored = database_service.get_user_credentials(target.id) or {}
     creds = {k: v for k, v in stored.items() if k in PER_USER_CREDENTIAL_KEYS}
-    creds[_ALLOW_GLOBAL_FALLBACK_KEY] = bool(getattr(target, "is_admin", False))
+    creds[_ALLOW_GLOBAL_FALLBACK_KEY] = _global_fallback_allowed(database_service, target)
 
     field_types = {
         key: ftype
@@ -1424,7 +1427,10 @@ def account_booklore_libraries():
 
 # User-management actions accepted by both the legacy /admin/users page and the
 # Settings → Users tab (which posts to /settings).
-_USER_ADMIN_ACTIONS = {'create', 'reset_password', 'toggle_active', 'delete'}
+# Every action _apply_user_admin_action handles MUST be listed here: POST /settings
+# routes anything missing into the settings-save branch instead, which writes the
+# whole settings form and restarts.
+_USER_ADMIN_ACTIONS = {'create', 'reset_password', 'toggle_active', 'set_role', 'delete', 'share_library'}
 
 
 def _apply_user_admin_action(form):
@@ -1490,6 +1496,43 @@ def _apply_user_admin_action(form):
                     except Exception:
                         pass
                     message = f"{'Disabled' if disabling else 'Enabled'} '{target.username}'"
+        elif action == 'set_role':
+            uid = int(form.get('user_id'))
+            new_role = (form.get('role') or '').strip().lower()
+            target = database_service.get_user(uid)
+            demoting = new_role == 'user'
+            if not target:
+                error = "User not found"
+            elif new_role not in ('admin', 'user'):
+                error = "Invalid role"
+            elif target.role == new_role:
+                error = f"'{target.username}' is already {new_role}"
+            elif demoting and database_service.is_primary_admin(uid):
+                # The global service settings are this account mirrored outward
+                # (ENGINE_MIRROR_KEYS) and it owns un-scoped rows, so demoting it
+                # would leave the engine authenticating as a regular user.
+                error = "Can't demote the primary admin — the global service settings belong to that account"
+            elif demoting and _active_admin_count() <= 1:
+                error = "Can't demote the last active admin"
+            else:
+                database_service.set_user_role(uid, new_role)
+                # The cached client bundle carries the global-fallback flag, which
+                # this change flips.
+                try:
+                    container.user_client_registry().invalidate(uid)
+                except Exception:
+                    pass
+                logger.info(
+                    "👤 Role change: '%s' is now '%s'",
+                    sanitize_log_data(target.username), new_role,
+                )
+                if demoting:
+                    message = f"'{target.username}' is now a regular user"
+                else:
+                    message = (
+                        f"'{target.username}' is now an admin. They still use their own "
+                        f"service logins — set them under Integrations."
+                    )
         elif action == 'delete':
             uid = int(form.get('user_id'))
             target = database_service.get_user(uid)
@@ -1509,6 +1552,21 @@ def _apply_user_admin_action(form):
                     message = f"Deleted '{target.username}'"
                 else:
                     error = "User not found"
+        elif action == 'share_library':
+            if not env_truthy('SHARE_ALL_BOOKS_WITH_ALL_USERS'):
+                error = "Enable Features → Shared Library first, then share the existing catalog."
+            else:
+                result = database_service.share_all_books_with_active_users()
+                links = result.get('links', 0)
+                users = result.get('users', 0)
+                logger.info(
+                    "🔗 Shared %d existing book link(s) across %d active user(s) (share-all-books reconcile)",
+                    links, users,
+                )
+                if links:
+                    message = f"Shared {links} book link(s) across {users} user(s)"
+                else:
+                    message = f"All {users} user(s) already see the full library"
     except Exception as e:
         error = f"Action failed: {e}"
     return message, error
@@ -1526,12 +1584,17 @@ def admin_users():
         message, error = _apply_user_admin_action(request.form)
 
     users = database_service.list_users()
+    try:
+        primary_admin_id = database_service._default_user_id()
+    except Exception:
+        primary_admin_id = None
     return render_template(
         'admin_users.html',
         users=users,
         message=message,
         error=error,
         current_user_id=current_user().id,
+        primary_admin_id=primary_admin_id,
     )
 
 
@@ -3582,8 +3645,10 @@ def settings():
             'KOSYNC_USE_PERCENTAGE_FROM_SERVER',
             'KOSYNC_AUTO_MAP_ON_AGREEMENT',
             'KOSYNC_HASH_RECONCILE_ENABLED',
+            'KOSYNC_XPATH_ORDER_ENABLED',
             'KOREADER_ANNOTATION_SYNC',
             'SYNC_FRESHNESS_GUARDS',
+            'SYNC_COMPLETION_PROPAGATION',
             'SYNC_ABS_EBOOK',
             'XPATH_FALLBACK_TO_PREVIOUS_SEGMENT',
             'KOSYNC_ENABLED',
@@ -3598,6 +3663,7 @@ def settings():
             'STORYGRAPH_ENABLED',
             'TELEGRAM_ENABLED',
             'SUGGESTIONS_ENABLED',
+            'SUGGESTIONS_AUTO_MATCH_ENABLED',
             'ABS_ONLY_SEARCH_IN_ABS_LIBRARY_ID',
             'REPROCESS_ON_CLEAR_IF_NO_ALIGNMENT',
             'INSTANT_SYNC_ENABLED',
@@ -3673,6 +3739,23 @@ def settings():
         for key, value in request.form.items():
             if key in bool_keys: continue
 
+            # Only recognized settings are persisted. The posted form also carries
+            # control fields — csrf_token, injected into every form by the CSRF
+            # bootstrap script — and this loop used to write each of them to the
+            # settings table as if it were configuration.
+            if key not in KNOWN_SETTING_KEYS:
+                if key.isupper():
+                    # Looks like a setting but is registered nowhere: almost always
+                    # a new field added to the template without ALL_SETTINGS.
+                    logger.warning(
+                        "⚠️ Settings save: ignoring unregistered key '%s' — add it to "
+                        "ALL_SETTINGS/DEFAULT_CONFIG in config_loader.py to make it savable",
+                        sanitize_log_data(key),
+                    )
+                else:
+                    logger.debug("Settings save: ignoring non-setting form field '%s'", key)
+                continue
+
             clean_value = _normalize_abs_form_value(key, value)
 
             # Sanitize URLs
@@ -3724,12 +3807,17 @@ def settings():
     except Exception:
         users = []
     cu = current_user()
+    try:
+        primary_admin_id = database_service._default_user_id()
+    except Exception:
+        primary_admin_id = None
 
     response = make_response(render_template('settings.html',
                          message=message,
                          is_error=is_error,
                          users=users,
                          current_user_id=(cu.id if cu else None),
+                         primary_admin_id=primary_admin_id,
                          user_message=user_message,
                          user_error=user_error))
     response.headers['Cache-Control'] = 'no-store, max-age=0'
@@ -6878,6 +6966,117 @@ def _start_suggestions_scan_job(cached_suggestions_by_abs=None, cached_no_match_
     return job_id
 
 
+def _auto_match_threshold() -> float:
+    """Return the auto-match threshold as a float (0-100 scale).
+
+    Reads the SUGGESTIONS_AUTO_MATCH_THRESHOLD setting from the environment,
+    clamping to the valid range. Defaults to 100.0.
+    """
+    try:
+        value = float(os.environ.get('SUGGESTIONS_AUTO_MATCH_THRESHOLD', '100'))
+    except (TypeError, ValueError):
+        value = 100.0
+    return max(0.0, min(value, 100.0))
+
+
+def _is_same_folder_match(match: dict) -> bool:
+    """Return True if the match is a same-folder candidate and should be excluded from auto-matching.
+
+    Same-folder matches (match_reason starting with 'same_folder') receive a score of 100.0
+    or 94.0 merely because the audiobook and ebook share a folder with a loose title
+    agreement (fuzzy ratio >= 45). They are explicitly surfaced for human review with a
+    'Same folder?' badge and must not be auto-linked, as a wrong link would sync a
+    reader's position into the wrong book.
+    """
+    reason = match.get('match_reason') or ''
+    return reason.startswith('same_folder')
+
+
+def _auto_match_suggestions(results: object, user_id: int | None) -> object:
+    """Auto-link suggestions whose best eligible candidate meets the threshold.
+
+    Walks the suggestions produced by a library scan, selects the highest-scoring
+    *eligible* candidate from each suggestion's matches list (excluding same-folder
+    matches), and if that candidate's score is at or above the configurable threshold,
+    links the book automatically via book_mapping_service.create_audio_mapping_from_match.
+    Suggestions that are not auto-matched remain in the list for human review.
+
+    Args:
+        results: The scan results object (expected to be a dict with 'suggestions' key).
+        user_id: Ambient user id to own the created mappings, or None.
+
+    Returns:
+        The (potentially modified) results object.
+    """
+    if not env_truthy('SUGGESTIONS_AUTO_MATCH_ENABLED'):
+        return results
+    if not isinstance(results, dict):
+        return results
+    suggestions = results.get('suggestions') or []
+    if not suggestions:
+        return results
+
+    threshold = _auto_match_threshold()
+    mapping_service = container.book_mapping_service()
+    cache_by_abs = results.get('cache_by_abs') or {}
+    remaining = []
+    matched = 0
+
+    for suggestion in suggestions:
+        matches = suggestion.get('matches') or []
+        eligible_matches = [m for m in matches if not _is_same_folder_match(m)]
+        best_overall = max(matches, key=lambda m: m.get('score') or 0.0) if matches else None
+        top = max(eligible_matches, key=lambda m: m.get('score') or 0.0) if eligible_matches else None
+        if best_overall is not None and _is_same_folder_match(best_overall):
+            # The highest-scoring candidate was suppressed. Log the decision and its
+            # reason so an operator can see why a 100-scoring match was not linked.
+            logger.debug(
+                f"Auto-match excluded the top same-folder candidate for "
+                f"'{suggestion.get('abs_title')}' "
+                f"(score={best_overall.get('score') or 0.0:.1f}) — left for review"
+            )
+        score = float(top.get('score') or 0.0) if top else 0.0
+        if not top or score < threshold:
+            remaining.append(suggestion)
+            continue
+        try:
+            saved = mapping_service.create_audio_mapping_from_match(
+                audio_source=suggestion.get('audio_source') or 'ABS',
+                audio_source_id=suggestion.get('audio_source_id') or suggestion.get('abs_id') or '',
+                audio_title=suggestion.get('audio_title') or suggestion.get('abs_title') or '',
+                ebook_filename=top.get('ebook_filename') or '',
+                audio_cover_url=suggestion.get('audio_cover_url'),
+                audio_duration=suggestion.get('audio_duration') or suggestion.get('duration'),
+                audio_provider_book_id=suggestion.get('audio_provider_book_id'),
+                audio_provider_file_id=suggestion.get('audio_provider_file_id'),
+                ebook_source=top.get('source'),
+                ebook_source_id=str(top.get('source_id')) if top.get('source_id') is not None else None,
+                user_id=user_id,
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ Auto-match failed for '{suggestion.get('abs_title')}': {e}", exc_info=True)
+            remaining.append(suggestion)
+            continue
+        if not saved:
+            remaining.append(suggestion)
+            continue
+        matched += 1
+        cache_by_abs.pop(suggestion.get('abs_id'), None)
+        logger.info(
+            f"🔗 Auto-matched '{suggestion.get('abs_title')}' to "
+            f"'{top.get('display_name') or top.get('ebook_filename')}' at {score:.1f}%"
+        )
+
+    if matched:
+        results['suggestions'] = remaining
+        results['cache_by_abs'] = cache_by_abs
+        stats = results.get('stats') or {}
+        stats['auto_matched'] = matched
+        results['stats'] = stats
+        logger.info(f"🔗 Auto-match created {matched} mapping(s) at or above {threshold:.1f}%")
+    return results
+
+
 def _run_suggestions_scan_job(job_id, cached_suggestions_by_abs=None, cached_no_match_abs_ids=None):
     def update_progress(progress_payload):
         with SUGGESTIONS_SCAN_JOBS_LOCK:
@@ -6891,6 +7090,7 @@ def _run_suggestions_scan_job(job_id, cached_suggestions_by_abs=None, cached_no_
             cached_no_match_abs_ids=cached_no_match_abs_ids,
             progress_callback=update_progress,
         )
+        results = _auto_match_suggestions(results, get_current_user_id())
         _save_persisted_suggestions_cache({
             "scan_cache_by_abs": results.get('cache_by_abs', {}) if isinstance(results, dict) else {},
             "scan_cache_no_match_abs_ids": results.get('no_match_abs_ids', []) if isinstance(results, dict) else [],

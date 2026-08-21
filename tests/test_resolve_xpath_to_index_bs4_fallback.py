@@ -208,3 +208,73 @@ def test_resolve_xpath_to_index_falls_back_to_nearby_spine_when_docfragment_drif
         "mapped reported DocFragment[13] to spine 12" in record.message
         for record in caplog.records
     )
+
+
+def test_resolve_xpath_to_index_empty_element_boundary_uses_lxml_position(caplog):
+    # Observed KOReader form: a chapter-opening empty <p> inside a structural
+    # <div> is reported as an element boundary (``p[1].0``), not a text node.
+    caplog.set_level(logging.DEBUG)
+    html_content = (
+        "<html><body><div>"
+        "<p></p>"
+        "<p>3.4</p>"
+        "<p>Readable text starts here.</p>"
+        "</div></body></html>"
+    )
+    parser = _parser_for_single_spine(html_content, start=50)
+
+    index = parser.resolve_xpath_to_index(
+        "book.epub", "/body/DocFragment[1]/body/div/p[1].0"
+    )
+
+    assert index == 50
+    assert any("lxml_position_fallback" in record.message for record in caplog.records)
+
+
+def test_resolve_xpath_to_index_drifted_textless_anchor_returns_none(caplog):
+    """
+    Guard against a drifted textless match resolving to a confident wrong-chapter offset.
+
+    With a 5-spine book where only spine 1 contains a <div><p></p>... structure,
+    resolving /body/DocFragment[5]/body/div/p[1].0 must NOT drift to spine 1
+    and return global offset 0 (which sync_manager treats as high-confidence xpath
+    source). Before the fix this returned 0; now it must return None so the
+    caller falls back to percentage.
+    """
+    caplog.set_level(logging.DEBUG)
+    parser = _parser_for_spines([
+        (
+            1,
+            (
+                "<html><body><div>"
+                "<p></p>"
+                "<p>Text in spine 1 paragraph 2</p>"
+                "</div></body></html>"
+            ),
+        ),
+        (
+            2,
+            "<html><body><p>Spine 2 only paragraph.</p></body></html>",
+        ),
+        (
+            3,
+            "<html><body><p>Spine 3 only paragraph.</p></body></html>",
+        ),
+        (
+            4,
+            "<html><body><p>Spine 4 only paragraph.</p></body></html>",
+        ),
+        (
+            5,
+            "<html><body><p>Spine 5 only paragraph.</p></body></html>",
+        ),
+    ])
+
+    # Target DocFragment[5] (spine 5) with a path that only exists in spine 1
+    index = parser.resolve_xpath_to_index(
+        "book.epub", "/body/DocFragment[5]/body/div/p[1].0"
+    )
+
+    assert index is None
+    # Should not log lxml_position_fallback since we reject the drifted textless anchor
+    assert not any("lxml_position_fallback" in record.message for record in caplog.records)

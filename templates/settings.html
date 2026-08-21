@@ -852,6 +852,32 @@
                             </div>
                         </div>
                     </details>
+
+                    <details class="advanced-sub full-width">
+                        <summary>Advanced — cross-device progress</summary>
+                        <div class="section-body" style="padding: 12px 0 0;">
+                            <div class="form-group full-width">
+                                <label>Backward progress from another device</label>
+                                <select name="KOSYNC_FURTHEST_WINS">
+                                    <option value="true" {% if get_val('KOSYNC_FURTHEST_WINS', 'true')|lower == 'true' %}selected{% endif %}>
+                                        Protect current progress (recommended)
+                                    </option>
+                                    <option value="false" {% if get_val('KOSYNC_FURTHEST_WINS', 'true')|lower != 'true' %}selected{% endif %}>
+                                        Allow the backward move
+                                    </option>
+                                </select>
+                                <div class="help-text"
+                                    style="background:rgba(255,152,0,.10);border:1px solid rgba(255,152,0,.35);border-radius:8px;padding:10px 12px;margin-top:8px;">
+                                    A backward move from the same reader is accepted when KoSync can identify it by its device ID.
+                                    The recommended protection blocks a lower position arriving from a <strong>different</strong>
+                                    reader, so merely opening a stale Kindle/Kobo after listening cannot pull your progress
+                                    backwards. Choose <em>Allow the backward move</em> if you intentionally switch readers and need
+                                    that newer action to move everyone back — for example after a sleep timer. With that option,
+                                    simply opening an out-of-date second reader can also become the new position.
+                                </div>
+                            </div>
+                        </div>
+                    </details>
                 </div>
             </div>
 
@@ -1559,6 +1585,30 @@
                         </p>
                     </div>
                     <div class="checkbox-wrapper full-width">
+                        <input type="checkbox" id="suggestions_auto_match" name="SUGGESTIONS_AUTO_MATCH_ENABLED"
+                            onchange="updateAutoMatchFields()"
+                            {% if get_bool('SUGGESTIONS_AUTO_MATCH_ENABLED') %}checked{% endif %}>
+                        <label for="suggestions_auto_match">Auto-match suggestions at or above a score</label>
+                        <small>When a scan finds a candidate scoring at or above the threshold, link that book
+                            automatically. Suggestions scoring below the threshold are left on the Suggestions page
+                            for you to review.</small>
+                    </div>
+                    <div class="form-group{% if not get_bool('SUGGESTIONS_AUTO_MATCH_ENABLED') %} hidden{% endif %}"
+                        id="auto_match_threshold_group">
+                        <label>Auto-Match Threshold (%)</label>
+                        <input type="number" min="1" max="100" step="0.5" id="suggestions_auto_match_threshold"
+                            name="SUGGESTIONS_AUTO_MATCH_THRESHOLD"
+                            value="{{ get_val('SUGGESTIONS_AUTO_MATCH_THRESHOLD') or '100' }}"
+                            oninput="updateAutoMatchFields()">
+                        <small>100 links only exact matches — an identifier agreement or an identical title and
+                            author.</small>
+                        <div id="auto_match_warning" class="help-text"
+                            style="display:none;background:rgba(255,152,0,.10);border:1px solid rgba(255,152,0,.35);border-radius:8px;padding:10px 12px;margin-top:8px;">
+                            ⚠️ Below 95% the top candidate is often a different book — a sequel, another edition, or
+                            another title in the same series. A wrong link syncs your position into the wrong book.
+                        </div>
+                    </div>
+                    <div class="checkbox-wrapper full-width">
                         <input type="checkbox" id="kosync_auto_map" name="KOSYNC_AUTO_MAP_ON_AGREEMENT"
                             {% if get_bool('KOSYNC_AUTO_MAP_ON_AGREEMENT') %}checked{% endif %}>
                         <label for="kosync_auto_map">Auto-map on exact agreement</label>
@@ -1566,6 +1616,18 @@
                             matching identifier (ISBN/ASIN) is found, or if the fuzzy matcher and Ollama both agree
                             on a single exact audiobook. Ambiguous matches still become suggestions. Requires Ollama
                             for the fuzzy-agreement path.</small>
+                    </div>
+                    <div class="checkbox-wrapper full-width">
+                        <input type="checkbox" id="kosync_xpath_order" name="KOSYNC_XPATH_ORDER_ENABLED"
+                            {% if get_bool('KOSYNC_XPATH_ORDER_ENABLED') %}checked{% endif %}>
+                        <label for="kosync_xpath_order">Compare text positions when percentages disagree</label>
+                        <small>Your reader and BookBridge can measure the same EPUB on slightly different scales, so
+                            a stale spot on the reader can report a higher percentage than the position BookBridge
+                            already synced there and win on the number alone — pulling you backwards. When enabled,
+                            BookBridge compares where the two positions actually land in the text and lets that
+                            decide. Only applies when both refer to the exact same file and the two percentages are
+                            already close. Off by default: it has to open and read the book to compare, which can add
+                            a few seconds to the first sync after you move in a book.</small>
                     </div>
                     <div class="checkbox-wrapper full-width">
                         <input type="checkbox" id="kosync_hash_reconcile" name="KOSYNC_HASH_RECONCILE_ENABLED"
@@ -1814,6 +1876,21 @@
                         <input type="number" min="1" name="KOREADER_SESSION_GAP_MINUTES"
                             value="{{ get_val('KOREADER_SESSION_GAP_MINUTES') or '30' }}">
                         <small>Idle gap that splits KOReader page events into separate reading sessions on the stats page.</small>
+                    </div>
+                    <div class="checkbox-wrapper full-width">
+                        <input type="checkbox" id="sync_completion_propagation" name="SYNC_COMPLETION_PROPAGATION" {% if
+                            get_bool('SYNC_COMPLETION_PROPAGATION') %}checked{% endif %}>
+                        <label for="sync_completion_propagation">Propagate Completion</label>
+                        <div class="help-text">When a book crosses the completion threshold on one service, mark it
+                            finished on the others instead of only pushing the position. Raw percentages cannot agree at
+                            the end of a book — an ebook's back matter is never narrated — so without this a title
+                            finished on one side can sit at 92-97% elsewhere and never register as read.</div>
+                    </div>
+                    <div class="form-group full-width">
+                        <label>Completion Threshold (%)</label>
+                        <input type="number" min="1" max="100" step="0.5" name="SYNC_COMPLETION_THRESHOLD"
+                            value="{{ get_val('SYNC_COMPLETION_THRESHOLD') or '99' }}">
+                        <small>Percentage at which a book counts as finished for propagation.</small>
                     </div>
                     <div class="checkbox-wrapper full-width">
                         <input type="checkbox" id="sync_freshness_guards" name="SYNC_FRESHNESS_GUARDS" {% if
@@ -2445,6 +2522,9 @@
                         Each user has their own progress and credentials but shares the book catalog.
                         To make every matched book visible to everyone automatically, enable
                         <a href="{{ url_for('settings') }}#features" style="color:#aab4f5;">Features → Shared Library</a>.
+                        Enabling that setting only affects books matched from then on; the button below shares the
+                        <strong>existing</strong> catalog with <strong>existing</strong> users. Sharing is <strong>one-way</strong> —
+                        it cannot be un-shared in bulk.
                     </div>
                     <table class="users-table full-width">
                         <tr>
@@ -2474,6 +2554,14 @@
                                         <input type="hidden" name="user_id" value="{{ u.id }}">
                                         <button type="submit" class="u-btn u-btn-sm">{{ 'Disable' if u.active else 'Enable' }}</button>
                                     </form>
+                                    {% if u.id != primary_admin_id %}
+                                    <form method="POST" action="/settings" onsubmit='return confirm({{ ('Make this account a regular user? They lose admin access to every book, user and setting.' if u.role == 'admin' else 'Make this account an administrator? Admins manage every book, user and setting. They keep using their own service logins — an admin does not inherit yours.') | tojson }});'>
+                                        <input type="hidden" name="action" value="set_role">
+                                        <input type="hidden" name="user_id" value="{{ u.id }}">
+                                        <input type="hidden" name="role" value="{{ 'user' if u.role == 'admin' else 'admin' }}">
+                                        <button type="submit" class="u-btn u-btn-sm">{{ 'Make user' if u.role == 'admin' else 'Make admin' }}</button>
+                                    </form>
+                                    {% endif %}
                                     {% if u.id != current_user_id %}
                                     <form method="POST" action="/settings" onsubmit="return confirm('Delete {{ u.username }}? Their progress/credentials are removed.');">
                                         <input type="hidden" name="action" value="delete">
@@ -2486,6 +2574,10 @@
                         </tr>
                         {% endfor %}
                     </table>
+                    <form method="POST" action="/settings" style="margin-top: 14px;" onsubmit="return confirm('This will give every active user visibility of every book in the catalog. This cannot be undone in bulk.');">
+                        <input type="hidden" name="action" value="share_library">
+                        <button type="submit" class="u-btn u-btn-primary">📚 Share library with all users</button>
+                    </form>
                 </div>
             </div>
 
@@ -3069,6 +3161,19 @@
         });
 
         function initDynamicForms() {
+            function updateAutoMatchFields() {
+                const toggle = document.getElementById('suggestions_auto_match');
+                const group = document.getElementById('auto_match_threshold_group');
+                const field = document.getElementById('suggestions_auto_match_threshold');
+                const warning = document.getElementById('auto_match_warning');
+                if (!toggle || !group || !field || !warning) return;
+                group.classList.toggle('hidden', !toggle.checked);
+                const value = parseFloat(field.value);
+                warning.style.display = (toggle.checked && !isNaN(value) && value < 95) ? 'block' : 'none';
+            }
+            window.updateAutoMatchFields = updateAutoMatchFields;
+            updateAutoMatchFields();
+
             // 1. ABS Library ID Toggle
             const absCheckbox = document.getElementById('abs_only_lib');
             const absServerInput = document.querySelector('input[name="ABS_SERVER"]');

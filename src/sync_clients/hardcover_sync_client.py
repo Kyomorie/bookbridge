@@ -1,6 +1,8 @@
+import json
 import logging
 import os
-from typing import Optional
+import time
+from typing import Optional, Tuple, Dict, Any
 
 from src.api.hardcover_client import HardcoverClient, HardcoverRateLimitError
 from src.db.models import Book, State, HardcoverDetails
@@ -11,6 +13,17 @@ from src.utils.logging_utils import sanitize_log_data
 from src.utils.user_config import resolve_setting
 
 logger = logging.getLogger(__name__)
+
+# Re-read candidate keys stored in State.locator_json for client 'hardcover'
+REREAD_CANDIDATE_PCT_KEY = "reread_candidate_pct"
+REREAD_CANDIDATE_FIRST_SEEN_KEY = "reread_candidate_first_seen"
+# Confirmation margin: position must advance this far beyond the candidate anchor
+# before a re-read is confirmed (2% of the book)
+REREAD_CONFIRM_MARGIN = 0.02
+# Minimum meaningful percentage: matches should_start threshold in hardcover_client.py
+REREAD_MIN_PERCENTAGE = 0.02
+# Completion threshold: matches is_finished = percentage > 0.99 in both progress paths
+REREAD_COMPLETION_THRESHOLD = 0.99
 
 
 class HardcoverSyncClient(SyncClient):
@@ -369,28 +382,147 @@ class HardcoverSyncClient(SyncClient):
         return None
 
     def _handle_status_transition(self, book, hardcover_details, current_status, percentage, is_finished):
-        """Handle status transitions based on progress percentage."""
+        """Handle status transitions and return the active read from the mutation."""
+        updated_user_book = None
         # If finished and not already marked as Read (3), promote to Read
         if is_finished and current_status != 3:
-            self.hardcover_client.update_status(
+            updated_user_book = self.hardcover_client.update_status(
                 hardcover_details.hardcover_book_id,
                 3,
                 hardcover_details.hardcover_edition_id
             )
             logger.info(f"📚 Hardcover: '{sanitize_log_data(book.abs_title)}' status promoted to Read")
-            return 3
+            current_status = 3
 
         # If progress > 2% and currently "Want to Read" (1), promote to "Currently Reading" (2)
         elif percentage > 0.02 and current_status == 1:
-            self.hardcover_client.update_status(
+            updated_user_book = self.hardcover_client.update_status(
                 hardcover_details.hardcover_book_id,
                 2,
                 hardcover_details.hardcover_edition_id
             )
             logger.info(f"📚 Hardcover: '{sanitize_log_data(book.abs_title)}' status promoted to Currently Reading")
-            return 2
+            current_status = 2
 
-        return current_status
+        reads = (
+            updated_user_book.get('user_book_reads') or []
+            if isinstance(updated_user_book, dict)
+            else []
+        )
+        active_read = reads[0] if reads else None
+        return current_status, active_read
+
+    def _read_reread_candidate(self, book: Book) -> Tuple[Optional[float], Optional[float]]:
+        """
+        Read the stored re-read candidate from the 'hardcover' state row.
+
+        Returns (candidate_pct, first_seen) as floats, or (None, None) if no candidate exists
+        or parsing fails. Any failure is logged at DEBUG level with exc_info=True.
+        """
+        try:
+            state = self.database_service.get_state(book.abs_id, 'hardcover')
+            if not state or not state.locator_json:
+                return None, None
+
+            locator_data = json.loads(state.locator_json)
+            candidate_pct = locator_data.get(REREAD_CANDIDATE_PCT_KEY)
+            first_seen = locator_data.get(REREAD_CANDIDATE_FIRST_SEEN_KEY)
+
+            if candidate_pct is None or first_seen is None:
+                return None, None
+
+            return float(candidate_pct), float(first_seen)
+        except Exception:
+            logger.debug(
+                "Failed to parse re-read candidate for book %s",
+                sanitize_log_data(book.abs_title),
+                exc_info=True,
+            )
+            return None, None
+
+    def _decide_reread(
+        self,
+        book: Book,
+        latest_read: Optional[Dict[str, Any]],
+        percentage: float,
+        is_finished: bool,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Decide whether a re-read is confirmed and return candidate metadata for state persistence.
+
+        Args:
+            book: The book being synced.
+            latest_read: The most recent Hardcover read dict (may be None).
+            percentage: Current position as a 0-1 fraction.
+            is_finished: Whether the position is at completion (>0.99).
+
+        Returns:
+            (allow_new_read, candidate_meta) where:
+            - allow_new_read: True if a new read should be created on Hardcover.
+            - candidate_meta: Dict of keys to merge into updated_state; empty dict clears the candidate.
+        """
+        # Rule 1: No latest read, or latest read has no finished_at -> ordinary case
+        if not latest_read or not latest_read.get("finished_at"):
+            return False, {}
+
+        # Rule 2: Read is finished AND (at completion or at/below minimum percentage)
+        # This is the self-healing path for stale readers.
+        if is_finished or percentage <= REREAD_MIN_PERCENTAGE:
+            return False, {}
+
+        # Rule 3: Read is finished and percentage is strictly between min and completion
+        candidate_pct, first_seen = self._read_reread_candidate(book)
+
+        if candidate_pct is None:
+            # First sighting: record it, write nothing to Hardcover
+            return False, {
+                REREAD_CANDIDATE_PCT_KEY: percentage,
+                REREAD_CANDIDATE_FIRST_SEEN_KEY: time.time(),
+            }
+
+        # Stored candidate exists
+        if percentage > candidate_pct + REREAD_CONFIRM_MARGIN:
+            # Position advanced across cycles -> confirmed re-read
+            elapsed = time.time() - first_seen if first_seen else 0
+            logger.info(
+                "🔄 Hardcover: Re-read confirmed for '%s' (candidate %.2f%% -> current %.2f%%, first seen %.0fs ago)",
+                sanitize_log_data(book.abs_title),
+                candidate_pct * 100,
+                percentage * 100,
+                elapsed,
+            )
+            return True, {}
+
+        # Position hasn't advanced far enough -> re-anchor to lower of the two
+        # Keep original first_seen time
+        return False, {
+            REREAD_CANDIDATE_PCT_KEY: min(candidate_pct, percentage),
+            REREAD_CANDIDATE_FIRST_SEEN_KEY: first_seen or time.time(),
+        }
+
+    @staticmethod
+    def _is_preserved_read(latest_read: Optional[Dict[str, Any]], allow_new_read: bool) -> bool:
+        """True when a completed read was left untouched, so nothing reached Hardcover."""
+        return bool(latest_read and latest_read.get("finished_at") and not allow_new_read)
+
+    def _preserved_hardcover_pct(self, book: Book) -> float:
+        """The percentage Hardcover still holds while a completed read is preserved.
+
+        Falls back to completion: the preserved read is finished, so 1.0 is the
+        honest value when no state row records an earlier figure.
+        """
+        try:
+            state = self.database_service.get_state(book.abs_id, 'hardcover')
+        except Exception:
+            logger.debug(
+                "Failed to read preserved Hardcover state for book %s",
+                sanitize_log_data(book.abs_title),
+                exc_info=True,
+            )
+            return 1.0
+        if state is not None and state.percentage is not None:
+            return float(state.percentage)
+        return 1.0
 
     def update_progress(self, book: Book, request: UpdateProgressRequest) -> SyncResult:
         """
@@ -464,17 +596,43 @@ class HardcoverSyncClient(SyncClient):
         current_status = ub.get('status_id')
 
         # Handle status transitions
-        current_status = self._handle_status_transition(book, hardcover_details, current_status, percentage, is_finished)
+        current_status, active_read = self._handle_status_transition(
+            book, hardcover_details, current_status, percentage, is_finished
+        )
+
+        latest_read = active_read or self.hardcover_client.get_latest_read(ub['id'])
+        allow_new_read, candidate_meta = self._decide_reread(
+            book, latest_read, percentage, is_finished
+        )
 
         # Update progress
         try:
-            self.hardcover_client.update_progress(
+            progress_kwargs = {
+                'edition_id': hardcover_details.hardcover_edition_id,
+                'is_finished': is_finished,
+                'current_percentage': percentage,
+                'allow_new_read': allow_new_read,
+            }
+            if latest_read:
+                progress_kwargs['active_read'] = latest_read
+            updated = self.hardcover_client.update_progress(
                 ub['id'],
                 page_num,
-                edition_id=hardcover_details.hardcover_edition_id,
-                is_finished=is_finished,
-                current_percentage=percentage
+                **progress_kwargs,
             )
+            if not updated:
+                logger.error("❌ Hardcover progress update was not accepted")
+                return SyncResult(None, False)
+
+            if self._is_preserved_read(latest_read, allow_new_read):
+                # Nothing reached Hardcover: the completed read still stands, so the
+                # state row must not claim the incoming position.
+                preserved_pct = self._preserved_hardcover_pct(book)
+                return SyncResult(
+                    preserved_pct,
+                    True,
+                    {'pct': preserved_pct, 'status': current_status, **candidate_meta},
+                )
 
             # Calculate actual percentage from page number for state tracking
             actual_pct = min(page_num / total_pages, 1.0) if total_pages > 0 else percentage
@@ -483,7 +641,8 @@ class HardcoverSyncClient(SyncClient):
                 'pct': actual_pct,
                 'pages': page_num,
                 'total_pages': total_pages,
-                'status': current_status
+                'status': current_status,
+                **candidate_meta,
             }
 
             return SyncResult(actual_pct, True, updated_state)
@@ -498,24 +657,51 @@ class HardcoverSyncClient(SyncClient):
         current_status = ub.get('status_id')
 
         # Handle status transitions
-        current_status = self._handle_status_transition(book, hardcover_details, current_status, percentage, is_finished)
+        current_status, active_read = self._handle_status_transition(
+            book, hardcover_details, current_status, percentage, is_finished
+        )
+
+        latest_read = active_read or self.hardcover_client.get_latest_read(ub['id'])
+        allow_new_read, candidate_meta = self._decide_reread(
+            book, latest_read, percentage, is_finished
+        )
 
         try:
             progress_seconds = int(audio_seconds * percentage)
-            self.hardcover_client.update_progress(
+            progress_kwargs = {
+                'edition_id': hardcover_details.hardcover_edition_id,
+                'is_finished': is_finished,
+                'current_percentage': percentage,
+                'audio_seconds': audio_seconds,
+                'allow_new_read': allow_new_read,
+            }
+            if latest_read:
+                progress_kwargs['active_read'] = latest_read
+            updated = self.hardcover_client.update_progress(
                 ub['id'],
                 0,  # No page number for audiobooks
-                edition_id=hardcover_details.hardcover_edition_id,
-                is_finished=is_finished,
-                current_percentage=percentage,
-                audio_seconds=audio_seconds
+                **progress_kwargs,
             )
+            if not updated:
+                logger.error("❌ Hardcover audiobook progress update was not accepted")
+                return SyncResult(None, False)
+
+            if self._is_preserved_read(latest_read, allow_new_read):
+                # Nothing reached Hardcover: the completed read still stands, so the
+                # state row must not claim the incoming position.
+                preserved_pct = self._preserved_hardcover_pct(book)
+                return SyncResult(
+                    preserved_pct,
+                    True,
+                    {'pct': preserved_pct, 'status': current_status, **candidate_meta},
+                )
 
             updated_state = {
                 'pct': percentage,
                 'progress_seconds': progress_seconds,
                 'total_seconds': audio_seconds,
-                'status': current_status
+                'status': current_status,
+                **candidate_meta,
             }
 
             return SyncResult(percentage, True, updated_state)

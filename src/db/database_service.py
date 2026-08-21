@@ -7,10 +7,11 @@ import json
 import logging
 import os
 import re
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from contextlib import contextmanager
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,7 @@ from .models import (
     Setting,
     KosyncDocument,
     KosyncUserProgress,
+    KosyncXpathOrderCache,
     PendingSuggestion,
     BookloreBook,
     ReadingSession,
@@ -304,6 +306,22 @@ class DatabaseService:
             if not user:
                 return False
             user.active = 1 if active else 0
+            return True
+
+    def set_user_role(self, user_id: int, role: str) -> bool:
+        """Set a user's role to 'admin' or 'user'. Returns False if not found."""
+        normalized = (role or "").strip().lower()
+        if normalized not in ('admin', 'user'):
+            raise ValueError(f"Invalid role: {role}")
+        with self.get_session() as session:
+            user = session.query(User).filter(User.id == user_id).first()
+            if not user:
+                return False
+            user.role = normalized
+            # A role change can move which account is the primary admin, and the
+            # default-user id is cached for the process lifetime, so recompute it
+            # on next access — same reason delete_user clears it.
+            self._default_uid = None
             return True
 
     def set_username(self, user_id: int, new_username: str) -> tuple:
@@ -870,6 +888,41 @@ class DatabaseService:
                 session.add(UserBook(user_id=user_id, abs_id=abs_id))
             return len(missing)
 
+    def share_all_books_with_active_users(self) -> dict:
+        """Claim every catalog book for every active user. Returns {"users": <count>, "links": <count>}.
+
+        This is the bulk reconcile counterpart to:
+        - backfill_user_books_for_user (one user gets all books)
+        - link_book_to_all_active_users (one book goes to all users)
+
+        Idempotent: only creates missing UserBook visibility links. Progress, KoSync
+        documents, and stats remain per-user and are not affected.
+        """
+        with self.get_session() as session:
+            all_book_ids = {row[0] for row in session.query(Book.abs_id).all()}
+            if not all_book_ids:
+                user_count = session.query(User.id).filter(User.active == 1).count()
+                return {"users": user_count, "links": 0}
+
+            active_user_ids = {
+                row[0] for row in session.query(User.id).filter(User.active == 1).all()
+            }
+            if not active_user_ids:
+                return {"users": 0, "links": 0}
+
+            by_user: dict[int, set[str]] = defaultdict(set)
+            for user_id, abs_id in session.query(UserBook.user_id, UserBook.abs_id).all():
+                by_user[user_id].add(abs_id)
+
+            links_created = 0
+            for user_id in active_user_ids:
+                missing = all_book_ids - by_user.get(user_id, set())
+                for abs_id in missing:
+                    session.add(UserBook(user_id=user_id, abs_id=abs_id))
+                    links_created += 1
+
+            return {"users": len(active_user_ids), "links": links_created}
+
     def unlink_user_book(self, user_id: int, abs_id: str) -> int:
         """Remove a user's claim on a book. Returns rows deleted."""
         if user_id is None or not abs_id:
@@ -1250,6 +1303,17 @@ class DatabaseService:
                     or session.query(User).order_by(User.id).first())
             self._default_uid = user.id if user else None
         return self._default_uid
+
+    def is_primary_admin(self, user_id: int) -> bool:
+        """Whether this user is the primary admin.
+
+        The primary admin owns un-scoped state and is the account the engine's
+        global settings are mirrored from (ENGINE_MIRROR_KEYS), so it is the only
+        account allowed to inherit the global configuration.
+        """
+        if user_id is None:
+            return False
+        return user_id == self._default_user_id()
 
     def get_state(self, abs_id: str, client_name: str, user_id: int = None) -> Optional[State]:
         """Get a specific state by book + client (+ user)."""
@@ -1842,6 +1906,102 @@ class DatabaseService:
             for row in rows:
                 session.expunge(row)
             return rows
+
+    def get_kosync_xpath_order(self, key_hash: str, file_key: str) -> Optional[Tuple[int, int]]:
+        """Get the cached (device_index, synced_index) tuple for a key_hash.
+
+        This is a pure cache read. A file_key mismatch is a deliberate miss —
+        the row is only valid for the exact EPUB version it was computed from,
+        so a replaced or edited book must miss rather than return stale indices.
+        """
+        if not key_hash or not file_key:
+            return None
+        with self.get_session() as session:
+            row = session.query(KosyncXpathOrderCache).filter(
+                KosyncXpathOrderCache.key_hash == key_hash
+            ).first()
+            if not row:
+                return None
+            if str(row.file_key or "") != file_key:
+                return None
+            return (row.device_index, row.synced_index)
+
+    def save_kosync_xpath_order(self, key_hash: str, document_hash: str, filename: str,
+                                device_xpath: str, synced_xpath: str, device_index: int,
+                                synced_index: int, file_key: str,
+                                ttl_seconds: float, max_per_document: int) -> bool:
+        """Upsert one xpath order cache row and prune the table.
+
+        Returns True when the row was written, False on invalid input.
+
+        Mirrors the behavior of _persist_pair in kosync_canonical.py:
+        - Rejects falsy key_hash/file_key or None indices
+        - Coerces indices to int, rejects negative values
+        - Uses float unix timestamp for updated_at (not DateTime)
+        - Upserts by key_hash, leaving identity columns (document_hash, filename,
+          device_xpath, synced_xpath) unchanged on conflict
+        - Prunes rows older than ttl_seconds
+        - Keeps only max_per_document most recent rows per document_hash
+        """
+        if not key_hash or not file_key:
+            return False
+        if device_index is None or synced_index is None:
+            return False
+        try:
+            device_index = int(device_index)
+            synced_index = int(synced_index)
+        except (TypeError, ValueError):
+            return False
+        if device_index < 0 or synced_index < 0:
+            return False
+
+        now = time.time()
+        with self.get_session() as session:
+            # Upsert by key_hash
+            existing = session.query(KosyncXpathOrderCache).filter(
+                KosyncXpathOrderCache.key_hash == key_hash
+            ).first()
+            if existing:
+                existing.device_index = device_index
+                existing.synced_index = synced_index
+                existing.file_key = file_key
+                existing.updated_at = now
+            else:
+                new_row = KosyncXpathOrderCache(
+                    key_hash=key_hash,
+                    document_hash=document_hash,
+                    filename=filename,
+                    device_xpath=device_xpath,
+                    synced_xpath=synced_xpath,
+                    device_index=device_index,
+                    synced_index=synced_index,
+                    file_key=file_key,
+                    updated_at=now,
+                )
+                session.add(new_row)
+
+            # Prune: delete rows older than ttl_seconds
+            cutoff = now - ttl_seconds
+            session.query(KosyncXpathOrderCache).filter(
+                KosyncXpathOrderCache.updated_at < cutoff
+            ).delete(synchronize_session=False)
+
+            # Prune: keep only max_per_document most recent rows per document_hash
+            # Select ids to keep
+            keep_ids = session.query(KosyncXpathOrderCache.id).filter(
+                KosyncXpathOrderCache.document_hash == document_hash
+            ).order_by(
+                KosyncXpathOrderCache.updated_at.desc(),
+                KosyncXpathOrderCache.id.desc()
+            ).limit(max_per_document).all()
+            keep_id_set = {row[0] for row in keep_ids}
+            if keep_id_set:
+                session.query(KosyncXpathOrderCache).filter(
+                    KosyncXpathOrderCache.document_hash == document_hash,
+                    ~KosyncXpathOrderCache.id.in_(keep_id_set)
+                ).delete(synchronize_session=False)
+
+            return True
 
     def delete_kosync_data_for_book(self, abs_id: str) -> tuple[int, int]:
         """Delete every KoSync document and per-user progress row for a book.

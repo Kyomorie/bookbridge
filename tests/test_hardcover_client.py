@@ -105,6 +105,53 @@ class TestHardcoverClient(unittest.TestCase):
             })
             self.assertFalse(client.is_configured())
 
+    def test_update_status_returns_newest_active_read(self):
+        """The status mutation returns the read created by a status transition."""
+        self.client.query = Mock(return_value={
+            "insert_user_book": {
+                "error": None,
+                "user_book": {
+                    "id": 11,
+                    "status_id": 2,
+                    "user_book_reads": [{"id": 22}],
+                },
+            }
+        })
+
+        result = self.client.update_status(33, 2, 44)
+
+        self.assertEqual(result["user_book_reads"], [{"id": 22}])
+        mutation = self.client.query.call_args.args[0]
+        self.assertIn("user_book_reads(order_by: {id: desc}, limit: 1)", mutation)
+
+    def test_update_progress_targets_active_read_from_status_mutation(self):
+        """Progress must not fall back to the stale read after a status promotion."""
+        active_read = {
+            "id": 22,
+            "started_at": None,
+            "finished_at": None,
+        }
+        self.client.query = Mock(return_value={
+            "update_user_book_read": {
+                "error": None,
+                "user_book_read": {"id": 22},
+            }
+        })
+
+        updated = self.client.update_progress(
+            11,
+            50,
+            edition_id=44,
+            current_percentage=0.25,
+            active_read=active_read,
+        )
+
+        self.assertTrue(updated)
+        self.client.query.assert_called_once()
+        variables = self.client.query.call_args.args[1]
+        self.assertEqual(variables["id"], 22)
+        self.assertEqual(variables["pages"], 50)
+
     def test_ensure_list_reuses_existing_list(self):
         self.client.get_user_id = Mock(return_value=7)
         self.client.query = Mock(return_value={

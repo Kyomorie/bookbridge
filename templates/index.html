@@ -338,7 +338,7 @@
                     <button type="button" class="action-btn" onclick="syncNow('{{ mapping.abs_id }}', this)"
                         title="Sync Now">⚡</button>
                     <button type="button" class="action-btn"
-                        onclick="markComplete('{{ mapping.abs_id }}', '{{ mapping.abs_title | e }}')"
+                        onclick='markComplete({{ mapping.abs_id|tojson }}, {{ mapping.abs_title|tojson }})'
                         title="Mark Complete">✅</button>
                     <form method="POST" action="/clear-progress/{{ mapping.abs_id }}">
                         <button type="submit" class="action-btn warning" aria-label="Clear Progress"

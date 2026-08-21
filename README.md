@@ -73,6 +73,17 @@ For full installation instructions, checking logs, and advanced configuration, p
 
 ---
 
+## Credits
+
+BookBridge began as a fork of
+[abs-kosync-bridge](https://github.com/J-Lich/abs-kosync-bridge) by
+[@J-Lich](https://github.com/J-Lich) — the original Audiobookshelf ↔ KOReader
+progress bridge this project grew out of. Thanks also to everyone who has
+contributed since; see the
+[contributors](https://github.com/cporcellijr/bookbridge/graphs/contributors).
+
+---
+
 ## License
 
 Released under the [MIT License](LICENSE).

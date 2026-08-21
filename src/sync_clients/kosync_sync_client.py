@@ -6,10 +6,16 @@ import re
 from src.api.api_clients import KoSyncClient
 from src.db.models import Book, State
 from src.utils.ebook_utils import EbookParser
+from src.utils.config_loader import env_truthy
+from src.utils.kosync_canonical import (
+    prewarm_xpath_order_cache,
+    resolve_canonical_position,
+)
 from src.utils.progress_metadata import parse_service_timestamp
 from src.sync_clients.sync_client_interface import SyncClient, SyncResult, UpdateProgressRequest, ServiceState
 
 logger = logging.getLogger(__name__)
+
 
 class KoSyncSyncClient(SyncClient):
     _KOSYNC_BLOCK_TAGS = {
@@ -175,9 +181,39 @@ class KoSyncSyncClient(SyncClient):
                 updated_state={'pct': pct, 'xpath': None, 'skipped': True}
             )
 
+        canonical_index = None
+        canonical_file_key = None
+        if env_truthy("KOSYNC_XPATH_ORDER_ENABLED") and epub and safe_xpath:
+            try:
+                canonical_index, canonical_file_key = resolve_canonical_position(
+                    self.ebook_parser,
+                    epub,
+                    safe_xpath,
+                )
+            except Exception as exc:
+                # Canonical metadata is an optimization/safety hint. A failure
+                # must not block the existing KoSync write path.
+                logger.debug(
+                    "KoSync canonical position unavailable for '%s': %s",
+                    book.abs_title if book else "unknown",
+                    exc,
+                    exc_info=True,
+                )
+
         success = self.kosync_client.update_progress(ko_id, pct, safe_xpath)
         updated_state = {
             'pct': pct,
             'xpath': safe_xpath
         }
+        if canonical_index is not None and canonical_file_key:
+            # Pre-resolve the current device-vs-new-bridge pair off the GET path.
+            # Failure is contained; #386's existing GET fallback remains intact.
+            if success:
+                prewarm_xpath_order_cache(
+                    book,
+                    self.ebook_parser,
+                    safe_xpath,
+                    canonical_index,
+                    canonical_file_key,
+                )
         return SyncResult(pct, success, updated_state)
