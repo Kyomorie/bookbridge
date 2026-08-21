@@ -35,6 +35,7 @@ ALL_SETTINGS = [
     'KOSYNC_RECENT_EXTERNAL_PUT_SECONDS', 'KOSYNC_AUTO_MAP_ON_AGREEMENT',
     'KOSYNC_HASH_RECONCILE_ENABLED', 'KOSYNC_HASH_RECONCILE_MINUTES',
     'KOSYNC_XPATH_ORDER_ENABLED', 'KOSYNC_FURTHEST_WINS',
+    'KOSYNC_PUT_DEBOUNCE_SECONDS',
     'KOSYNC_BOOKORBIT_DISCOVERY_LIMIT',
     'KOREADER_COMBINE_DEVICE_STATS',
     'KOREADER_ANNOTATION_SYNC',
@@ -347,6 +348,14 @@ DEFAULT_CONFIG = {
     'BOOKLORE_POLL_SECONDS': '300',
     'SMIL_VALIDATION_THRESHOLD': '60',
 }
+
+
+# Every key the settings form is allowed to persist. The POSTed form also carries
+# control fields — the csrf_token the CSRF bootstrap script injects into every
+# form, and the Users-tab action/user_id/username/password/role — which are not
+# settings and must never reach the settings table. Union of both registries so a
+# key registered in only one of them still saves.
+KNOWN_SETTING_KEYS = frozenset(ALL_SETTINGS) | frozenset(DEFAULT_CONFIG)
 
 class ConfigLoader:
     """

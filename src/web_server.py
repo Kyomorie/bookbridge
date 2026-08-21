@@ -36,7 +36,7 @@ from src.utils.user_context import (
 from src.utils.user_config import user_setting
 from src.utils.user_config import global_fallback_allowed as _global_fallback_allowed
 
-from src.utils.config_loader import ConfigLoader, env_truthy
+from src.utils.config_loader import ConfigLoader, KNOWN_SETTING_KEYS, env_truthy
 from src.utils.cache_paths import safe_cache_path
 from src.utils.logging_utils import memory_log_handler, LOG_PATH
 from src.utils.logging_utils import sanitize_log_data
@@ -3738,6 +3738,23 @@ def settings():
         # Iterate over form to find other keys
         for key, value in request.form.items():
             if key in bool_keys: continue
+
+            # Only recognized settings are persisted. The posted form also carries
+            # control fields — csrf_token, injected into every form by the CSRF
+            # bootstrap script — and this loop used to write each of them to the
+            # settings table as if it were configuration.
+            if key not in KNOWN_SETTING_KEYS:
+                if key.isupper():
+                    # Looks like a setting but is registered nowhere: almost always
+                    # a new field added to the template without ALL_SETTINGS.
+                    logger.warning(
+                        "⚠️ Settings save: ignoring unregistered key '%s' — add it to "
+                        "ALL_SETTINGS/DEFAULT_CONFIG in config_loader.py to make it savable",
+                        sanitize_log_data(key),
+                    )
+                else:
+                    logger.debug("Settings save: ignoring non-setting form field '%s'", key)
+                continue
 
             clean_value = _normalize_abs_form_value(key, value)
 

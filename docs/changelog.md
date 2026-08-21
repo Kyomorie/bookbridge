@@ -21,6 +21,7 @@ A maintenance release for 7.4.0. The headline is **the BridgeSync plugin starts 
 
 - **BridgeSync 0.6.4 starts on a fresh install (#370)**, with better managed-folder detection and error reporting. Fixed by [@theryanmc](https://github.com/theryanmc). (#373, #377)
 - **Re-reading a book no longer overwrites the read you already finished (#390)**, and a stale reader at a low percentage no longer invents one. Contributed by [@Kyomorie](https://github.com/Kyomorie). (#398)
+- **Saving settings no longer writes junk rows into your configuration** — the handler stored every posted form field, including the CSRF token each form carries. Only registered settings are saved now.
 - **A broken Hardcover connection is reported once, clearly, with the next step**, and transient failures are retried.
 - **Startup checks the admin's own credentials**, not the abandoned global copies left by the multi-user upgrade, so a rotated token no longer reports as broken.
 - **Positions at the very start of a chapter no longer drift forward (#276)**. Contributed by [@Kyomorie](https://github.com/Kyomorie). (#382)

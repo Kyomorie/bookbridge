@@ -54,6 +54,14 @@ KOReader position handling, CWA, Audiobookshelf and the BridgeSync plugin.
 
 ### Fixed
 
+- **Saving settings no longer writes junk rows into your configuration.** The save
+  handler persisted every field the form posted, including ones that are not
+  settings at all — most notably the CSRF token every form carries, so each save
+  stored a fresh token as if it were config. Only registered settings are saved
+  now, and a field that looks like a setting but is registered nowhere is logged
+  by name instead of being silently stored. (`KOSYNC_PUT_DEBOUNCE_SECONDS` was
+  half-registered and is now properly declared.)
+
 - **Re-reading a book no longer overwrites the read you already finished**, and a
   stale reader no longer invents one. A completed Hardcover read is never written
   to again, and a re-read is recorded only once the position actually moves

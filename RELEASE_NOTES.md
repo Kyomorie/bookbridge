@@ -45,6 +45,9 @@ contributors.
   stale reader no longer invents one — a re-read is recorded only once the position
   really moves forward. Contributed by [@Kyomorie](https://github.com/Kyomorie).
   (#398, #390)
+- **Saving settings no longer writes junk rows into your configuration.** The handler
+  persisted every field the form posted, including the CSRF token every form carries,
+  so each save stored one as if it were config. Only registered settings are saved now.
 - **A broken Hardcover connection reports itself once, clearly, with the next step**
   instead of repeating its whole HTML error page every attempt; transient errors are
   retried and recovery is announced.
