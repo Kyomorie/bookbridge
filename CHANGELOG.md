@@ -56,6 +56,45 @@ All notable changes to BookBridge will be documented in this file.
   sits in the same place on every candidate rather than trailing a title whose
   length varies. (#381)
 
+## [7.4.2] - 2026-08-21
+
+A hotfix for the BridgeSync KOReader plugin. Every network operation in plugin
+versions 0.6.1 through 0.6.4 ran itself twice over: it crashed KOReader outright
+on Kindle, and on Android it made Test Connection, plugin update checks, book
+sync, reading-stats sync and highlight sync all fail regardless of your settings.
+Nothing on the server changed.
+
+### Fixed
+
+- **BridgeSync no longer crashes your Kindle when you tap Test Connection, and
+  authentication works again.** Since 0.6.1 the plugin ran every non-download
+  request inside a second background process nested inside the first one. On
+  Kindle that left two copies of KOReader running against the same screen and
+  the same input devices, which crashed the device and restarted it. On Android
+  the inner process died before it could report anything back, so the plugin
+  answered "Authentication failed" or "Version check failed" no matter how
+  correct your server URL and credentials were. Book sync, reading-stats sync
+  and highlight sync all travelled the same path. Plugin updated to **0.6.5**.
+  (#370, #401)
+
+- **A background operation that crashes no longer reports itself as a rejected
+  login.** When one exited without returning a result, the plugin read that as
+  success-with-nothing-in-it and fell back to its generic wording, so a hard
+  crash reached you as a wrong username and password. It now reports the
+  operation as failed, and says so.
+
+### Operational Notes
+
+- **Re-download the plugin by hand — it cannot update itself out of this.**
+  "Check for Plugin Update" is one of the operations the bug breaks, so no
+  device on 0.6.1-0.6.4 can pull the fix through the plugin. Go to your
+  BookBridge account page, download the zip, unzip it into `koreader/plugins/`
+  replacing the existing `bridgesync.koplugin` folder, and restart KOReader.
+  Do this on every device.
+- No database migration, and no settings changes. The server rebuilds the
+  plugin zip automatically when the files change.
+
+
 ## [7.4.1] - 2026-08-21
 
 A maintenance release for 7.4.0: five opt-in additions, and fixes across Hardcover,
