@@ -4,22 +4,27 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_preview_markup_lives_natively_in_library_card():
-    index = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+def test_preview_assets_are_scoped_to_library_page():
     base = (ROOT / "templates" / "base.html").read_text(encoding="utf-8")
+    index = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
 
-    assert 'data-position-preview-toggle' in index
-    assert 'class="position-preview-panel"' in index
-    assert 'aria-controls="position-preview-' in index
-    assert 'role="status"' in index
-    assert 'aria-live="polite"' in index
-    assert "mapping.sync_mode != 'audiobook_only'" in index
-    assert '/static/css/reading-position-preview.css' in index
-    assert '/static/js/reading-position-preview.js' in index
+    assert "{% if active_page == 'library' %}" in base
+    assert '/static/css/reading-position-preview.css' in base
+    assert '/static/js/reading-position-preview.js' in base
+    assert "{% set active_page = 'library' %}" in index
 
-    # Keep the feature local to the Library template.  In particular, do not
-    # reintroduce the base-template/DOM-relocation pattern hardened away in #393.
-    assert 'position-preview' not in base
+
+def test_preview_script_builds_local_accessible_ui_without_dom_relocation():
+    script = (ROOT / "static" / "js" / "reading-position-preview.js").read_text(encoding="utf-8")
+
+    assert "card.querySelector('.book-info')" in script
+    assert "card.dataset.syncMode === 'audiobook_only'" in script
+    assert "panel.setAttribute('role', 'status')" in script
+    assert "panel.setAttribute('aria-live', 'polite')" in script
+    assert "data-position-preview-toggle" in script
+    assert "position-preview-panel" in script
+    assert "append(button, panel)" in script
+    assert "appendChild" not in script
 
 
 def test_preview_script_renders_book_text_as_text_only():
