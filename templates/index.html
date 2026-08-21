@@ -13,6 +13,7 @@
         data-last-sync="{{ mapping.last_sync }}" data-status="{{ mapping.status }}" data-title="{{ full_display_title }}"
         data-author="{{ mapping.display_author }}" data-filename="{{ mapping.display_filename }}"
         data-sync-mode="{{ mapping.sync_mode }}" data-abs-id="{{ mapping.abs_id }}"
+        data-added="{{ mapping.added_at_unix|default(0) }}"
         data-rating="{% if mapping.storygraph_rating is not none and mapping.goodreads_rating is not none %}{{ ((mapping.storygraph_rating + mapping.goodreads_rating) / 2) }}{% elif mapping.storygraph_rating is not none %}{{ mapping.storygraph_rating }}{% elif mapping.goodreads_rating is not none %}{{ mapping.goodreads_rating }}{% endif %}">
 
         {# Cover image section - prioritize ebook cover, fallback to ABS cover #}
@@ -361,6 +362,7 @@
          data-author="{{ group.series_author }}"
          data-progress="{{ group.avg_progress }}"
          data-last-sync="{{ group.last_sync_unix }}"
+         data-added="{{ group.added_at_unix|default(0) }}"
          data-child-count="{{ group.child_count }}">
       <div class="series-header" role="button" tabindex="0"
            aria-controls="{{ group.dom_id }}-children" aria-expanded="false"
@@ -1999,6 +2001,7 @@
                     <option value="progress">Progress</option>
                     <option value="status">Status</option>
                     <option value="last_sync">Last Synced</option>
+                    <option value="added">Date Added</option>
                     <option value="rating">Rating</option>
                 </select>
                 <span class="sort-direction" id="sort-direction" title="Click to Reverse Order">↓</span>
@@ -2324,6 +2327,7 @@
                 progress: 'desc',  // Highest progress first
                 status: 'asc',
                 last_sync: 'desc', // Newest sync first
+                added: 'desc',     // Newest addition first
                 rating: 'desc'     // Highest rating first
             };
 
@@ -2388,6 +2392,20 @@
                         valA = parseFloat(a.dataset.progress || '0') || 0;
                         valB = parseFloat(b.dataset.progress || '0') || 0;
                         comparison = valA - valB;
+                    } else if (sortBy === 'added') {
+                        // Books claimed before the multi-user migration share its
+                        // backfill stamp, so they tie; localeCompare on title breaks
+                        // the tie into a stable order instead of a random one.
+                        valA = parseFloat(a.dataset.added || '0') || 0;
+                        valB = parseFloat(b.dataset.added || '0') || 0;
+                        comparison = valA - valB;
+                        if (comparison === 0) {
+                            const titleA = (a.dataset.title || a.dataset.seriesName || '').toLowerCase();
+                            const titleB = (b.dataset.title || b.dataset.seriesName || '').toLowerCase();
+                            // Returned directly, like the rating branch below: the tie
+                            // block reads A-Z whichever way the date is pointing.
+                            return titleA.localeCompare(titleB);
+                        }
                     } else if (sortBy === 'status') {
                         valA = a.dataset.status || '';
                         valB = b.dataset.status || '';

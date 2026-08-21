@@ -8,6 +8,13 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **Sort your library by when you added a book.**
+  The sort menu has a *Date Added* option, and the arrow beside it flips between
+  newest and oldest first — so the books you just matched can sit at the top
+  instead of wherever the alphabet put them. A series sorts by its most recently
+  added book, so adding one title to a series you started long ago brings the whole
+  group forward. Books added before BookBridge began recording per-book dates share
+  a single stamp from that upgrade and stay grouped together, in title order.
 - **Searching the library for a book you have not added yet now leads somewhere.**
   The search box above your books filters the books you already sync, so typing the
   name of a book you have not matched yet emptied the page and said nothing about
