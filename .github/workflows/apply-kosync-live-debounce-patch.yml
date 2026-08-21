@@ -1,0 +1,40 @@
+name: Apply focused KoSync debounce patch
+
+on:
+  push:
+    branches:
+      - fix/kosync-live-debounce-setting
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/kosync-live-debounce-setting
+      - name: Apply patch and regression test
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/api/kosync_server.py')
+          text = path.read_text()
+          old = '''def _kosync_debounce_loop() -> None:\n    """Check every 10s for books that stopped receiving KoSync PUTs."""\n    debounce_seconds = _get_kosync_put_debounce_seconds()\n    while True:\n        time.sleep(10)\n        now = time.time()\n        _flush_stale_kosync_sessions(now)\n'''
+          new = '''def _kosync_debounce_loop() -> None:\n    """Check every 10s for books that stopped receiving KoSync PUTs."""\n    while True:\n        time.sleep(10)\n        now = time.time()\n        debounce_seconds = _get_kosync_put_debounce_seconds()\n        _flush_stale_kosync_sessions(now)\n'''
+          if old not in text:
+              raise SystemExit('Expected KoSync debounce loop was not found; refusing to patch')
+          path.write_text(text.replace(old, new, 1))
+
+          Path('tests/test_kosync_live_debounce_setting.py').write_text('''import os\nfrom unittest.mock import Mock, patch\n\nimport pytest\n\nfrom src.api import kosync_server\n\n\nclass _StopLoop(Exception):\n    pass\n\n\ndef test_kosync_debounce_worker_uses_updated_setting_without_restart():\n    manager = Mock()\n    manager.run_sync_for_all_users = Mock()\n    kosync_server._manager = manager\n    kosync_server._kosync_debounce.clear()\n    kosync_server._kosync_debounce[("book-1", None)] = {\n        "abs_id": "book-1",\n        "title": "Test Book",\n        "user_id": None,\n        "last_event": 60.0,\n        "synced": False,\n    }\n\n    sleep_calls = 0\n\n    def fake_sleep(_seconds):\n        nonlocal sleep_calls\n        sleep_calls += 1\n        if sleep_calls == 1:\n            os.environ["KOSYNC_PUT_DEBOUNCE_SECONDS"] = "30"\n            return\n        raise _StopLoop\n\n    try:\n        with patch.dict(os.environ, {"KOSYNC_PUT_DEBOUNCE_SECONDS": "300"}, clear=False), \\\n             patch.object(kosync_server.time, "sleep", side_effect=fake_sleep), \\\n             patch.object(kosync_server.time, "time", return_value=100.0), \\\n             patch.object(kosync_server, "_flush_stale_kosync_sessions"), \\\n             patch.object(kosync_server.threading, "Thread") as thread_cls:\n            with pytest.raises(_StopLoop):\n                kosync_server._kosync_debounce_loop()\n\n        thread_cls.assert_called_once()\n        _, kwargs = thread_cls.call_args\n        assert kwargs["target"] is manager.run_sync_for_all_users\n        assert kwargs["kwargs"] == {"target_abs_id": "book-1"}\n    finally:\n        kosync_server._kosync_debounce.clear()\n        kosync_server._manager = None\n''')
+          PY
+          git rm .github/workflows/apply-kosync-live-debounce-patch.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- src/api/kosync_server.py tests/test_kosync_live_debounce_setting.py
+          git commit -m "Fix KoSync debounce setting hot reload"
+          git push origin HEAD:fix/kosync-live-debounce-setting
