@@ -160,10 +160,23 @@ function APIClient:testAuth()
         total_timeout = 45,
         attempts = 2,
     })
-    if ok then
-        return true, "Authentication successful"
+    if not ok then
+        return false, "Auth failed: " .. tostring(code or body or "Unknown error")
     end
-    return false, "Auth failed: " .. tostring(code or body or "Unknown error")
+
+    local ok2, _, body2 = self:_request("GET", "/koreader/device-sync/plugin/version", nil, nil, {
+        block_timeout = 20,
+        total_timeout = 45,
+        attempts = 2,
+    })
+    if ok2 then
+        local parsed, result = pcall(json.decode, body2 or "{}")
+        if parsed and type(result) == "table" and result.name == "bridgesync" then
+            local version_str = tostring(result.version or "unknown")
+            return true, "Connected to BookBridge (plugin " .. version_str .. ")"
+        end
+    end
+    return false, "Signed in, but this server did not respond as BookBridge (device-sync API unavailable). Check the server URL."
 end
 
 function APIClient:getManifest()

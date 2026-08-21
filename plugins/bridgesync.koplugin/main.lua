@@ -2002,7 +2002,8 @@ function BridgeSync:testConnection()
     end
 
     if ok then
-        self:_showMessage(_("Authentication successful"), 2)
+        local display_msg = (message and message ~= "") and message or _("Authentication successful")
+        self:_showMessage(display_msg, 2)
     else
         self:logWarn(message or "Authentication failed")
         self:_showMessage(message or _("Authentication failed"), 4)

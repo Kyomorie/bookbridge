@@ -46,6 +46,15 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **BridgeSync's *Test Connection* now tells you when you have pointed it at the
+  wrong server.** It only ever checked that the address accepted your login — and
+  any KoSync-compatible server does, including other reading apps. So aiming
+  BridgeSync at a different server passed the test and then failed on every real
+  operation with an unhelpful error from software that had never heard of
+  BookBridge. Test Connection now also asks the server to identify itself, and
+  says plainly when the answer is not BookBridge. On success it names BookBridge
+  and the plugin version it reported. Plugin updated to 0.6.6. (#403)
+
 - **The source badge on the Add Book page is visible now, and it leads the card.**
   7.4.1 tried to stop a long title from pushing the badge out of sight and did not
   go far enough — the card grew by a few pixels and went on slicing the badge off
