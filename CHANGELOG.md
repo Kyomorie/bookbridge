@@ -15,6 +15,46 @@ All notable changes to BookBridge will be documented in this file.
   use Kavita books for Hardcover and StoryGraph metadata. Kavita credentials and
   library/collection choices are per-user; polling and shelf-watch controls follow
   the same model as Grimmory and BookOrbit.
+- **Library cards can now show you the text around your current position.** On any
+  book with an ebook, *Show position* beside the progress bar opens a short excerpt
+  with a marker at the spot you are synced to — enough to recognise where you are
+  without opening a reader. BookBridge uses the exact XPath or CFI when your reader
+  saved one, maps an audiobook position through the stored audio↔ebook alignment
+  when it did not, and clearly labels a percentage-only estimate as approximate
+  rather than implying it is exact. The excerpt is only loaded when you ask for it,
+  is scoped to your own books, and is not offered for audiobook-only mappings.
+  Contributed by @Kyomorie in #397 (#394).
+
+- **Sort your library by when you added a book.**
+  The sort menu has a *Date Added* option, and the arrow beside it flips between
+  newest and oldest first — so the books you just matched can sit at the top
+  instead of wherever the alphabet put them. A series sorts by its most recently
+  added book, so adding one title to a series you started long ago brings the whole
+  group forward. Books added before BookBridge began recording per-book dates share
+  a single stamp from that upgrade and stay grouped together, in title order.
+- **Searching the library for a book you have not added yet now leads somewhere.**
+  The search box above your books filters the books you already sync, so typing the
+  name of a book you have not matched yet emptied the page and said nothing about
+  why. It now offers to look for that title in your libraries instead, carrying what
+  you typed straight into Add Book's search. The offer also appears when a search
+  does find something, for when the book you actually wanted is the one that is
+  missing.
+- **The Add Book tab shows how many books are waiting in your queue.**
+  The match queue survives leaving the page, but nothing outside Add Book said so.
+  The tab now carries a count whenever you have books queued, so work in progress
+  is visible from anywhere and one click away.
+
+### Fixed
+
+- **The source badge on the Add Book page is visible now, and it leads the card.**
+  7.4.1 tried to stop a long title from pushing the badge out of sight and did not
+  go far enough — the card grew by a few pixels and went on slicing the badge off
+  its bottom edge, along with the book icon off the top. The card was locked to a
+  square, so anything that did not fit was simply cut in half; it now sizes itself
+  to whatever it holds. The badge naming the source — ABS, BookOrbit, CWA and the
+  rest — also moved to the top of the card, so the answer to "which copy is this?"
+  sits in the same place on every candidate rather than trailing a title whose
+  length varies. (#381)
 
 ## [7.4.1] - 2026-08-21
 

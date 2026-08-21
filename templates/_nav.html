@@ -3,8 +3,11 @@
    nav (is_admin = current_user and current_user.is_admin): Stats/Suggestions/
    Settings are admin-only as before; Logs joins them (it was never advertised
    to regular users on the dashboard). Add Book stays visible to every
-   logged-in user, matching today's dashboard button and route enforcement. #}
+   logged-in user, matching today's dashboard button and route enforcement.
+   Add Book also carries a count badge whenever the acting user's match
+   queue is non-empty. #}
 {% set is_admin = current_user and current_user.is_admin %}
+{% set queued_count = match_queue_count() %}
 <nav class="top-nav">
     <div class="logo-section">
         <a href="/">
@@ -15,7 +18,7 @@
 
     <div class="nav-tabs">
         <a href="/" class="nav-tab {% if active_page == 'library' %}active{% endif %}">Library</a>
-        <a href="{{ url_for('add_book') }}" class="nav-tab {% if active_page == 'add_book' %}active{% endif %}">Add Book</a>
+        <a href="{{ url_for('add_book') }}" class="nav-tab {% if active_page == 'add_book' %}active{% endif %}">Add Book{% if queued_count > 0 %} <span class="nav-tab-badge">{{ queued_count }}</span>{% endif %}</a>
         {% if is_admin %}
         <a href="/stats" class="nav-tab {% if active_page == 'stats' %}active{% endif %}">Stats</a>
         {% endif %}

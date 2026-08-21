@@ -1,0 +1,117 @@
+.position-preview-toggle {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    min-height: 24px;
+    padding: 2px 5px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--muted-soft);
+    font: inherit;
+    font-size: 10px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.position-preview-toggle:hover {
+    background: var(--panel-soft);
+    color: var(--text);
+}
+
+.position-preview-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.position-preview-toggle:disabled {
+    cursor: wait;
+    opacity: 0.65;
+}
+
+.position-preview-panel {
+    min-width: 0;
+    margin: 0 0 8px;
+    padding: 9px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel-soft);
+}
+
+.position-preview-panel[hidden] {
+    display: none;
+}
+
+.position-preview-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 5px;
+    flex-wrap: wrap;
+}
+
+.position-preview-title {
+    color: var(--text);
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.position-preview-meta {
+    color: var(--muted-soft);
+    font-size: 10px;
+    line-height: 1.3;
+}
+
+.position-preview-text {
+    color: rgba(255, 255, 255, 0.82);
+    font-size: 11px;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+}
+
+.position-preview-marker {
+    display: inline-block;
+    margin: 0 2px;
+    color: var(--accent);
+    font-weight: 800;
+}
+
+.position-preview-message {
+    margin-top: 5px;
+    color: var(--muted-soft);
+    font-size: 10px;
+    line-height: 1.4;
+}
+
+.position-preview-panel[data-state="approximate"] .position-preview-meta {
+    color: var(--warning);
+}
+
+.position-preview-panel[data-state="unavailable"] .position-preview-text,
+.position-preview-panel[data-state="error"] .position-preview-text,
+.position-preview-panel[data-state="loading"] .position-preview-text {
+    display: none;
+}
+
+.position-preview-panel[data-state="error"] .position-preview-meta {
+    color: var(--danger);
+}
+
+@media (max-width: 480px) {
+    .unified-progress {
+        flex-wrap: wrap;
+    }
+
+    .position-preview-toggle {
+        margin-left: auto;
+    }
+
+    .position-preview-header {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 2px;
+    }
+}

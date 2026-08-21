@@ -948,6 +948,30 @@ class DatabaseService:
         with self.get_session() as session:
             rows = session.query(UserBook.abs_id).filter(UserBook.user_id == user_id).all()
             return {r[0] for r in rows}
+    def get_book_claim_times(self, user_id: Optional[int] = None) -> dict:
+        """Map abs_id -> when the book was added, as a UTC epoch timestamp.
+
+        Sourced from ``user_books.created_at`` — the moment the user claimed the
+        book — which ``UserBook.__init__`` stamps on every claim, so there are no
+        gaps to fall back from. ``user_id=None`` (single-user / LOGIN_DISABLED)
+        takes the newest claim across all users, matching the unscoped book fetch
+        the dashboard makes in that mode.
+
+        Note the column holds *naive UTC* (``time_utils.utcnow``), so it is
+        stamped as UTC before conversion rather than being read as local time.
+        """
+        with self.get_session() as session:
+            query = session.query(UserBook.abs_id, UserBook.created_at)
+            if user_id is not None:
+                query = query.filter(UserBook.user_id == user_id)
+            claim_times = {}
+            for abs_id, created_at in query.all():
+                if not abs_id or created_at is None:
+                    continue
+                stamp = created_at.replace(tzinfo=timezone.utc).timestamp()
+                if stamp > claim_times.get(abs_id, 0.0):
+                    claim_times[abs_id] = stamp
+            return claim_times
 
     # ---- per-user BookFusion book links (shared catalog, user-specific remote ids) ----
     def _serialize_bookfusion_link(self, link: UserBookFusionLink) -> dict:

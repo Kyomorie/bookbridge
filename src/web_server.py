@@ -1680,6 +1680,17 @@ def inject_global_vars():
         from src.utils.user_config import user_setting
         return str(user_setting(key, 'false')).lower() in ('true', '1', 'yes', 'on')
 
+    def match_queue_count() -> int:
+        """Number of queued Add Book items for the acting user (0 if unavailable).
+
+        Called lazily from the nav so pages without a user context (login, setup)
+        never pay the queue read, and a queue failure can never break a render.
+        """
+        try:
+            return len(_load_match_queue())
+        except Exception:
+            return 0
+
     return dict(
         shelfmark_url=os.environ.get("SHELFMARK_URL", ""),
         abs_server=_display_abs_server(),
@@ -1688,6 +1699,7 @@ def inject_global_vars():
         get_bool=get_bool,
         get_user_val=get_user_val,
         get_user_bool=get_user_bool,
+        match_queue_count=match_queue_count,
         current_user=current_user(),
     )
 
@@ -4009,6 +4021,14 @@ def _finalize_series_group(group: dict) -> None:
         if ts > last_sync_unix:
             last_sync_unix = ts
 
+    # A series sorts by its most recent addition, so adding one book to a series
+    # started long ago surfaces the whole group rather than burying it.
+    added_at_unix = 0.0
+    for c in children:
+        ts = c.get("added_at_unix") or 0.0
+        if ts > added_at_unix:
+            added_at_unix = ts
+
     author_counts = Counter(
         (c.get("display_author") or "").strip() for c in children if c.get("display_author")
     )
@@ -4022,6 +4042,7 @@ def _finalize_series_group(group: dict) -> None:
         "avg_progress": avg,
         "next_book": next_book,
         "last_sync_unix": last_sync_unix,
+        "added_at_unix": added_at_unix,
         "stack_cover_urls": [c.get("cover_url") for c in children[:3] if c.get("cover_url")],
         "section_bucket": "finished" if finished == total else "not_started",
         "dom_id": "series-" + re.sub(r"[^a-z0-9]+", "-", group["series_key"]).strip("-"),
@@ -4696,6 +4717,7 @@ def _build_dashboard_mapping(
     storygraph_by_book,
     reading_stats_by_book,
     cached_booklore_by_filename,
+    claim_times_by_book=None,
 ):
     states = states_by_book.get(book.abs_id, [])
     state_by_client = {state.client_name: state for state in states}
@@ -4738,6 +4760,7 @@ def _build_dashboard_mapping(
         "unified_progress": 0,
         "duration": book.duration or 0,
         "storyteller_uuid": book.storyteller_uuid,
+        "added_at_unix": (claim_times_by_book or {}).get(book.abs_id, 0.0),
         "states": {},
     }
 
@@ -4946,12 +4969,14 @@ def _build_dashboard_mappings(
     all_storygraph=None,
     reading_stats_by_book=None,
     cached_booklore_by_filename=None,
+    claim_times_by_book=None,
 ):
     hardcover_by_book = {h.abs_id: h for h in (all_hardcover or [])}
     storygraph_by_book = {s.abs_id: s for s in (all_storygraph or [])}
     states_by_book = _group_dashboard_states_by_book(all_states)
     reading_stats_by_book = reading_stats_by_book or {}
     cached_booklore_by_filename = cached_booklore_by_filename or {}
+    claim_times_by_book = claim_times_by_book or {}
 
     mappings = []
     total_duration = 0
@@ -4966,6 +4991,7 @@ def _build_dashboard_mappings(
             storygraph_by_book,
             reading_stats_by_book,
             cached_booklore_by_filename,
+            claim_times_by_book,
         )
         mappings.append(mapping)
 
@@ -5141,6 +5167,7 @@ def index():
     all_storygraph = database_service.get_all_storygraph_details()
     all_reading_stats = database_service.get_all_reading_stats(user_id=user_id)
     cached_booklore_by_filename = _index_cached_booklore_books(database_service.get_all_booklore_books())
+    claim_times_by_book = database_service.get_book_claim_times(user_id=user_id)
     integrations = _build_dashboard_integrations()
     mappings, overall_progress = _build_dashboard_mappings(
         books,
@@ -5150,6 +5177,7 @@ def index():
         all_storygraph=all_storygraph,
         reading_stats_by_book=all_reading_stats,
         cached_booklore_by_filename=cached_booklore_by_filename,
+        claim_times_by_book=claim_times_by_book,
     )
 
     suggestions = []
