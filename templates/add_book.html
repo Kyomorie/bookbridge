@@ -240,12 +240,14 @@
         align-items: center;
         justify-content: center;
         padding: 12px 8px;
-        aspect-ratio: 1/1;
-        /* `overflow: hidden` resolves a flex item's `min-height: auto` to 0, so the
-           square used to clip its own icon and source badge away when a title ran
-           long (#381). `min-content` lets the card grow instead; short titles keep
-           the square. */
-        min-height: min-content;
+        /* Height follows the content, with a floor that keeps a short-title card
+           square at the grid's 140px minimum column (#381). `aspect-ratio: 1/1`
+           used to pin the height, so a title long enough to overflow was centred
+           and sliced at both edges -- the icon off the top, the source badge off
+           the bottom. `min-height: min-content` did not rescue it: a line-clamped
+           `-webkit-box` contributes almost nothing to min-content, so the card
+           still stopped short of its own laid-out contents. */
+        min-height: 150px;
         text-align: center;
         gap: 8px;
         position: relative;
@@ -266,7 +268,8 @@
     .resource-card.selected::after {
         content: '✓';
         position: absolute;
-        top: 8px;
+        /* Bottom corner, so it can never sit on top of the source badge row (#381). */
+        bottom: 8px;
         right: 8px;
         width: 28px;
         height: 28px;
@@ -328,6 +331,23 @@
         -webkit-line-clamp: 2;
         -webkit-box-orient: vertical;
         overflow: hidden;
+    }
+
+    /* Source badges ride in their own row at the top of the card, so the answer to
+       "which library is this copy from?" is always in the same place -- candidate
+       cards are otherwise identical and their order is not stable (#381). */
+    .card-badges {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        align-items: center;
+        gap: 4px;
+        max-width: 100%;
+        flex-shrink: 0;
+    }
+
+    .card-badges .source-badge {
+        margin-top: 0;
     }
 
     /* Source badge */
@@ -1033,15 +1053,17 @@
                     {% for st in storyteller_books %}
                     <div class="resource-card st-card {% if single_st_match %}selected{% endif %}"
                         data-value="{{ st.uuid }}" onclick="selectStoryteller(this, '{{ st.uuid }}')">
+                        {% if st.has_transcript %}
+                        <div class="card-badges">
+                            <span class="source-badge transcript">Transcript</span>
+                        </div>
+                        {% endif %}
                         <div class="resource-icon">⚡</div>
                         <div class="resource-title" title="{{ st.title }}{% if st.subtitle %}: {{ st.subtitle }}{% endif %}">
                             {{ st.title }}{% if st.subtitle %}: {{ st.subtitle }}{% endif %}
                         </div>
                         {% if st.authors %}
                         <div class="resource-subtitle">{{ st.authors|join(', ') }}</div>
-                        {% endif %}
-                        {% if st.has_transcript %}
-                        <span class="source-badge transcript">Transcript</span>
                         {% endif %}
                     </div>
                     {% endfor %}
@@ -1059,9 +1081,11 @@
                     <div class="resource-grid" id="ebook-card-grid">
                     <div class="resource-card eb-card audio-only-card ghost-card"
                         data-audio-only="true" onclick="selectAudioOnly(this)">
+                        <div class="card-badges">
+                            <span class="source-badge">Audio only</span>
+                        </div>
                         <div class="resource-icon">🎧</div>
                         <div class="resource-title">Audio only (no ebook)</div>
-                        <span class="source-badge">Audio only</span>
                     </div>
                     {% for eb in ebooks %}
                     <div class="resource-card eb-card {% if single_eb_match %}selected{% endif %}"
@@ -1072,19 +1096,23 @@
                         data-source-path="{{ eb.path if eb.path else '' }}"
                         data-abs-identifier="{{ eb.abs_identifier or '' }}"
                         onclick="selectEbookCard(this)">
+                        {% if eb.source or eb.abs_identifier %}
+                        <div class="card-badges">
+                            {% if eb.source %}
+                            {% set badge_cls = eb.source.lower().replace(' ', '') %}
+                            <span class="source-badge {{ badge_cls }}">{{ eb.source }}</span>
+                            {% endif %}
+                            {% if eb.abs_identifier %}
+                            <span class="source-badge linked" title="Authoritative match via Calibre audiobookshelf_id">📌 Linked</span>
+                            {% endif %}
+                        </div>
+                        {% endif %}
                         <div class="resource-icon">📖</div>
                         <div class="resource-title" title="{{ eb.display_name }}">
                             {{ eb.title }}{% if eb.subtitle %}: {{ eb.subtitle }}{% endif %}
                         </div>
                         {% if eb.authors %}
                         <div class="resource-subtitle">{{ eb.authors }}</div>
-                        {% endif %}
-                        {% if eb.source %}
-                        {% set badge_cls = eb.source.lower().replace(' ', '') %}
-                        <span class="source-badge {{ badge_cls }}">{{ eb.source }}</span>
-                        {% endif %}
-                        {% if eb.abs_identifier %}
-                        <span class="source-badge linked" title="Authoritative match via Calibre audiobookshelf_id">📌 Linked</span>
                         {% endif %}
                     </div>
                     {% endfor %}

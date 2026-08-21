@@ -4,6 +4,20 @@
 
 All notable changes to BookBridge will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **The source badge on the Add Book page is visible now, and it leads the card.**
+  7.4.1 tried to stop a long title from pushing the badge out of sight and did not
+  go far enough — the card grew by a few pixels and went on slicing the badge off
+  its bottom edge, along with the book icon off the top. The card was locked to a
+  square, so anything that did not fit was simply cut in half; it now sizes itself
+  to whatever it holds. The badge naming the source — ABS, BookOrbit, CWA and the
+  rest — also moved to the top of the card, so the answer to "which copy is this?"
+  sits in the same place on every candidate rather than trailing a title whose
+  length varies. (#381)
+
 ## [7.4.1] - 2026-08-21
 
 A maintenance release for 7.4.0: five opt-in additions, and fixes across Hardcover,
