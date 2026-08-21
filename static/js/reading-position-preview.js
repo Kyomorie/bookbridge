@@ -1,31 +1,51 @@
 (function () {
     'use strict';
 
+    function makeElement(tag, className, dataAttribute) {
+        const element = document.createElement(tag);
+        if (className) element.className = className;
+        if (dataAttribute) element.setAttribute(dataAttribute, '');
+        return element;
+    }
+
     function createPreviewUi(card) {
         if (!card || card.querySelector('[data-position-preview-toggle]')) return;
+        if (card.dataset.syncMode === 'audiobook_only') return;
         const absId = card.dataset.absId || '';
         if (!absId) return;
-        const panelId = `position-preview-${absId.replace(/[^A-Za-z0-9_-]/g, '-')}`;
         const info = card.querySelector('.book-info');
         if (!info) return;
+        const panelId = `position-preview-${absId.replace(/[^A-Za-z0-9_-]/g, '-')}`;
 
-        const button = document.createElement('button');
+        const button = makeElement('button', 'position-preview-toggle', 'data-position-preview-toggle');
         button.type = 'button';
-        button.className = 'position-preview-toggle';
-        button.setAttribute('data-position-preview-toggle', '');
         button.setAttribute('aria-expanded', 'false');
         button.setAttribute('aria-controls', panelId);
         button.textContent = 'Show position';
 
-        const panel = document.createElement('div');
+        const panel = makeElement('div', 'position-preview-panel', 'data-position-preview');
         panel.id = panelId;
-        panel.className = 'position-preview';
-        panel.setAttribute('data-position-preview', '');
         panel.hidden = true;
-        panel.innerHTML = '<div class="position-preview-heading"><strong data-position-preview-title>Current reading position</strong><span data-position-preview-meta></span></div><div class="position-preview-context"><span data-position-preview-before></span><mark data-position-preview-marker hidden>▌</mark><span data-position-preview-after></span></div><div class="position-preview-message" data-position-preview-message></div>';
+        panel.setAttribute('role', 'status');
+        panel.setAttribute('aria-live', 'polite');
 
-        info.appendChild(button);
-        info.appendChild(panel);
+        const header = makeElement('div', 'position-preview-header');
+        const title = makeElement('strong', 'position-preview-title', 'data-position-preview-title');
+        title.textContent = 'Current reading position';
+        const meta = makeElement('span', 'position-preview-meta', 'data-position-preview-meta');
+        header.append(title, meta);
+
+        const text = makeElement('div', 'position-preview-text');
+        const before = makeElement('span', '', 'data-position-preview-before');
+        const marker = makeElement('span', 'position-preview-marker', 'data-position-preview-marker');
+        marker.hidden = true;
+        marker.textContent = '▌';
+        const after = makeElement('span', '', 'data-position-preview-after');
+        text.append(before, marker, after);
+
+        const message = makeElement('div', 'position-preview-message', 'data-position-preview-message');
+        panel.append(header, text, message);
+        info.append(button, panel);
     }
 
     function initPreviewUi() {
