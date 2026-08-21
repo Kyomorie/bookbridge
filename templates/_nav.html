@@ -46,9 +46,11 @@
     {% set abs_library_url = get_val('ABS_WEB_URL') or get_user_val('ABS_SERVER', abs_server) %}
     {% set grimmory_url = get_val('BOOKLORE_WEB_URL') or get_user_val('BOOKLORE_SERVER', booklore_server) %}
     {% set bookorbit_url = get_val('BOOKORBIT_WEB_URL') or get_user_val('BOOKORBIT_SERVER', get_val('BOOKORBIT_SERVER')) %}
+    {% set kavita_url = get_val('KAVITA_WEB_URL') or get_user_val('KAVITA_SERVER', get_val('KAVITA_SERVER')) %}
     {% set cwa_url = get_val('CWA_WEB_URL') or get_user_val('CWA_SERVER', get_val('CWA_SERVER')) %}
     {% set grimmory_configured = grimmory_url and get_user_bool('BOOKLORE_ENABLED') %}
     {% set bookorbit_configured = bookorbit_url and get_user_bool('BOOKORBIT_ENABLED') %}
+    {% set kavita_configured = kavita_url and get_user_bool('KAVITA_ENABLED') %}
     {% set cwa_configured = cwa_url and get_user_bool('CWA_ENABLED') %}
 
     <div class="library-links">
@@ -71,6 +73,8 @@
             {% set ebook_source = 'grimmory' %}
         {% elif bookorbit_configured %}
             {% set ebook_source = 'bookorbit' %}
+        {% elif kavita_configured %}
+            {% set ebook_source = 'kavita' %}
         {% endif %}
         {% if ebook_source and ebook_source != audio_source %}
             {% if ebook_source == 'cwa' %}
@@ -79,6 +83,8 @@
                 {{ library_link(grimmory_url, '/static/grimmory.webp', 'Grimmory ebook library') }}
             {% elif ebook_source == 'bookorbit' %}
                 {{ library_link(bookorbit_url, '/static/bookorbit.svg', 'BookOrbit ebook library') }}
+            {% elif ebook_source == 'kavita' %}
+                {{ library_link(kavita_url, '', 'Kavita ebook library') }}
             {% endif %}
         {% endif %}
 

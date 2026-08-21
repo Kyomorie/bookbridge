@@ -2813,7 +2813,7 @@ class TestAutoMapSelection(unittest.TestCase):
 
 
 class TestResolveLibraryEbookSource(unittest.TestCase):
-    """Auto-map resolves a filesystem EPUB to its BookOrbit/Grimmory identity."""
+    """Auto-map resolves a filesystem EPUB to its hosting library identity."""
 
     def test_resolves_bookorbit_by_filename(self):
         from src.api import kosync_server
@@ -2831,8 +2831,22 @@ class TestResolveLibraryEbookSource(unittest.TestCase):
         container = MagicMock()
         container.bookorbit_client.return_value.is_configured.return_value = False
         container.booklore_client.return_value.is_configured.return_value = False
+        container.kavita_client.return_value.is_configured.return_value = False
         with patch.object(kosync_server, '_container', container):
             self.assertEqual(kosync_server._resolve_library_ebook_source("x.epub"), (None, None))
+
+    def test_resolves_kavita_by_filename(self):
+        from src.api import kosync_server
+        container = MagicMock()
+        container.bookorbit_client.return_value.is_configured.return_value = False
+        container.booklore_client.return_value.is_configured.return_value = False
+        container.kavita_client.return_value.is_configured.return_value = True
+        container.kavita_client.return_value.find_book_by_filename.return_value = {
+            "id": 73, "fileName": "Kavita Book.epub",
+        }
+        with patch.object(kosync_server, '_container', container):
+            source, source_id = kosync_server._resolve_library_ebook_source("Kavita Book.epub")
+        self.assertEqual((source, source_id), ("Kavita", "73"))
 
 
 class TestAnnotationExchangeEndpoints(unittest.TestCase):

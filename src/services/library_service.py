@@ -17,13 +17,14 @@ from src.utils.cache_paths import safe_cache_path
 logger = logging.getLogger(__name__)
 
 class LibraryService:
-    def __init__(self, database_service: DatabaseService, booklore_client, cwa_client: CWAClient, abs_client: ABSClient, epub_cache_dir: str, bookorbit_client=None):
+    def __init__(self, database_service: DatabaseService, booklore_client, cwa_client: CWAClient, abs_client: ABSClient, epub_cache_dir: str, bookorbit_client=None, kavita_client=None):
         self.database_service = database_service
         self.booklore = booklore_client
         self.cwa_client = cwa_client
         self.abs_client = abs_client
         self.epub_cache_dir = epub_cache_dir
         self.bookorbit_client = bookorbit_client
+        self.kavita_client = kavita_client
         
         if not os.path.exists(self.epub_cache_dir):
             try:
@@ -67,6 +68,8 @@ class LibraryService:
                     client = self.bookorbit_client
                 elif source_name == "BookLore":
                     client = self.booklore
+                elif source_name == "Kavita":
+                    client = self.kavita_client
                 # Any other source is not supported here
                 
                 if client and getattr(client, "is_configured", lambda: True)():

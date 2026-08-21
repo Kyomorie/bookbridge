@@ -15,16 +15,17 @@ logger = logging.getLogger(__name__)
 class StorygraphSyncClient(SyncClient):
     """Follower-only StoryGraph sync client (either-or mode)."""
 
-    def __init__(self, storygraph_client: StorygraphClient, ebook_parser, abs_client=None, database_service=None, ollama_client=None, booklore_client=None, bookorbit_client=None):
+    def __init__(self, storygraph_client: StorygraphClient, ebook_parser, abs_client=None, database_service=None, ollama_client=None, booklore_client=None, bookorbit_client=None, kavita_client=None):
         super().__init__(ebook_parser)
         self.storygraph_client = storygraph_client
         self.abs_client = abs_client
         self.database_service = database_service
         self.ollama_client = ollama_client
         # Library clients let us read a library-hosted EPUB's embedded ISBN/author
-        # when the file isn't on local disk (BookOrbit/Grimmory ebook-only + ABS-linked).
+        # when the file isn't on local disk (BookOrbit/Grimmory/Kavita ebook-only + ABS-linked).
         self.booklore_client = booklore_client
         self.bookorbit_client = bookorbit_client
+        self.kavita_client = kavita_client
         self._book_id_cache: dict[str, str] = {}
 
     def is_configured(self) -> bool:
@@ -67,7 +68,11 @@ class StorygraphSyncClient(SyncClient):
 
         if not item or not isbn:
             ebook_meta = resolve_ebook_identifiers(
-                self.ebook_parser, book, self.booklore_client, self.bookorbit_client
+                self.ebook_parser,
+                book,
+                self.booklore_client,
+                self.bookorbit_client,
+                self.kavita_client,
             )
             title = title or ebook_meta.get('title') or book.abs_title or ''
             author = author or ebook_meta.get('author') or ''

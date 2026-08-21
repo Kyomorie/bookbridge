@@ -4,6 +4,18 @@
 
 All notable changes to BookBridge will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Kavita can now participate as a full ebook source and reading client.** BookBridge
+  can search and import Kavita EPUBs, download them to managed KOReader devices,
+  match them by their KOReader hash, synchronize progress in both directions, manage
+  the configured collection for shelf-watch and forge workflows, proxy covers, and
+  use Kavita books for Hardcover and StoryGraph metadata. Kavita credentials and
+  library/collection choices are per-user; polling and shelf-watch controls follow
+  the same model as Grimmory and BookOrbit.
+
 ## [7.4.1] - 2026-08-21
 
 A maintenance release for 7.4.0: five opt-in additions, and fixes across Hardcover,

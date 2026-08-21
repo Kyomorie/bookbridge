@@ -26,12 +26,14 @@ from src.api.bookorbit_client import BookOrbitClient
 from src.api.bookfusion_client import BookFusionClient
 from src.api.bookfusion_upload_client import BookFusionUploadClient
 from src.api.booklore_client import BookloreClient
+from src.api.kavita_client import KavitaClient, KavitaKoSyncClient
 from src.api.hardcover_client import HardcoverClient
 from src.api.storygraph_client import StorygraphClient
 
 from src.sync_clients.abs_sync_client import ABSSyncClient
 from src.sync_clients.abs_ebook_sync_client import ABSEbookSyncClient
 from src.sync_clients.kosync_sync_client import KoSyncSyncClient
+from src.sync_clients.kavita_sync_client import KavitaSyncClient
 from src.sync_clients.storyteller_sync_client import StorytellerSyncClient
 from src.sync_clients.booklore_sync_client import BookloreSyncClient
 from src.sync_clients.bookfusion_sync_client import BookFusionSyncClient
@@ -60,6 +62,7 @@ class UserClients:
     booklore_client: object
     hardcover_client: object
     storygraph_client: object
+    kavita_client: object = None
     library_service: object = None
     sync_clients: dict = field(default_factory=dict)
     credentials: dict = field(default_factory=dict)
@@ -137,6 +140,8 @@ class UserClientRegistry:
         bookfusion_client = BookFusionClient(credentials=creds, database_service=db, user_id=user_id)
         bookfusion_upload_client = BookFusionUploadClient(credentials=creds, database_service=db, user_id=user_id)
         booklore_client = BookloreClient(database_service=db, ollama_client=self.ollama_client, credentials=creds)
+        kavita_client = KavitaClient(credentials=creds)
+        kavita_kosync_client = KavitaKoSyncClient(credentials=creds)
         hardcover_client = HardcoverClient(credentials=creds)
         storygraph_client = StorygraphClient(credentials=creds)
 
@@ -151,12 +156,14 @@ class UserClientRegistry:
                 abs_client=abs_client,
                 epub_cache_dir=self.epub_cache_dir,
                 bookorbit_client=bookorbit_client,
+                kavita_client=kavita_client,
             )
 
         sync_clients = {
             "ABS": ABSSyncClient(abs_client, self.transcriber, ep, align),
             "ABSEbook": ABSEbookSyncClient(abs_client, ep),
             "KoSync": KoSyncSyncClient(kosync_client, ep),
+            "Kavita": KavitaSyncClient(kavita_kosync_client, ep),
             "Storyteller": StorytellerSyncClient(storyteller_client, ep, db),
             "BookLore": BookloreSyncClient(booklore_client, ep),
             "BookFusion": BookFusionSyncClient(bookfusion_client, ep, database_service=db, user_id=user_id),
@@ -164,8 +171,8 @@ class UserClientRegistry:
             "BookOrbit": BookOrbitSyncClient(bookorbit_client, ep, database_service=db, user_id=user_id),
             "BookOrbitAudio": BookOrbitAudioSyncClient(bookorbit_client, ep, alignment_service=align, database_service=db, user_id=user_id),
             "CWA": CWASyncClient(cwa_sync_api, cwa_client, ep),
-            "Hardcover": HardcoverSyncClient(hardcover_client, ep, abs_client, db, ollama_client=self.ollama_client, booklore_client=booklore_client, bookorbit_client=bookorbit_client),
-            "StoryGraph": StorygraphSyncClient(storygraph_client, ep, abs_client, db, ollama_client=self.ollama_client, booklore_client=booklore_client, bookorbit_client=bookorbit_client),
+            "Hardcover": HardcoverSyncClient(hardcover_client, ep, abs_client, db, ollama_client=self.ollama_client, booklore_client=booklore_client, bookorbit_client=bookorbit_client, kavita_client=kavita_client),
+            "StoryGraph": StorygraphSyncClient(storygraph_client, ep, abs_client, db, ollama_client=self.ollama_client, booklore_client=booklore_client, bookorbit_client=bookorbit_client, kavita_client=kavita_client),
         }
 
         return UserClients(
@@ -178,6 +185,7 @@ class UserClientRegistry:
             bookfusion_client=bookfusion_client,
             bookfusion_upload_client=bookfusion_upload_client,
             booklore_client=booklore_client,
+            kavita_client=kavita_client,
             hardcover_client=hardcover_client,
             storygraph_client=storygraph_client,
             library_service=library_service,

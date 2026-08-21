@@ -14,7 +14,7 @@
 
 ## What is it?
 
-**BookBridge** is a self-hosted sync engine for audiobooks and ebooks. It keeps your reading and listening position aligned across multiple apps, whether the source is Audiobookshelf, KOReader, BookFusion, Grimmory, BookOrbit, Calibre-Web Automated, or Storyteller. With the current Bridge Sync KOReader plugin, it can also move highlights and notes between supported readers.
+**BookBridge** is a self-hosted sync engine for audiobooks and ebooks. It keeps your reading and listening position aligned across multiple apps, whether the source is Audiobookshelf, KOReader, BookFusion, Grimmory, BookOrbit, Kavita, Calibre-Web Automated, or Storyteller. With the current Bridge Sync KOReader plugin, it can also move highlights and notes between supported readers.
 
 ### What do you actually need?
 
@@ -38,6 +38,7 @@ Every service below is **optional** — enable only the ones you actually use. E
 | **Storyteller** | Read-along reader | Progress sync and a bonus alignment source for read-along books |
 | **Grimmory** | Ebooks + audiobooks | Ebook progress, audiobook-source sync, reading sessions, optional annotation relay |
 | **BookOrbit** | Ebooks + audiobooks | Ebook progress, audiobook-source sync, reading sessions, optional highlight relay |
+| **Kavita** | Ebooks | EPUB search/download, bidirectional reading progress, collection-based auto-matching |
 | **Calibre-Web Automated (CWA)** | Ebooks + Kobo-protocol sync | Ebook source/search/download; optional progress sync through CWA's Kobo sync protocol, used by stock Kobo readers and KOReader-via-CWA |
 | **Readest** | Ebooks | Optional cloud highlight relay |
 | **Hardcover** | Reading tracker + lists | Write-only tracking, optional annotation relay, optional list-backed KOReader collections |
@@ -52,8 +53,8 @@ Every service below is **optional** — enable only the ones you actually use. E
 
 ### Core Sync Engine
 
-- **Multi-service sync** across the supported progress paths for Audiobookshelf, KOReader, BookFusion, Storyteller, Grimmory, BookOrbit, CWA/Kobo sync, and reading trackers.
-- **Flexible source support**: use Audiobookshelf, Grimmory, or BookOrbit as the audio source; use Audiobookshelf ebooks, BookFusion-linked books, Grimmory, BookOrbit, CWA, or local files as the text side; or create ebook-only links when no audiobook is needed.
+- **Multi-service sync** across the supported progress paths for Audiobookshelf, KOReader, BookFusion, Storyteller, Grimmory, BookOrbit, Kavita, CWA/Kobo sync, and reading trackers.
+- **Flexible source support**: use Audiobookshelf, Grimmory, or BookOrbit as the audio source; use Audiobookshelf ebooks, BookFusion-linked books, Grimmory, BookOrbit, Kavita, CWA, or local files as the text side; or create ebook-only links when no audiobook is needed.
 - **Split-port security** so the KOSync endpoint can be exposed separately from the dashboard.
 - **Smart conflict handling** with anti-regression guardrails and a deadband to avoid tiny cross-format bounce-backs.
 - **Highlight and note sync** for KOReader devices using the current Bridge Sync plugin, with optional Grimmory, BookOrbit, BookFusion, Readest, and Hardcover relay.
@@ -66,7 +67,7 @@ Every service below is **optional** — enable only the ones you actually use. E
 - **Multiple readers** with their own sign-in, their own service logins, and their own progress — each person sees only the books they are reading.
 - **Self-service integrations** so each reader can manage their own usernames, passwords, tokens, API keys, and sync toggles from Account -> My Integrations, while admins can still manage them centrally.
 - **Dashboard** for live sync status, reading session details, direct service links, and source badges.
-- **Add / Update Book** for ABS, Grimmory, or BookOrbit audio; CWA, Grimmory, BookOrbit, ABS, or local ebook sources; Storyteller links; ebook-only flows; and reader document fixes.
+- **Add / Update Book** for ABS, Grimmory, or BookOrbit audio; CWA, Grimmory, BookOrbit, Kavita, ABS, or local ebook sources; Storyteller links; ebook-only flows; and reader document fixes.
 - **Batch Match** for queue-based review and bulk linking.
 - **Library Suggestions** for background scanning, review, and queue building.
 - **Forge** for Storyteller read-along preparation.
@@ -78,7 +79,7 @@ Every service below is **optional** — enable only the ones you actually use. E
 
 - **Background daemon** with configurable polling.
 - **Instant sync** from ABS playback events and KOReader pushes when enabled.
-- **Per-client polling** for Storyteller, Grimmory, BookOrbit, and CWA/Kobo sync.
+- **Per-client polling** for Storyteller, Grimmory, BookOrbit, Kavita, and CWA/Kobo sync.
 - **Library refresh and backfill tools** for connected ebook/audio sources and Storyteller alignment data.
 - **Optional local-LLM assist (Ollama)** for smarter match suggestions and alignment rescue — off by default.
 
@@ -113,5 +114,5 @@ graph TD
     L --> A
 ```
 
-!!! note "Storyteller, Grimmory, and BookOrbit"
-    All three are optional. Storyteller transcript assets improve locator quality when present, and Grimmory or BookOrbit can act as either the ebook target or the audiobook source for a mapping.
+!!! note "Storyteller, Grimmory, BookOrbit, and Kavita"
+    All four are optional. Storyteller transcript assets improve locator quality when present; Grimmory or BookOrbit can act as either side of a mapping, while Kavita participates on the ebook side.

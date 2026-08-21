@@ -235,6 +235,22 @@
                 </a>
                 {% endif %}
 
+                {% if integrations.kavita and (mapping.states.kavita is defined or mapping.ebook_source == 'Kavita') %}
+                <a href="{{ mapping.kavita_url|default(get_val('KAVITA_WEB_URL') or get_val('KAVITA_SERVER'), true) }}" target="_blank" rel="noopener noreferrer"
+                    class="service-item" title="Open in Kavita">
+                    <span class="service-icon-emoji" aria-hidden="true">📚</span>
+                    <span class="service-name">Kavita</span>
+                    {% if mapping.last_leader_service is defined and mapping.last_leader_service == 'kavita' %}<span class="leader-dot" title="Last updated this position"></span>{% endif %}
+                    <span class="service-value">
+                        {% if mapping.states.kavita is defined %}
+                        {{ '%.1f' | format(mapping.states.kavita.percentage) }}%
+                        {% else %}
+                        0.0%
+                        {% endif %}
+                    </span>
+                </a>
+                {% endif %}
+
                 {% if integrations.bookfusion %}
                 <div class="service-item progress-item-hc" title="{% if mapping.bookfusion_linked %}BookFusion linked{% else %}Link to BookFusion{% endif %}">
                     <img src="/static/bookfusion.png" alt="BF"

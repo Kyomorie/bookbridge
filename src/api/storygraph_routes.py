@@ -76,6 +76,14 @@ def _bookorbit_client(container):
     return clients.bookorbit_client if clients is not None else container.bookorbit_client()
 
 
+def _kavita_client(container):
+    clients = _active_user_clients(container)
+    if clients is not None:
+        return getattr(clients, "kavita_client", None)
+    provider = getattr(container, "kavita_client", None)
+    return provider() if provider else None
+
+
 def _user_may_modify_book(database_service, abs_id: str) -> bool:
     user = getattr(g, "current_user", None)
     if user is None:
@@ -108,6 +116,7 @@ def _get_abs_metadata(abs_id: str, database_service, container):
         ebook_meta = resolve_ebook_identifiers(
             container.ebook_parser(), book,
             _booklore_client(container), _bookorbit_client(container),
+            _kavita_client(container),
         )
     except Exception as exc:
         logger.warning("Failed to read EPUB metadata for %s: %s", abs_id, exc, exc_info=True)

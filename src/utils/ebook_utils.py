@@ -2517,11 +2517,17 @@ def build_readium_locator(locator, total_progression=None) -> Optional[str]:
     return json.dumps(payload, separators=(",", ":"))
 
 
-def resolve_ebook_identifiers(ebook_parser, book, booklore_client=None, bookorbit_client=None) -> dict:
+def resolve_ebook_identifiers(
+    ebook_parser,
+    book,
+    booklore_client=None,
+    bookorbit_client=None,
+    kavita_client=None,
+) -> dict:
     """Best-effort {title, author, isbn, asin} for a mapping's ebook.
 
     Reads the local EPUB first; when no usable identifier or author is found and
-    the ebook is library-hosted (BookOrbit/Grimmory), downloads the bytes from the
+    the ebook is library-hosted (BookOrbit/Grimmory/Kavita), downloads the bytes from the
     source and reads the embedded Dublin Core fields. This lets tracker auto-match
     use the book's real ISBN/author even when the file isn't on the bridge's disk
     (the common case for BookOrbit/KOReader ebook-only and ABS-linked mappings).
@@ -2552,6 +2558,8 @@ def resolve_ebook_identifiers(ebook_parser, book, booklore_client=None, bookorbi
         client = bookorbit_client
     elif source == "booklore":
         client = booklore_client
+    elif source == "kavita":
+        client = kavita_client
     else:
         client = None
 
