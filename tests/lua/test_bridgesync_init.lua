@@ -535,4 +535,75 @@ assert(#bridge.pending_sessions == 1
         and bridge.pending_sessions[1].session_id == "session-rejected",
     "server-rejected sessions must remain queued for recovery")
 
+-- A forked child must never fork again. BridgeSync wires bridge_api_client's
+-- request_runner to _runInSubprocess, so every non-download HTTP request issued
+-- from inside an already-forked child re-entered this function. The child
+-- inherits the running coroutine, so it forked a grandchild and then yielded
+-- itself back into a copy of the parent's UIManager loop, leaving a second
+-- instance of the app on the same screen and input devices: an outright crash
+-- on Kindle (#401), and on Android a child that died before writing a result,
+-- which surfaced as a bare "Authentication failed" (#370).
+local FFIUtilStub = require("ffi/util")
+local fork_calls = 0
+local child_output = nil
+
+local function stub_fork(run_child)
+    FFIUtilStub.runInSubProcess = function(child_func)
+        fork_calls = fork_calls + 1
+        child_output = nil
+        -- The child body runs in-process, which is what makes a nested fork
+        -- observable: the coroutine is still running, exactly as it is inside
+        -- a real forked child.
+        if run_child then child_func(4242, 7) end
+        return 4242, 8
+    end
+end
+FFIUtilStub.writeToFD = function(_, payload) child_output = payload end
+FFIUtilStub.isSubProcessDone = function() return true end
+FFIUtilStub.getNonBlockingReadSize = function()
+    return (child_output and #child_output > 0) and 1 or 0
+end
+FFIUtilStub.readAllFromFD = function() return child_output end
+
+-- Stands in for UIManager: _runInSubprocess yields between polls and expects
+-- something outside the coroutine to resume it.
+local function drive(fn)
+    local co = coroutine.create(fn)
+    local results = table.pack(coroutine.resume(co))
+    while coroutine.status(co) == "suspended" do
+        results = table.pack(coroutine.resume(co, true))
+    end
+    assert(results[1], "subprocess driver errored: " .. tostring(results[2]))
+    return table.unpack(results, 2, results.n)
+end
+
+stub_fork(true)
+bridge._in_subprocess = nil
+local nested_ok, nested_value = drive(function()
+    return bridge:_runInSubprocess(function()
+        -- What bridge_api_client does for every non-download request.
+        local inner_ok, inner_result = bridge:_runInSubprocess(function()
+            return "http-result"
+        end)
+        return inner_ok and inner_result or nil
+    end)
+end)
+assert(fork_calls == 1,
+    "a forked child must run nested subprocess work inline instead of forking again")
+assert(nested_ok and nested_value == "http-result",
+    "the nested inline result must still reach the caller")
+
+-- A child that dies without writing must not read as success. Returning a bare
+-- true handed callers an empty result set, which testConnection renders as its
+-- generic "Authentication failed" and the update check as "Version check
+-- failed" - a crashed subprocess disguised as a rejected login (#370).
+stub_fork(false)
+bridge._in_subprocess = nil
+local dead_ok, dead_reason = drive(function()
+    return bridge:_runInSubprocess(function() return "unreachable" end)
+end)
+assert(dead_ok == false and dead_reason == "subprocess produced no result",
+    "a subprocess that exits without a result must be reported as a failure")
+bridge._in_subprocess = nil
+
 print("BridgeSync Lua init regression test passed")

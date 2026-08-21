@@ -4,6 +4,21 @@ For the full history of changes, please refer to the **[GitHub Releases](https:/
 
 ---
 
+## [7.4.2]
+
+A hotfix for the BridgeSync KOReader plugin. Every network operation in plugin versions 0.6.1 through 0.6.4 ran itself twice over — it crashed KOReader outright on Kindle, and on Android it made Test Connection, plugin update checks, book sync, stats sync and highlight sync fail no matter how correct your settings were. Nothing on the server changed.
+
+### Fixed
+
+- **BridgeSync no longer crashes your Kindle on Test Connection, and authentication works again (#370, #401).** Since 0.6.1 the plugin ran every non-download request inside a second background process nested inside the first, leaving two copies of KOReader on the same screen and input devices. Plugin updated to **0.6.5**.
+- **A background operation that crashes no longer reports itself as a rejected login.** A crash that returned no result was read as success-with-nothing-in-it, so it reached you as a wrong username and password.
+
+### Operational Notes
+
+- **Re-download the plugin by hand — it cannot update itself out of this.** "Check for Plugin Update" is one of the broken operations, so no device on 0.6.1–0.6.4 can pull the fix through the plugin. Download the zip from your BookBridge account page, unzip it into `koreader/plugins/` over the existing `bridgesync.koplugin` folder, and restart KOReader on every device.
+
+---
+
 ## [7.4.1]
 
 A maintenance release for 7.4.0. The headline is **the BridgeSync plugin starts on a fresh install again** — 0.6.3 crashed before it ever ran on any device without an existing BridgeSync log file, which meant every new KOReader setup. It also stops Hardcover losing the read you already finished, keeps a stock Kobo from dragging CWA progress back, and adds five opt-in settings.
