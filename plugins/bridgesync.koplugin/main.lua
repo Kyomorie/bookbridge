@@ -709,12 +709,21 @@ function BridgeSync:_showManagedFolderChooser(touchmenu_instance)
 end
 
 function BridgeSync:_runInSubprocess(task)
+    -- Forked child: it must never fork again. The child inherits the running
+    -- coroutine, so a nested call would fork a grandchild and then yield the
+    -- child back into a copy of the parent's UIManager loop, leaving a second
+    -- instance of the app running against the same screen and input devices.
+    if self._in_subprocess then
+        return true, task()
+    end
+
     local co, is_main = coroutine.running()
     if not co or is_main then
         return true, task()
     end
 
     local pid, parent_read_fd = FFIUtil.runInSubProcess(function(_, child_write_fd)
+        self._in_subprocess = true
         if self.sqlite_available then
             -- Forked child: a SQLite handle must never be shared across a
             -- fork, so replace the inherited one with the child's own.
@@ -786,7 +795,10 @@ function BridgeSync:_runInSubprocess(task)
     if ret_values then
         return true, table.unpack(ret_values, 1, ret_values.n or #ret_values)
     end
-    return true
+    -- The child exited without writing a result. Reporting success here hands
+    -- the caller an empty result set, which it renders as its generic failure
+    -- text, so a crashed subprocess reads as a rejected login.
+    return false, "subprocess produced no result"
 end
 
 function BridgeSync:_promptForSetting(title, current_value, hint, setter, is_password, after_save)
