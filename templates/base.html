@@ -7,6 +7,9 @@
     <link rel="icon" type="image/png" href="/static/icon.png">
     <link rel="apple-touch-icon" href="/static/icon.png">
     <link rel="stylesheet" href="/static/css/app.css">
+    {% if active_page == 'library' %}
+    <link rel="stylesheet" href="/static/css/reading-position-preview.css">
+    {% endif %}
     {% block head %}{% endblock %}
 </head>
 <body>
@@ -15,5 +18,8 @@
     {% endif %}
     {% block content %}{% endblock %}
     {% block scripts %}{% endblock %}
+    {% if active_page == 'library' %}
+    <script src="/static/js/reading-position-preview.js"></script>
+    {% endif %}
 </body>
 </html>
