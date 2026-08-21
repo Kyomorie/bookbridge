@@ -534,6 +534,31 @@
             width: 250px;
         }
 
+        /* Search hand-off: bridges the dashboard filter (books you already sync)
+           to Add Book's library search (books you don't). */
+        .search-handoff {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin: -10px 0 30px;
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        .search-handoff.no-results {
+            justify-content: center;
+            padding: 28px 20px;
+            margin: 10px 0 40px;
+            border: 1px dashed var(--border);
+            border-radius: var(--radius-lg);
+            background: var(--panel);
+        }
+
+        .search-handoff-msg:empty {
+            display: none;
+        }
+
         /* Book Grid */
         .book-grid {
             display: grid;
@@ -1986,6 +2011,11 @@
             </div>
         </div>
 
+        <div class="search-handoff hidden" id="search-handoff">
+            <span class="search-handoff-msg" id="search-handoff-msg"></span>
+            <a class="btn btn-secondary" id="search-handoff-link" href="{{ url_for('add_book') }}"></a>
+        </div>
+
         {% if section_flags.has_in_progress %}
         <div class="dashboard-section" id="in-progress-section">
             <div class="section-header">
@@ -2055,6 +2085,10 @@
             const filterSelect = document.getElementById('filter-select');
             const directionBtn = document.getElementById('sort-direction');
             const dashboardSearch = document.getElementById('dashboard-search');
+            const searchHandoff = document.getElementById('search-handoff');
+            const searchHandoffMsg = document.getElementById('search-handoff-msg');
+            const searchHandoffLink = document.getElementById('search-handoff-link');
+            const addBookSearchUrl = '{{ url_for('add_book') }}?search=';
             const notStartedSection = document.getElementById('not-started-section');
             const notStartedHeader = document.getElementById('not-started-header');
             const notStartedGrid = document.getElementById('not-started-grid');
@@ -2083,6 +2117,25 @@
                         section.classList.add('hidden');
                     }
                 });
+            }
+            // Offers a route into Add Book's library search for a title the dashboard
+            // filter can't show, because it isn't synced yet.
+            function updateSearchHandoff(rawQuery) {
+                if (!searchHandoff || !searchHandoffMsg || !searchHandoffLink) return;
+
+                if (!rawQuery) {
+                    searchHandoff.classList.add('hidden');
+                    return;
+                }
+
+                const noResults = document.querySelectorAll('.dashboard-section:not(.hidden)').length === 0;
+                searchHandoffMsg.textContent = noResults
+                    ? 'No synced book matches “' + rawQuery + '”.'
+                    : '';
+                searchHandoffLink.textContent = 'Look for “' + rawQuery + '” in your libraries →';
+                searchHandoffLink.href = addBookSearchUrl + encodeURIComponent(rawQuery);
+                searchHandoff.classList.toggle('no-results', noResults);
+                searchHandoff.classList.remove('hidden');
             }
 
             window.toggleNotStarted = function () {
@@ -2160,6 +2213,7 @@
                 });
 
                 updateDashboardSectionVisibility();
+                updateSearchHandoff(dashboardSearch ? dashboardSearch.value.trim() : '');
 
                 // Persist choice
                 localStorage.setItem('abs_kosync_filter', filterValue);

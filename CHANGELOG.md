@@ -6,6 +6,20 @@ All notable changes to BookBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Searching the library for a book you have not added yet now leads somewhere.**
+  The search box above your books filters the books you already sync, so typing the
+  name of a book you have not matched yet emptied the page and said nothing about
+  why. It now offers to look for that title in your libraries instead, carrying what
+  you typed straight into Add Book's search. The offer also appears when a search
+  does find something, for when the book you actually wanted is the one that is
+  missing.
+- **The Add Book tab shows how many books are waiting in your queue.**
+  The match queue survives leaving the page, but nothing outside Add Book said so.
+  The tab now carries a count whenever you have books queued, so work in progress
+  is visible from anywhere and one click away.
+
 ### Fixed
 
 - **The source badge on the Add Book page is visible now, and it leads the card.**

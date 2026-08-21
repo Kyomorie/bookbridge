@@ -1655,6 +1655,17 @@ def inject_global_vars():
         from src.utils.user_config import user_setting
         return str(user_setting(key, 'false')).lower() in ('true', '1', 'yes', 'on')
 
+    def match_queue_count() -> int:
+        """Number of queued Add Book items for the acting user (0 if unavailable).
+
+        Called lazily from the nav so pages without a user context (login, setup)
+        never pay the queue read, and a queue failure can never break a render.
+        """
+        try:
+            return len(_load_match_queue())
+        except Exception:
+            return 0
+
     return dict(
         shelfmark_url=os.environ.get("SHELFMARK_URL", ""),
         abs_server=_display_abs_server(),
@@ -1663,6 +1674,7 @@ def inject_global_vars():
         get_bool=get_bool,
         get_user_val=get_user_val,
         get_user_bool=get_user_bool,
+        match_queue_count=match_queue_count,
         current_user=current_user(),
     )
 
