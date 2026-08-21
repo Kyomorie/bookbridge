@@ -1427,7 +1427,10 @@ def account_booklore_libraries():
 
 # User-management actions accepted by both the legacy /admin/users page and the
 # Settings → Users tab (which posts to /settings).
-_USER_ADMIN_ACTIONS = {'create', 'reset_password', 'toggle_active', 'delete', 'share_library'}
+# Every action _apply_user_admin_action handles MUST be listed here: POST /settings
+# routes anything missing into the settings-save branch instead, which writes the
+# whole settings form and restarts.
+_USER_ADMIN_ACTIONS = {'create', 'reset_password', 'toggle_active', 'set_role', 'delete', 'share_library'}
 
 
 def _apply_user_admin_action(form):

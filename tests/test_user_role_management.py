@@ -18,6 +18,7 @@ import os
 import shutil
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import Mock
@@ -326,6 +327,50 @@ class SetRoleAdminActionTestCase(unittest.TestCase):
         self.assertIsNone(message)
         self.assertEqual(error, "User not found")
         self.db.set_user_role.assert_not_called()
+
+
+class UserAdminActionDispatchTestCase(unittest.TestCase):
+    """POST /settings routes on an allowlist, and `set_role` was missing from it.
+
+    An action `_apply_user_admin_action` handles but `_USER_ADMIN_ACTIONS` does not
+    list falls through to the settings-SAVE branch, which rewrites the whole
+    settings form from the posted body and restarts the app. Caught live: clicking
+    *Make admin* saved settings instead, flipping every checkbox absent from that
+    request to false. This asserts the two never drift apart again.
+    """
+
+    def _handled_actions(self):
+        """Action literals compared against `action` inside _apply_user_admin_action."""
+        import ast
+        import inspect
+
+        source = inspect.getsource(web_server._apply_user_admin_action)
+        tree = ast.parse(textwrap.dedent(source))
+        found = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Compare) or not isinstance(node.left, ast.Name):
+                continue
+            if node.left.id != 'action':
+                continue
+            for op, comparator in zip(node.ops, node.comparators):
+                if isinstance(op, ast.Eq) and isinstance(comparator, ast.Constant):
+                    found.add(comparator.value)
+        return found
+
+    def test_every_handled_action_is_dispatchable(self):
+        handled = self._handled_actions()
+        self.assertIn('set_role', handled, "sanity: set_role should be handled")
+        missing = handled - web_server._USER_ADMIN_ACTIONS
+        self.assertFalse(
+            missing,
+            f"{sorted(missing)} handled by _apply_user_admin_action but absent from "
+            f"_USER_ADMIN_ACTIONS — POST /settings would run the settings-save branch "
+            f"instead, rewriting every setting and restarting",
+        )
+
+    def test_allowlist_has_no_actions_nothing_handles(self):
+        unhandled = web_server._USER_ADMIN_ACTIONS - self._handled_actions()
+        self.assertFalse(unhandled, f"{sorted(unhandled)} allowlisted but not handled")
 
 
 if __name__ == '__main__':
