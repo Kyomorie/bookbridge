@@ -55,6 +55,7 @@
     .best-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .best { flex: 1; min-width: 0; font-size: 12px; color: rgba(255,255,255,0.78); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .source-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; }
+    .source-badge.language { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.82); }
     .source-badge.grimmory { background: rgba(76,175,80,0.2); color: #81c784; }
     .source-badge.bookorbit { background: rgba(0,188,212,0.2); color: #4dd0e1; }
     .source-badge.abs { background: rgba(102,126,234,0.2); color: #93a5f6; }
@@ -195,11 +196,17 @@
                         <div class="suggestion-main">
                             <img src="{{ s.audio_cover_url or s.cover_url }}" alt="Cover" class="cover" onerror="this.style.opacity='0.25';">
                             <div>
-                                <div class="title">{{ s.audio_title or s.abs_title }}</div>
+                                <div class="title">
+                                    {{ s.audio_title or s.abs_title }}
+                                    {% if s.audio_language %}<span class="source-badge language" title="Language">{{ s.audio_language }}</span>{% endif %}
+                                </div>
                                 {% if s.audio_author or s.abs_author %}<div class="author">{{ s.audio_author or s.abs_author }}</div>{% endif %}
                                 <div class="score">{% if s.matches and s.matches|length > 0 %}Match {{ s.matches[0].score|round|int }}%{% else %}Match --{% endif %}</div>
                                 {% if s.matches and s.matches|length > 0 %}
-                                <div class="best" title="{{ s.matches[0].display_name }}">Best: {{ s.matches[0].display_name }} ({{ s.matches[0].score|round|int }}%)</div>
+                                <div class="best" title="{{ s.matches[0].display_name }}">
+                                    Best: {{ s.matches[0].display_name }} ({{ s.matches[0].score|round|int }}%)
+                                    {% if s.matches[0].language %}<span class="source-badge language" title="Language">{{ s.matches[0].language }}</span>{% endif %}
+                                </div>
                                 {% endif %}
                             </div>
                         </div>
@@ -685,6 +692,7 @@
             const sourcePath = match.source_path || match.path || '';
             const matchReason = match.match_reason || '';
             const author = match.author || '';
+            const language = (match.language || '').toString().trim();
             const score = Math.round(match.score || 0);
 
             const card = document.createElement('div');
@@ -732,6 +740,14 @@
                 badge.className = `source-badge ${sourceBadgeClass(source)}`;
                 badge.textContent = source;
                 card.appendChild(badge);
+            }
+
+            if (language) {
+                const languageBadge = document.createElement('span');
+                languageBadge.className = 'source-badge language';
+                languageBadge.title = 'Language';
+                languageBadge.textContent = language;
+                card.appendChild(languageBadge);
             }
 
             if (matchReason === 'same_folder' || matchReason === 'same_folder_ambiguous') {

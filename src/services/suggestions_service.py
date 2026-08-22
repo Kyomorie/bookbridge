@@ -72,6 +72,7 @@ class SuggestionsService:
                 continue
 
             candidate_author = self._candidate_author(candidate)
+            candidate_language = str(getattr(candidate, 'language', None) or '').strip()
             candidate_source = (getattr(candidate, 'source', None) or '').strip()
             source_id = getattr(candidate, 'source_id', None) or getattr(candidate, 'booklore_id', None)
             raw_path = getattr(candidate, 'path', None)
@@ -87,6 +88,7 @@ class SuggestionsService:
             prepared.append({
                 "title": candidate_title,
                 "author": candidate_author,
+                "language": candidate_language,
                 "source": candidate_source,
                 "source_id": source_id,
                 "search_text": f"{candidate_title} {candidate_author}".strip(),
@@ -161,6 +163,16 @@ class SuggestionsService:
             return (self.get_abs_author(ab) or "").strip()
         except Exception:
             return ""
+
+    @staticmethod
+    def _audio_language(ab: dict) -> str:
+        value = ab.get("audio_language") or ab.get("language")
+        if not value:
+            media = ab.get("media") or {}
+            metadata = media.get("metadata") or {} if isinstance(media, dict) else {}
+            if isinstance(metadata, dict):
+                value = metadata.get("language")
+        return str(value or "").strip()
 
     def _audio_duration(self, ab: dict):
         raw_duration = ab.get("audio_duration")
@@ -261,6 +273,7 @@ class SuggestionsService:
                     "ebook_filename": candidate_info["name"],
                     "display_name": candidate_info["display_name"],
                     "author": candidate_info.get("author", ""),
+                    "language": candidate_info.get("language", ""),
                     "source": candidate_info.get("source", ""),
                     "source_id": candidate_info.get("source_id"),
                     "source_path": candidate_info.get("path") or "",
@@ -313,6 +326,7 @@ class SuggestionsService:
             "ebook_filename": candidate_info.get("name", ""),
             "display_name": candidate_info.get("display_name") or candidate_info.get("name", ""),
             "author": candidate_info.get("author", ""),
+            "language": candidate_info.get("language", ""),
             "source": candidate_info.get("source", ""),
             "source_id": candidate_info.get("source_id"),
             "source_path": candidate_info.get("path") or "",
@@ -409,6 +423,7 @@ class SuggestionsService:
         bridge_key = self._audio_bridge_key(ab)
         audio_title = self._audio_title(ab)
         audio_author = self._audio_author(ab)
+        audio_language = self._audio_language(ab)
         audio_cover_url = self._audio_cover_url(ab, audio_source, audio_source_id)
         audio_duration = self._audio_duration(ab)
         return {
@@ -417,6 +432,7 @@ class SuggestionsService:
             "audio_source_id": audio_source_id,
             "audio_title": audio_title,
             "audio_author": audio_author,
+            "audio_language": audio_language,
             "audio_duration": audio_duration,
             "audio_cover_url": audio_cover_url,
             "audio_path": self._audio_path(ab),
@@ -1001,6 +1017,7 @@ class SuggestionsService:
                 chosen["source_id"] = best["source_id"]
             if best.get("source"):
                 chosen["source"] = best["source"]
+            chosen["language"] = best.get("language", "")
             self.logger.info(
                 f"🔎 Resolved real file for '{audio_title}' -> {best['name']} (match {best_score:.0f})"
             )
@@ -1049,6 +1066,7 @@ class SuggestionsService:
                 "bridge_key": bridge_key,
                 "audio_title": audio_title,
                 "audio_author": audio_author,
+                "audio_language": self._audio_language(ab),
                 "audio_duration": audio_duration,
                 "audio_cover_url": audio_cover_url,
                 "audio_path": self._audio_path(ab),
@@ -1143,6 +1161,7 @@ class SuggestionsService:
                     "bridge_key": cand.get("bridge_key", ""),
                     "audio_title": cand_title,
                     "audio_author": cand_author,
+                    "audio_language": cand.get("audio_language", ""),
                     "audio_duration": cand.get("audio_duration"),
                     "audio_cover_url": cand.get("audio_cover_url", ""),
                     "audio_provider_book_id": cand.get("audio_provider_book_id", ""),
@@ -1173,6 +1192,7 @@ class SuggestionsService:
                 "bridge_key": cand.get("bridge_key", ""),
                 "audio_title": cand_title,
                 "audio_author": cand_author,
+                "audio_language": cand.get("audio_language", ""),
                 "audio_duration": cand.get("audio_duration"),
                 "audio_cover_url": cand.get("audio_cover_url", ""),
                 "audio_provider_book_id": cand.get("audio_provider_book_id", ""),

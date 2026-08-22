@@ -2575,11 +2575,12 @@ def _upsert_storyteller_mapping(
 class EbookResult:
     """Wrapper to provide consistent interface for ebooks from Grimmory, CWA, ABS, or filesystem."""
 
-    def __init__(self, name, title=None, subtitle=None, authors=None, booklore_id=None, path=None, source=None, source_id=None, abs_identifier=None):
+    def __init__(self, name, title=None, subtitle=None, authors=None, booklore_id=None, path=None, source=None, source_id=None, abs_identifier=None, language=None):
         self.name = name
         self.title = title or Path(name).stem
         self.subtitle = subtitle or ''
         self.authors = authors or ''
+        self.language = str(language or '').strip()
         self.booklore_id = booklore_id
         self.path = path # Public path
         self.source = source  # 'booklore', 'cwa', 'abs', 'filesystem'
@@ -2837,6 +2838,7 @@ def get_suggestion_audiobooks():
                 "audio_source_id": source_id,
                 "audio_title": title,
                 "audio_author": author,
+                "audio_language": item.language or "",
                 "audio_duration": item.duration,
                 "audio_cover_url": cover_url,
                 "audio_path": item.path or "",
@@ -2909,6 +2911,7 @@ def get_searchable_ebooks(search_term):
                             title=b.get('title'),
                             subtitle=_ebook_edition_label(b),
                             authors=b.get('authors'),
+                            language=b.get('language'),
                             booklore_id=b.get('id'),
                             path=b.get('filePath') or b.get('filepath') or b.get('path'),
                             source='Grimmory'
@@ -2943,6 +2946,7 @@ def get_searchable_ebooks(search_term):
                     name=fname,
                     title=b.get('title'),
                     authors=b.get('authors'),
+                    language=b.get('language'),
                     path=b.get('filePath') or b.get('filepath') or b.get('path'),
                     source='BookOrbit',
                     source_id=b.get('id'),
@@ -2971,6 +2975,7 @@ def get_searchable_ebooks(search_term):
                     name=fname,
                     title=title,
                     authors=authors,
+                    language=b.get('language'),
                     path=None,
                     source='BookFusion',
                     source_id=bf_id,
@@ -3000,6 +3005,7 @@ def get_searchable_ebooks(search_term):
                     title=book.get('title'),
                     subtitle=_ebook_edition_label(book),
                     authors=book.get('authors') or book.get('author'),
+                    language=book.get('language'),
                     path=book.get('filePath') or book.get('path'),
                     source='Kavita',
                     source_id=book.get('id'),
@@ -3024,6 +3030,7 @@ def get_searchable_ebooks(search_term):
                                     name=fname,
                                     title=ab.get('title'),
                                     authors=ab.get('author'),
+                                    language=ab.get('language'),
                                     source='ABS',
                                     source_id=ab.get('id'),
                                     subtitle=_ebook_edition_label(ab)
@@ -3061,6 +3068,7 @@ def get_searchable_ebooks(search_term):
                                 name=fname,
                                 title=cr.get('title'),
                                 authors=cr.get('author'),
+                                language=cr.get('language'),
                                 path=cr.get('download_url'),
                                 source='CWA',
                                 source_id=cwa_id,
