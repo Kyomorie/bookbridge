@@ -8,6 +8,10 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **Add Book and Suggestions now show each available edition's language.**
+  Language metadata is displayed as a compact badge for Audiobookshelf, CWA,
+  Grimmory, BookOrbit, BookFusion, and Kavita results when the provider supplies
+  it. Language remains display-only and does not affect search or match ranking.
 - **Kavita can now participate as a full ebook source and reading client.** BookBridge
   can search and import Kavita EPUBs, download them to managed KOReader devices,
   match them by their KOReader hash, synchronize progress in both directions, manage

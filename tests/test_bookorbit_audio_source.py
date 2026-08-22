@@ -108,7 +108,7 @@ def test_adapter_search_maps_audio_results(tmp_path):
     bo = MagicMock()
     bo.search_audiobooks.return_value = [
         {"id": 4345, "title": "A Children's Bible", "authors": "Lydia Millet",
-         "duration_seconds": 20049, "num_files": 5},
+         "language": "en", "duration_seconds": 20049, "num_files": 5},
     ]
     adapter = BookOrbitAudioSourceAdapter(bo, tmp_path)
     results = adapter.search("bible")
@@ -118,6 +118,7 @@ def test_adapter_search_maps_audio_results(tmp_path):
     assert r.source == "BookOrbit"
     assert r.source_id == "4345"
     assert r.provider_book_id == "4345"
+    assert r.language == "en"
     assert r.duration == pytest.approx(20049)
     assert r.cover_url == "/api/bookorbit/audiobook-cover/4345"
 

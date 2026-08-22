@@ -40,6 +40,7 @@ def _chapter(chapter_id=73):
         "titleName": "Volume One",
         "sortOrder": 1,
         "volumeId": 44,
+        "language": "en",
         "writers": [{"name": "Ada Writer"}],
         "files": [{
             "id": 81,
@@ -74,6 +75,7 @@ def test_catalog_expands_epub_chapters_and_preserves_koreader_hash():
         "subtitle": "Volume One",
         "authors": "Ada Writer",
         "author": "Ada Writer",
+        "language": "en",
         "fileName": "The Example.epub",
         "filename": "The Example.epub",
         "ext": "epub",

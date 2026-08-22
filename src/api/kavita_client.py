@@ -160,6 +160,7 @@ class KavitaClient:
         filename = Path(raw_path).name if raw_path else f"kavita_{chapter_id}.epub"
         series_id = series.get("id") or series.get("seriesId")
         library_id = series.get("libraryId")
+        language = str(chapter.get("language") or series.get("language") or "").strip()
 
         return {
             "id": str(chapter_id),
@@ -167,6 +168,7 @@ class KavitaClient:
             "subtitle": subtitle,
             "authors": self._authors(chapter),
             "author": self._authors(chapter),
+            "language": language,
             "fileName": filename,
             "filename": filename,
             "ext": "epub",

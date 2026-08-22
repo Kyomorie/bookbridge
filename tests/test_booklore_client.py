@@ -161,8 +161,9 @@ def test_init_loads_from_db(mock_db):
     mock_book.raw_metadata_dict = {
         "id": "123",
         "fileName": "test_book.epub",
-        "title": "Test Book", 
-        "authors": "Test Author"
+        "title": "Test Book",
+        "authors": "Test Author",
+        "metadata": {"language": "fr"},
     }
     
     mock_db.get_all_booklore_books.return_value = [mock_book]
@@ -177,6 +178,7 @@ def test_init_loads_from_db(mock_db):
 
         assert "test_book.epub" in client._book_cache
         assert client._book_cache["test_book.epub"]["id"] == "123"
+        assert client._book_cache["test_book.epub"]["language"] == "fr"
         assert client._book_id_cache["123"]["title"] == "Test Book"
 
 
@@ -1256,6 +1258,7 @@ def test_upsert_lightweight_entry_preserves_nested_summary_fields(booklore_clien
             "title": "Fever Dream",
             "subtitle": "A Novel",
             "authors": [{"name": "Samanta Schweblin"}],
+            "language": "es",
         },
         "primaryFile": {
             "fileName": "Fever Dream - Samanta Schweblin (2016).epub",
@@ -1266,6 +1269,7 @@ def test_upsert_lightweight_entry_preserves_nested_summary_fields(booklore_clien
     assert cached["title"] == "Fever Dream"
     assert cached["subtitle"] == "A Novel"
     assert cached["authors"] == "Samanta Schweblin"
+    assert cached["language"] == "es"
     assert cached["fileName"] == "Fever Dream - Samanta Schweblin (2016).epub"
     assert booklore_client._book_cache["fever dream - samanta schweblin (2016).epub"]["id"] == "bl-1"
 
@@ -1301,6 +1305,7 @@ def test_search_audiobooks_includes_combined_book_using_alternative_formats(book
         "metadata": {
             "title": "The Mars Anomaly",
             "authors": ["Joshua T. Calvert"],
+            "language": "en",
             "audiobookMetadata": {
                 "durationSeconds": 33945,
                 "chapterCount": 50,
@@ -1331,6 +1336,7 @@ def test_search_audiobooks_includes_combined_book_using_alternative_formats(book
 
     assert len(results) == 1
     assert results[0]["id"] == 6798
+    assert results[0]["language"] == "en"
     assert results[0]["audiobookInfo"]["bookFileId"] == 10157
 
 
