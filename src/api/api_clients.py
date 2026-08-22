@@ -383,7 +383,8 @@ class ABSClient:
                                     "source": "ABS",
                                     "ext": "epub",
                                     "subtitle": metadata.get('subtitle'),
-                                    "seriesName": metadata.get('seriesName')
+                                    "seriesName": metadata.get('seriesName'),
+                                    "language": metadata.get('language')
                                 })
                     else:
                         logger.debug(f"   No items found in library '{lib_name}'")
