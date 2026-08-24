@@ -11,6 +11,7 @@ from urllib.parse import urljoin
 import requests
 
 from src.services.alignment_service import ingest_storyteller_transcripts
+from src.utils.cache_paths import safe_library_path
 from src.utils.storyteller_transcript import StorytellerTranscript
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,32 @@ class ForgeService:
             return max(0, int(raw))
         except Exception:
             return default
+
+    @staticmethod
+    def _local_source_path(text_item, context: str = "Forge") -> Path | None:
+        """Return the payload's local ebook path, contained to the library roots.
+
+        The path travels in a client-supplied forge payload, so it is confined to
+        BOOKS_DIR / EXTRA_EBOOK_DIRS / the epub cache before anything reads it.
+        Returns None when absent or outside those roots.
+        """
+        if not isinstance(text_item, dict):
+            return None
+        raw = str(text_item.get('path') or "").strip()
+        if not raw:
+            return None
+        if "://" in raw:
+            # A provider download_url (CWA), not a local file — never a staging source.
+            return None
+        safe_path = safe_library_path(raw)
+        if safe_path is None:
+            logger.warning(
+                "%s: refused local source outside the configured library roots: %s",
+                context,
+                raw,
+            )
+            return None
+        return safe_path
 
     @staticmethod
     def _safe_resolve(path: Path) -> Path:
@@ -971,8 +998,12 @@ class ForgeService:
             text_success = False
 
             if source == 'Local File':
-                src_path = Path(text_item.get('path', ''))
-                if src_path.exists():
+                src_path = self._local_source_path(text_item, "Forge")
+                if src_path is None:
+                    logger.error(
+                        f"❌ Forge: Local file not usable: '{text_item.get('path', '')}'"
+                    )
+                elif src_path.exists():
                     self._stage_local_file(src_path, epub_path, stage_mode, "Forge")
                     text_success = True
                     logger.info(f"⚡ Forge: Local epub copied: {src_path.name}")
@@ -1230,7 +1261,12 @@ class ForgeService:
             epub_path = temp_dir / f"{safe_title}.epub"
             source = self._normalize_text_source(text_item.get('source'))
             if source == 'Local File':
-                self._stage_local_file(text_item.get('path'), epub_path, stage_mode, "Auto-Forge")
+                src_path = self._local_source_path(text_item, "Auto-Forge")
+                if src_path is None:
+                    raise Exception(
+                        f"Local file not usable: '{text_item.get('path', '')}'"
+                    )
+                self._stage_local_file(src_path, epub_path, stage_mode, "Auto-Forge")
             elif source == 'Booklore':
                 content = self.booklore_client.download_book(text_item.get('booklore_id'))
                 if content: epub_path.write_bytes(content)
@@ -1556,9 +1592,9 @@ class ForgeService:
                 nocache_candidates = []
                 if original_name:
                     nocache_candidates.append(self.ebook_parser.epub_cache_dir / original_name)
-                source_path = text_item.get('path') if isinstance(text_item, dict) else None
+                source_path = self._local_source_path(text_item, "Auto-Forge")
                 if source_path:
-                    nocache_candidates.append(Path(source_path))
+                    nocache_candidates.append(source_path)
                 try:
                     nocache_candidates.append(self.ebook_parser.resolve_book_path(original_name))
                 except Exception:
@@ -1612,9 +1648,9 @@ class ForgeService:
                 if original_name:
                     original_candidates.append(self.ebook_parser.epub_cache_dir / original_name)
 
-                source_path = text_item.get('path') if isinstance(text_item, dict) else None
+                source_path = self._local_source_path(text_item, "Auto-Forge")
                 if source_path:
-                    original_candidates.append(Path(source_path))
+                    original_candidates.append(source_path)
 
                 try:
                     resolved_path = self.ebook_parser.resolve_book_path(original_name)

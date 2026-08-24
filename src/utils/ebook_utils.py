@@ -23,7 +23,7 @@ import tempfile
 from pathlib import Path
 from collections import OrderedDict
 from src.sync_clients.sync_client_interface import LocatorResult
-from src.utils.cache_paths import safe_cache_path
+from src.utils.cache_paths import safe_cache_path, is_plain_basename
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +138,12 @@ class EbookParser:
         return [self.books_dir, *self.extra_book_dirs]
 
     def resolve_book_path(self, filename):
+        # 0. Filename-only lookup: a name carrying a directory component or ".."
+        #    would let the glob scans below walk outside the library roots.
+        if not is_plain_basename(filename):
+            logger.warning("Refused book path lookup for a non-basename filename: %s", filename)
+            raise FileNotFoundError(f"Could not locate {filename}")
+
         # 1. Path-resolution cache: avoid repeated recursive scans for the same file.
         with self._path_cache_lock:
             cached = self._path_cache.get(filename)

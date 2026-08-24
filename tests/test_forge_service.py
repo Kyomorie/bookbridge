@@ -474,6 +474,7 @@ class TestForgeService(unittest.TestCase):
         """Manual forge should upload epub and audio files via TUS."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
+            patch.dict(os.environ, {"BOOKS_DIR": tmp}).start()
             source_epub = tmp_path / "source.epub"
             source_epub.write_bytes(b"ebook")
 
@@ -606,6 +607,9 @@ class TestForgeService(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             epub_cache_dir = tmp_path / "epub_cache"
+            # The staging dir stands in for the library: a local source outside
+            # the configured roots is refused (see test_forge_local_path_containment).
+            patch.dict(os.environ, {"BOOKS_DIR": tmp}).start()
 
             title = "Auto Book"
 

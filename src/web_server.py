@@ -37,7 +37,7 @@ from src.utils.user_config import user_setting
 from src.utils.user_config import global_fallback_allowed as _global_fallback_allowed
 
 from src.utils.config_loader import ConfigLoader, KNOWN_SETTING_KEYS, env_truthy
-from src.utils.cache_paths import safe_cache_path
+from src.utils.cache_paths import safe_cache_path, safe_library_path, is_plain_basename
 from src.utils.logging_utils import memory_log_handler, LOG_PATH
 from src.utils.logging_utils import sanitize_log_data
 from src.utils.logging_utils import get_persistent_condition_logger
@@ -1799,6 +1799,12 @@ def sync_daemon():
 # ---------------- ORIGINAL ABS-KOSYNC HELPERS ----------------
 
 def find_ebook_file(filename):
+    if not is_plain_basename(filename):
+        logger.warning(
+            "Refused ebook lookup for a non-basename filename: %s",
+            sanitize_log_data(str(filename or "")),
+        )
+        return None
     base = EBOOK_DIR
     escaped_filename = glob.escape(filename)
     matches = list(base.rglob(escaped_filename))
@@ -1842,8 +1848,8 @@ def get_kosync_id_for_ebook(ebook_filename, booklore_id=None, original_filename=
     # Fall back to filesystem. When a queue item carries the selected local source path,
     # prefer it over filename-only globbing so duplicate basenames do not hash the wrong book.
     ebook_path = None
-    source_path_text = str(source_path or "").strip()
-    if source_path_text and "://" not in source_path_text:
+    source_path_text = _safe_local_source_path(source_path) if "://" not in str(source_path or "") else ""
+    if source_path_text:
         try:
             selected_path = Path(source_path_text)
             if selected_path.exists() and selected_path.is_file():
@@ -3217,6 +3223,27 @@ def _normalize_text_source_type(raw_source):
     return source_map.get(source_text.lower(), source_text)
 
 
+def _safe_local_source_path(raw_path) -> str:
+    """Return a local ebook path only when it resolves inside a library root.
+
+    The value arrives in a request payload, so it is confined to BOOKS_DIR /
+    EXTRA_EBOOK_DIRS / the epub cache before any staging, parsing, hashing, or
+    upload reads it. Returns '' for a missing or out-of-tree path, which the
+    forge callers already treat as "local file path unavailable".
+    """
+    raw = str(raw_path or "").strip()
+    if not raw:
+        return ""
+    safe_path = safe_library_path(raw)
+    if safe_path is None:
+        logger.warning(
+            "Refused local ebook source outside the configured library roots: %s",
+            sanitize_log_data(raw),
+        )
+        return ""
+    return str(safe_path)
+
+
 def _build_forge_text_item(source_type, source_id, source_path, original_filename):
     normalized_source = _normalize_text_source_type(source_type)
     normalized_source_id = str(source_id or "").strip()
@@ -3250,7 +3277,7 @@ def _build_forge_text_item(source_type, source_id, source_path, original_filenam
         if normalized_source_path:
             text_item["download_url"] = normalized_source_path
     if normalized_source == "Local File":
-        text_item["path"] = normalized_source_path
+        text_item["path"] = _safe_local_source_path(normalized_source_path)
 
     return text_item
 
@@ -5591,6 +5618,16 @@ def forge_process():
 
     if not text_item:
         return jsonify({"error": "Missing text_item"}), 400
+    # text_item is client-supplied: a filesystem path must name a file in the library,
+    # never an arbitrary container path whose bytes would be uploaded upstream. A URL
+    # (CWA carries its download_url here) is not a local path and is left alone.
+    if isinstance(text_item, dict):
+        raw_path = str(text_item.get('path') or '').strip()
+        if raw_path and "://" not in raw_path:
+            safe_path = _safe_local_source_path(raw_path)
+            if not safe_path:
+                return jsonify({"error": "Invalid local file path"}), 400
+            text_item['path'] = safe_path
     if audio_source == "ABS" and not requested_abs_id:
         return jsonify({"error": "Missing abs_id"}), 400
     if audio_source in _LIBRARY_AUDIO_SOURCES and not audio_source_id:

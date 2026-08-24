@@ -57,6 +57,17 @@ All notable changes to BookBridge will be documented in this file.
   and **Create Storyteller Edition Only**. Stale pages and direct requests are also
   blocked before they can drain the match queue or start an unusable job.
 
+### Security
+
+- **Forge and Match now confine a local ebook source to your configured library.**
+  Local sources are restricted to `BOOKS_DIR`, any `EXTRA_EBOOK_DIRS`, and the EPUB
+  cache before anything reads, hashes, or uploads them; anything outside those roots
+  is refused and logged. **Multi-user installs should update** — an account you would
+  not trust with the server's files could reach further than intended. Single-user
+  and all-trusted-account installs were not exposed to anything an administrator
+  could not already reach. Reported privately; details will follow once the fix is
+  in a stable release.
+
 ### Fixed
 
 - **BridgeSync's *Test Connection* now tells you when you have pointed it at the
