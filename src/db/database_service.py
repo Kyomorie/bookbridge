@@ -48,6 +48,10 @@ from src.utils.time_utils import utcnow
 
 logger = logging.getLogger(__name__)
 
+# SQLite limits bound parameters per statement (SQLITE_MAX_VARIABLE_NUMBER, historically 999).
+# Use 500 to stay well under the cap with room for other query parameters.
+_SQL_IN_CHUNK = 500
+
 
 class DatabaseService:
     """
@@ -574,53 +578,119 @@ class DatabaseService:
     def get_alignment_provenance(self) -> dict:
         """Report how each stored alignment map was built.
 
-        Returns {'summary': {method: count, ...}, 'books': [{abs_id, title,
-        align_method, llm_used, last_updated}, ...]}. NULL align_method (maps built
-        before provenance tracking) is reported as 'pre_llm'.
+        Returns {'summary': {method: count, ...}, 'total': int, 'needs_realign': int,
+        'books': [{abs_id, title, align_method, llm_used, needs_realign, last_updated}, ...]}.
+        NULL align_method (maps built before provenance tracking) is reported as 'pre_llm'.
+
+        The 'books' list now ONLY contains rows that need re-aligning (NULL align_method,
+        'linear', or 'storyteller_linear'). The 'summary' and 'total' still cover every
+        stored map. The alignment_map_json blob is deliberately never selected.
         """
+        from sqlalchemy import func, case, or_
         with self.get_session() as session:
-            rows = (
-                session.query(BookAlignment, Book.abs_title)
-                .outerjoin(Book, Book.abs_id == BookAlignment.abs_id)
+            # Summary + total from aggregate query grouped by align_method
+            summary_rows = (
+                session.query(
+                    case(
+                        (BookAlignment.align_method.is_(None), "pre_llm"),
+                        else_=BookAlignment.align_method
+                    ).label("method"),
+                    func.count().label("count")
+                )
+                .group_by("method")
                 .all()
             )
-            # A map is worth re-aligning only if it's a flat linear fallback (lexical
-            # anchoring failed) or pre-provenance/unknown — a clean lexical or llm_anchor
-            # map gains nothing from a re-run.
-            realign_methods = {None, "linear", "storyteller_linear"}
-            books = []
             summary: dict = {}
-            for alignment, title in rows:
-                method = alignment.align_method or "pre_llm"
-                summary[method] = summary.get(method, 0) + 1
+            total = 0
+            for method, count in summary_rows:
+                summary[method] = count
+                total += count
+
+            # books now contains ONLY rows that need re-aligning
+            realign_methods = {None, "linear", "storyteller_linear"}
+            book_rows = (
+                session.query(
+                    BookAlignment.abs_id,
+                    BookAlignment.align_method,
+                    BookAlignment.last_updated,
+                    Book.abs_title
+                )
+                .outerjoin(Book, Book.abs_id == BookAlignment.abs_id)
+                .filter(
+                    or_(
+                        BookAlignment.align_method.is_(None),
+                        BookAlignment.align_method.in_(["linear", "storyteller_linear"]),
+                    )
+                )
+                .all()
+            )
+            books = []
+            for abs_id, align_method, last_updated, title in book_rows:
                 books.append({
-                    "abs_id": alignment.abs_id,
-                    "title": title or alignment.abs_id,
-                    "align_method": alignment.align_method,
-                    "llm_used": alignment.align_method == "llm_anchor",
-                    "needs_realign": alignment.align_method in realign_methods,
-                    "last_updated": alignment.last_updated.isoformat() if alignment.last_updated else None,
+                    "abs_id": abs_id,
+                    "title": title or abs_id,
+                    "align_method": align_method,
+                    "llm_used": align_method == "llm_anchor",
+                    "needs_realign": align_method in realign_methods,
+                    "last_updated": last_updated.isoformat() if last_updated else None,
                 })
             books.sort(key=lambda b: (b["llm_used"], (b["align_method"] or "")))
-            needs_realign = sum(1 for b in books if b["needs_realign"])
-            return {"summary": summary, "total": len(books), "needs_realign": needs_realign, "books": books}
+            needs_realign = len(books)
+            return {"summary": summary, "total": total, "needs_realign": needs_realign, "books": books}
+
+    def _chunked_bulk_update(
+        self, abs_ids: list[str], method: str
+    ) -> int:
+        """Apply an align_method value to abs_ids in chunks to avoid SQLite's
+        bound-parameter limit. Returns the total number of rows updated."""
+        if not abs_ids:
+            return 0
+        total_updated = 0
+        with self.get_session() as session:
+            for i in range(0, len(abs_ids), _SQL_IN_CHUNK):
+                chunk = abs_ids[i : i + _SQL_IN_CHUNK]
+                total_updated += session.query(BookAlignment).filter(
+                    BookAlignment.abs_id.in_(chunk)
+                ).update({BookAlignment.align_method: method}, synchronize_session=False)
+        return total_updated
 
     def backfill_alignment_methods(self) -> int:
         """Classify legacy NULL-method maps without re-transcribing, by inspecting the
         stored map: a <=2-point map is a flat linear fallback (lexical anchoring failed →
         an LLM re-align could help); more points means lexical anchoring already succeeded
-        (re-aligning adds nothing). Returns how many rows were updated."""
+        (re-aligning adds nothing). Returns how many rows were updated.
+
+        This method streams the alignment_map_json column in small batches using yield_per
+        to avoid loading multi-megabyte blobs all at once. Classifications are collected
+        in memory as tiny (abs_id, method) tuples, then applied in grouped bulk updates.
+        Bulk updates are chunked to stay within SQLite's bound-parameter limit.
+        """
         import json as _json
-        updated = 0
+
+        linear_ids = []
+        lexical_ids = []
+
         with self.get_session() as session:
-            rows = session.query(BookAlignment).filter(BookAlignment.align_method.is_(None)).all()
-            for alignment in rows:
+            # Pass 1: stream just the columns we need, in small batches
+            query = (
+                session.query(BookAlignment.abs_id, BookAlignment.alignment_map_json)
+                .filter(BookAlignment.align_method.is_(None))
+                .yield_per(10)
+            )
+            for abs_id, map_json in query:
                 try:
-                    points = len(_json.loads(alignment.alignment_map_json))
+                    points = len(_json.loads(map_json))
                 except Exception:
                     continue
-                alignment.align_method = "linear" if points <= 2 else "lexical"
-                updated += 1
+                if points <= 2:
+                    linear_ids.append(abs_id)
+                else:
+                    lexical_ids.append(abs_id)
+
+        # Pass 2: apply classifications with chunked bulk updates (separate session)
+        updated = 0
+        updated += self._chunked_bulk_update(linear_ids, "linear")
+        updated += self._chunked_bulk_update(lexical_ids, "lexical")
         return updated
 
     def get_books_needing_llm_realign(self) -> List[str]:
@@ -1000,12 +1070,15 @@ class DatabaseService:
         """Return BookFusion links keyed by abs_id for a user's visible books."""
         if user_id is None or not abs_ids:
             return {}
+        links: dict = {}
         with self.get_session() as session:
-            rows = session.query(UserBookFusionLink).filter(
-                UserBookFusionLink.user_id == user_id,
-                UserBookFusionLink.abs_id.in_(abs_ids),
-            ).all()
-            return {link.abs_id: self._serialize_bookfusion_link(link) for link in rows}
+            for i in range(0, len(abs_ids), _SQL_IN_CHUNK):
+                rows = session.query(UserBookFusionLink).filter(
+                    UserBookFusionLink.user_id == user_id,
+                    UserBookFusionLink.abs_id.in_(abs_ids[i : i + _SQL_IN_CHUNK]),
+                ).all()
+                links.update({link.abs_id: self._serialize_bookfusion_link(link) for link in rows})
+        return links
 
     def set_user_bookfusion_link(
         self,

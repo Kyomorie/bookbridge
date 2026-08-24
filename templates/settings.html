@@ -3236,8 +3236,6 @@
             }
         }
 
-        document.addEventListener('DOMContentLoaded', loadAlignmentHealth);
-
         document.addEventListener('DOMContentLoaded', function () {
             // Initialize Dynamic Logic
             initDynamicForms();
@@ -3406,6 +3404,8 @@
         const SETTINGS_TABS = ['integrations', 'sync', 'features', 'ai', 'system', 'users'];
         // Old tab names (bookmarks / external links) map onto the new grouping.
         const LEGACY_TAB_ALIASES = { general: 'integrations', reading_apps: 'integrations', trackers: 'integrations', tools: 'features' };
+        // Guard to ensure alignment health loads at most once per page load
+        let alignHealthLoaded = false;
 
         function showSettingsTab(name) {
             if (LEGACY_TAB_ALIASES[name]) name = LEGACY_TAB_ALIASES[name];
@@ -3424,6 +3424,13 @@
                 history.replaceState(null, '', '#' + name);
             } else {
                 location.hash = name;
+            }
+            // Lazy-load alignment health when the sync tab is activated
+            if (name === 'sync' && !alignHealthLoaded) {
+                alignHealthLoaded = true;
+                if (typeof loadAlignmentHealth === 'function') {
+                    loadAlignmentHealth();
+                }
             }
         }
 

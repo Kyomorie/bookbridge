@@ -4734,6 +4734,31 @@ def _public_link_base(web_url_key: str, server_fallback: str) -> str:
     return (os.environ.get(web_url_key, '') or '').strip().rstrip('/') or (server_fallback or '').rstrip('/')
 
 
+def _prefetch_bookfusion_links(books: list, integrations: dict | None) -> dict:
+    """Resolve every book's BookFusion link in one query instead of one per book.
+
+    Returns ``{abs_id: link_dict}``, empty when BookFusion is unconfigured or no
+    user resolves. The dashboard template gates the BookFusion tile on the same
+    ``integrations['bookfusion']`` flag, so skipping the query when that flag is
+    falsey changes nothing the user sees.
+    """
+    if not integrations or not integrations.get('bookfusion'):
+        return {}
+    user_id = _active_bookfusion_link_user_id()
+    if user_id is None:
+        return {}
+    abs_ids = [
+        abs_id for abs_id in (getattr(book, "abs_id", None) for book in (books or [])) if abs_id
+    ]
+    if not abs_ids:
+        return {}
+    try:
+        return database_service.get_user_bookfusion_links_for_books(user_id, abs_ids) or {}
+    except Exception as exc:
+        logger.debug("BookFusion dashboard link prefetch failed: %s", exc, exc_info=True)
+        return {}
+
+
 def _build_dashboard_mapping(
     book,
     states_by_book,
@@ -4743,6 +4768,7 @@ def _build_dashboard_mapping(
     reading_stats_by_book,
     cached_booklore_by_filename,
     claim_times_by_book=None,
+    bookfusion_by_book=None,
 ):
     states = states_by_book.get(book.abs_id, [])
     state_by_client = {state.client_name: state for state in states}
@@ -4877,19 +4903,7 @@ def _build_dashboard_mapping(
             "storygraph_review_count": None,
         })
 
-    bookfusion_link = None
-    try:
-        user = current_user()
-    except RuntimeError:
-        user = None
-    try:
-        if user is not None:
-            bookfusion_link = database_service.get_user_bookfusion_link(user.id, book.abs_id)
-        elif current_app.config.get('LOGIN_DISABLED'):
-            uid = database_service._default_user_id()
-            bookfusion_link = database_service.get_user_bookfusion_link(uid, book.abs_id) if uid else None
-    except Exception as exc:
-        logger.debug("BookFusion dashboard link lookup failed for '%s': %s", book.abs_id, exc)
+    bookfusion_link = (bookfusion_by_book or {}).get(book.abs_id)
     if not isinstance(bookfusion_link, dict):
         bookfusion_link = None
     mapping.update({
@@ -4995,6 +5009,7 @@ def _build_dashboard_mappings(
     reading_stats_by_book=None,
     cached_booklore_by_filename=None,
     claim_times_by_book=None,
+    bookfusion_by_book=None,
 ):
     hardcover_by_book = {h.abs_id: h for h in (all_hardcover or [])}
     storygraph_by_book = {s.abs_id: s for s in (all_storygraph or [])}
@@ -5002,6 +5017,8 @@ def _build_dashboard_mappings(
     reading_stats_by_book = reading_stats_by_book or {}
     cached_booklore_by_filename = cached_booklore_by_filename or {}
     claim_times_by_book = claim_times_by_book or {}
+    if bookfusion_by_book is None:
+        bookfusion_by_book = _prefetch_bookfusion_links(books, integrations)
 
     mappings = []
     total_duration = 0
@@ -5017,6 +5034,7 @@ def _build_dashboard_mappings(
             reading_stats_by_book,
             cached_booklore_by_filename,
             claim_times_by_book,
+            bookfusion_by_book=bookfusion_by_book,
         )
         mappings.append(mapping)
 
