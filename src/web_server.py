@@ -3166,6 +3166,23 @@ def _audio_source_from_bridge_key(bridge_key):
     return "ABS" if key else ""
 
 
+# Map internal audio source key -> (UI badge label, CSS class).
+# These are the FULL product names used on UI chips, deliberately distinct from
+# _audio_source_display_name(), which stays short ("ABS") because it feeds
+# generated book titles.
+_AUDIO_SOURCE_BADGE_LABELS = {
+    "ABS": ("Audiobookshelf", "abs"),
+    "BookLore": ("Grimmory", "grimmory"),
+    "BookOrbit": ("BookOrbit", "bookorbit"),
+}
+
+
+def suggestion_source_badge(audio_source: str | None, bridge_key: str | None = None) -> tuple[str, str]:
+    """Resolve a suggestion's audio provider to a (label, css_class) badge pair."""
+    source = (audio_source or _audio_source_from_bridge_key(bridge_key) or "ABS").strip()
+    return _AUDIO_SOURCE_BADGE_LABELS.get(source, (source, "unknown"))
+
+
 def _build_bridge_key(audio_source, audio_source_id):
     if audio_source_id is None:
         return None
@@ -11597,6 +11614,7 @@ def create_app(test_container=None):
     # Register context processors, jinja globals, etc.
     app.context_processor(inject_global_vars)
     app.jinja_env.globals['safe_folder_name'] = safe_folder_name
+    app.jinja_env.globals['suggestion_source_badge'] = suggestion_source_badge
 
     def format_duration(seconds: int) -> str:
         """Convert seconds to human-readable duration."""

@@ -41,14 +41,14 @@
     .scan-progress-text { font-size: 13px; color: rgba(255,255,255,0.85); }
     @keyframes spin { to { transform: rotate(360deg); } }
     .suggestions-list { max-height: calc(100vh - 290px); overflow-y: auto; padding: 12px; display: grid; gap: 10px; }
-    .suggestion-card { position: relative; border: 1px solid var(--border-strong); background: var(--panel-soft); border-radius: 10px; padding: 10px; cursor: pointer; }
+    .suggestion-card { border: 1px solid var(--border-strong); background: var(--panel-soft); border-radius: 10px; padding: 10px; cursor: pointer; }
     .suggestion-card:hover { border-color: rgba(102,126,234,0.5); }
     .suggestion-card.selected { border-color: rgba(102,126,234,0.85); background: rgba(102,126,234,0.14); }
     .bulk-actions { display: flex; gap: 8px; margin: 8px 0 4px; padding: 0 12px; flex-wrap: wrap; }
     .suggestion-select { font-size: 12px; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; gap: 4px; margin-right: auto; }
     .suggestion-card.is-queued { opacity: 0.5; border-color: rgba(76,175,80,0.5); }
     .suggestion-card.is-queued::before { content: '✓ Queued'; float: right; font-size: 11px; font-weight: 700; color: #81c784; }
-    .suggestion-main { display: grid; grid-template-columns: 54px minmax(0,1fr); gap: 10px; align-items: center; padding-right: 108px; }
+    .suggestion-main { display: grid; grid-template-columns: 54px minmax(0,1fr); gap: 10px; align-items: center; }
     .cover { width: 54px; height: 54px; border-radius: 8px; object-fit: cover; background: rgba(255,255,255,0.1); border: 1px solid var(--border-strong); }
     .title { font-size: 15px; font-weight: 700; margin-bottom: 4px; line-height: 1.3; }
     .author { font-size: 12px; color: var(--muted); margin-bottom: 3px; }
@@ -64,7 +64,6 @@
     .source-badge.unknown { background: rgba(255,255,255,0.14); color: rgba(255,255,255,0.85); }
     .source-badge.transcript { background: rgba(167,139,250,0.2); color: #a78bfa; }
     .source-badge.samefolder { background: rgba(45,212,191,0.18); color: #5eead4; }
-    .suggestion-provider-badge { position: absolute; top: 10px; right: 10px; max-width: calc(100% - 84px); overflow: hidden; text-overflow: ellipsis; }
     .score { display: inline-block; margin-bottom: 4px; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; color: #7ec8ff; background: rgba(126,200,255,0.12); border: 1px solid rgba(126,200,255,0.32); }
     .card-actions { margin-top: 8px; width: 100%; display: flex; gap: 8px; justify-content: flex-start; flex-wrap: wrap; }
     .card-actions .btn { opacity: 1; border-width: 1px; font-weight: 700; }
@@ -188,32 +187,19 @@
                 {% if suggestions %}
                 <div class="suggestions-list" id="suggestionsList">
                     {% for s in suggestions %}
-                    {% set suggestion_source = s.audio_source or 'ABS' %}
-                    {% if suggestion_source == 'ABS' %}
-                    {% set suggestion_source_label = 'Audiobookshelf' %}
-                    {% set suggestion_source_class = 'abs' %}
-                    {% elif suggestion_source == 'BookLore' %}
-                    {% set suggestion_source_label = 'Grimmory' %}
-                    {% set suggestion_source_class = 'grimmory' %}
-                    {% elif suggestion_source == 'BookOrbit' %}
-                    {% set suggestion_source_label = 'BookOrbit' %}
-                    {% set suggestion_source_class = 'bookorbit' %}
-                    {% else %}
-                    {% set suggestion_source_label = suggestion_source %}
-                    {% set suggestion_source_class = 'unknown' %}
-                    {% endif %}
+                    {% set suggestion_source_label, suggestion_source_class = suggestion_source_badge(s.audio_source, s.bridge_key or s.abs_id) %}
                     <div class="suggestion-card"
                          id="suggestion-{{ s.bridge_key or s.abs_id }}"
                          data-abs-id="{{ s.bridge_key or s.abs_id }}"
                          data-best-score="{% if s.matches and s.matches|length > 0 %}{{ s.matches[0].score }}{% else %}0{% endif %}"
                          data-title="{{ s.audio_title or s.abs_title or '' }}"
                          onclick="selectSuggestion('{{ s.bridge_key or s.abs_id }}')">
-                        <span class="source-badge {{ suggestion_source_class }} suggestion-provider-badge">{{ suggestion_source_label }}</span>
                         <div class="suggestion-main">
                             <img src="{{ s.audio_cover_url or s.cover_url }}" alt="Cover" class="cover" onerror="this.style.opacity='0.25';">
                             <div>
                                 <div class="title">
                                     {{ s.audio_title or s.abs_title }}
+                                    <span class="source-badge {{ suggestion_source_class }}" title="Audiobook source">{{ suggestion_source_label }}</span>
                                     {% if s.audio_language %}<span class="source-badge language" title="Language">{{ s.audio_language }}</span>{% endif %}
                                 </div>
                                 {% if s.audio_author or s.abs_author %}<div class="author">{{ s.audio_author or s.abs_author }}</div>{% endif %}
