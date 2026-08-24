@@ -8800,6 +8800,26 @@ def _extracted_cover_is_stale(cover_path, source_path) -> bool:
 _COVER_FRESH_TTL_SECONDS = 300
 _cover_fresh_until: dict = {}
 
+# Browser-side cache window for extracted covers. Flask leaves `max_age` unset by
+# default, which sends `Cache-Control: no-cache` — the browser then revalidates
+# EVERY cover on EVERY dashboard load, so a large library pays hundreds of
+# conditional round trips just to be told 304. Covers are auth-gated, hence
+# `private`. The window deliberately matches _COVER_FRESH_TTL_SECONDS: a re-extracted
+# cover is already allowed to be up to that stale server-side, so the browser cache
+# adds no staleness the server does not already accept.
+_COVER_BROWSER_MAX_AGE_SECONDS = _COVER_FRESH_TTL_SECONDS
+
+
+def _send_cover_cached(filename: str):
+    """Serve an extracted cover with a browser cache window (see the constant)."""
+    response = send_from_directory(
+        COVERS_DIR, filename, max_age=_COVER_BROWSER_MAX_AGE_SECONDS
+    )
+    response.headers['Cache-Control'] = (
+        f'private, max-age={_COVER_BROWSER_MAX_AGE_SECONDS}'
+    )
+    return response
+
 
 def serve_cover(filename):
     """Serve cover images with lazy extraction."""
@@ -8817,7 +8837,7 @@ def serve_cover(filename):
     # book per TTL instead of on every request; an ebook edited inside the window is
     # picked up on the next one.
     if cover_path.exists() and _cover_fresh_until.get(doc_hash, 0) > time.time():
-        return send_from_directory(COVERS_DIR, filename)
+        return _send_cover_cached(filename)
 
     book = database_service.get_book_by_kosync_id(doc_hash)
 
@@ -8830,7 +8850,7 @@ def serve_cover(filename):
                 logger.debug(f"Cover freshness check could not resolve the ebook: {e}")
         if not source_path or not _extracted_cover_is_stale(cover_path, source_path):
             _cover_fresh_until[doc_hash] = time.time() + _COVER_FRESH_TTL_SECONDS
-            return send_from_directory(COVERS_DIR, filename)
+            return _send_cover_cached(filename)
         _cover_fresh_until.pop(doc_hash, None)
         logger.info(
             "🖼️ Re-extracting cover for '%s': the ebook changed since it was cached",
@@ -8860,7 +8880,7 @@ def serve_cover(filename):
              full_book_path = parser.resolve_book_path(book.ebook_filename)
 
              if parser.extract_cover(full_book_path, cover_path):
-                 return send_from_directory(COVERS_DIR, filename)
+                 return _send_cover_cached(filename)
         except Exception as e:
             logger.debug(f"Lazy cover extraction failed: {e}")
 
