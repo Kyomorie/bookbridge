@@ -5580,6 +5580,8 @@ def forge_process():
 
     abs_id = requested_abs_id if audio_source == "ABS" else _build_bridge_key(audio_source, audio_source_id)
     clients = uc()
+    if not clients.storyteller_client.is_configured():
+        return jsonify({"error": "Storyteller is not configured"}), 409
 
     # Get title/author from the audio provider for folder naming
     title = "Unknown"
@@ -5717,6 +5719,8 @@ def match():
         ebook_filename = selected_filename
         original_ebook_filename = selected_filename
         clients = uc()
+        if request.form.get('action') == 'forge_match' and not clients.storyteller_client.is_configured():
+            return "Storyteller is not configured", 409
         audiobooks = get_audiobooks_conditionally()
         selected_ab = next((ab for ab in audiobooks if ab['id'] == abs_id), None) if abs_id else None
 
@@ -6982,8 +6986,12 @@ def _queue_item_from_match_form(clients) -> "dict | None":
 def _add_book_view():
     """Render and handle the unified queue-based Add Book view."""
     clients = uc()
+    storyteller_enabled = bool(clients.storyteller_client.is_configured())
     if request.method == 'POST':
         action = request.form.get('action')
+        if action in ('forge_and_match_queue', 'forge_only_queue') and not storyteller_enabled:
+            flash("Configure Storyteller before creating a Storyteller edition.", "warning")
+            return redirect(url_for('add_book'))
         if action == 'add_to_queue':
             queue_item = _queue_item_from_match_form(clients)
             if queue_item:
@@ -7026,7 +7034,7 @@ def _add_book_view():
         ebooks = _promote_authoritative_ebook_matches(audiobooks, ebooks)
 
         # Search Storyteller
-        if clients.storyteller_client.is_configured():
+        if storyteller_enabled:
             try:
                 storyteller_books = clients.storyteller_client.search_books(search)
             except Exception as e:
@@ -7034,7 +7042,8 @@ def _add_book_view():
 
     return render_template('add_book.html', audiobooks=audiobooks, ebooks=ebooks,
                            storyteller_books=storyteller_books,
-                           queue=_load_match_queue(), search=search)
+                           queue=_load_match_queue(), search=search,
+                           storyteller_enabled=storyteller_enabled)
 
 
 def batch_match():
@@ -7704,7 +7713,11 @@ def _match_queue_response():
     """Re-render the queue panel fragment for an XHR add/remove/clear (so the page
     isn't reloaded and scroll position is preserved); otherwise redirect to /suggestions."""
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
-        return render_template('_match_queue_panel.html', queue=_load_match_queue())
+        return render_template(
+            '_match_queue_panel.html',
+            queue=_load_match_queue(),
+            storyteller_enabled=bool(uc().storyteller_client.is_configured()),
+        )
     return redirect(url_for('suggestions'))
 
 
@@ -7750,12 +7763,17 @@ def _queue_item_from_suggestion(suggestion: dict) -> "dict | None":
 
 def suggestions_page():
     _clear_legacy_suggestions_session_payload()
+    clients = uc()
+    storyteller_enabled = bool(clients.storyteller_client.is_configured())
     state_id, suggestions_state = _get_suggestions_state(create=True)
     if suggestions_state is None:
         suggestions_state = _default_suggestions_state()
 
     if request.method == 'POST':
         action = request.form.get('action')
+        if action == 'forge_and_match_queue' and not storyteller_enabled:
+            flash("Configure Storyteller before creating a Storyteller edition.", "warning")
+            return redirect(url_for('suggestions'))
 
         if action in ('scan', 'scan_full'):
             full_refresh = (action == 'scan_full')
@@ -7856,7 +7874,7 @@ def suggestions_page():
             return redirect(url_for('suggestions'))
 
         elif action == 'add_to_queue':
-            queue_item = _queue_item_from_match_form(uc())
+            queue_item = _queue_item_from_match_form(clients)
             if queue_item:
                 _match_queue_add(queue_item)
             return _match_queue_response()
@@ -8088,7 +8106,7 @@ def suggestions_page():
         scan_in_progress=scan_in_progress,
         scan_error=scan_error,
         scan_stats=suggestions_state.get('scan_last_stats', {}),
-        storyteller_enabled=bool(uc().storyteller_client.is_configured()),
+        storyteller_enabled=storyteller_enabled,
     )
 
 

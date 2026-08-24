@@ -48,6 +48,15 @@ All notable changes to BookBridge will be documented in this file.
   The tab now carries a count whenever you have books queued, so work in progress
   is visible from anywhere and one click away.
 
+### Changed
+
+- **Storyteller edition creation is now clearly separated from ordinary matching.**
+  Add Book and Suggestions show only **Match All** when the current reader has no
+  Storyteller account configured. When Storyteller is available, the former Forge
+  actions now say exactly what they do: **Create Storyteller Edition & Match All**
+  and **Create Storyteller Edition Only**. Stale pages and direct requests are also
+  blocked before they can drain the match queue or start an unusable job.
+
 ### Fixed
 
 - **BridgeSync's *Test Connection* now tells you when you have pointed it at the

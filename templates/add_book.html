@@ -1247,37 +1247,37 @@
                     </button>
                 </form>
 
-                {% if queue_ns.forge_eligible > 0 %}
+                {% if storyteller_enabled and queue_ns.forge_eligible > 0 %}
                 <form method="POST" action="{{ url_for('add_book') }}">
                     <input type="hidden" name="action" value="forge_and_match_queue">
                     <button type="submit" class="btn btn-primary w-100"
                         data-primary-action="queue-actions"
-                        data-working-label="Forging + matching..."
-                        data-working-message="Forging queued Storyteller editions and saving matches..."
+                        data-working-label="Creating Storyteller editions..."
+                        data-working-message="Creating queued Storyteller editions and saving matches..."
                         data-feedback-target="queueFeedback">
-                        Forge & Match All ({{ queue|length }})
+                        Create Storyteller Edition &amp; Match All ({{ queue|length }})
                     </button>
                 </form>
-                <div class="queue-action-note">Forge applies to audio plus standard ebook items; Storyteller or text-only items are matched directly.</div>
+                <div class="queue-action-note">Creates Storyteller editions for audio plus standard ebook items; existing Storyteller or text-only items are matched directly.</div>
                 {% endif %}
 
-                {% if queue|length == 1 and queue_ns.forge_eligible == 1 %}
+                {% if storyteller_enabled and queue|length == 1 and queue_ns.forge_eligible == 1 %}
                 <form method="POST" action="{{ url_for('add_book') }}" id="forgeOnlyQueueForm">
                     <input type="hidden" name="action" value="forge_only_queue">
                     <input type="hidden" name="forge_stage_mode" id="forgeOnlyStageMode" value="">
                     <button type="submit" class="btn btn-primary w-100" id="forgeOnlyQueueBtn"
                         data-primary-action="queue-actions"
-                        data-working-label="Starting forge..."
-                        data-working-message="Starting the Storyteller forge and returning to the dashboard..."
+                        data-working-label="Creating Storyteller edition..."
+                        data-working-message="Starting Storyteller edition creation and returning to the dashboard..."
                         data-feedback-target="queueFeedback">
-                        Forge Only
+                        Create Storyteller Edition Only
                     </button>
                 </form>
-                {% elif queue|length > 1 and queue_ns.forge_eligible > 0 %}
-                <button type="button" class="btn btn-primary w-100" disabled title="Forge only is available for one queued book at a time.">
-                    Forge Only
+                {% elif storyteller_enabled and queue|length > 1 and queue_ns.forge_eligible > 0 %}
+                <button type="button" class="btn btn-primary w-100" disabled title="Storyteller edition creation is available for one queued book at a time.">
+                    Create Storyteller Edition Only
                 </button>
-                <div class="queue-action-note">Forge only is disabled when more than one item is queued.</div>
+                <div class="queue-action-note">Storyteller edition-only creation is disabled when more than one item is queued.</div>
                 {% endif %}
 
                 <form method="POST" action="{{ url_for('add_book') }}">
@@ -1299,9 +1299,10 @@
     </div>
 </div>
 
+{% if storyteller_enabled %}
 <div class="modal-overlay" id="forgeStageModal" aria-hidden="true">
     <div class="modal modal-card" role="dialog" aria-modal="true" aria-labelledby="forgeStageTitle">
-        <h3 id="forgeStageTitle">Forge staging mode</h3>
+        <h3 id="forgeStageTitle">Storyteller edition staging</h3>
         <p>Choose what happens to the staged source files after Storyteller finishes processing.</p>
         <div class="modal-options">
             <button type="button" class="modal-option" onclick="chooseForgeStageMode('cleanup')">
@@ -1318,6 +1319,7 @@
         </div>
     </div>
 </div>
+{% endif %}
 
 <script>
     let selectedAudiobookId = null;
@@ -1866,14 +1868,16 @@
     window.addEventListener('hashchange', openKosyncSectionFromHash);
 
     const forgeStageModal = document.getElementById('forgeStageModal');
-    forgeStageModal.addEventListener('click', (event) => {
-        if (event.target === forgeStageModal) {
-            closeForgeStageModal();
-        }
-    });
+    if (forgeStageModal) {
+        forgeStageModal.addEventListener('click', (event) => {
+            if (event.target === forgeStageModal) {
+                closeForgeStageModal();
+            }
+        });
+    }
 
     document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape' && forgeStageModal.classList.contains('open')) {
+        if (event.key === 'Escape' && forgeStageModal && forgeStageModal.classList.contains('open')) {
             closeForgeStageModal();
         }
     });
