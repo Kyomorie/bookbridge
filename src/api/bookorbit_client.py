@@ -257,6 +257,7 @@ class BookOrbitClient:
             "id": book_id,
             "title": (book.get("title") or "").strip(),
             "authors": self._format_authors(book.get("authors")),
+            "language": str(book.get("language") or "").strip(),
             "primaryFileId": (primary or {}).get("id"),
             "primaryFormat": (primary_format or "").lower(),
             "kind": self._classify_format(primary_format),
@@ -346,7 +347,7 @@ class BookOrbitClient:
 
     def _enrich_ebook(self, book_id, light: dict) -> Optional[dict]:
         """Resolve an ebook's primary filename (via cached detail) for candidate use.
-        Returns dict with keys: id, title, authors, fileName, subtitle, seriesName, seriesIndex.
+        Returns normalized metadata for a picker candidate.
         """
         detail = self.get_book_detail(book_id)
         if not detail:
@@ -362,6 +363,9 @@ class BookOrbitClient:
             "id": book_id,
             "title": (light or {}).get("title") or detail.get("title") or "",
             "authors": (light or {}).get("authors") or self._format_authors(detail.get("authors")),
+            "language": str(
+                detail.get("language") or (light or {}).get("language") or ""
+            ).strip(),
             "fileName": filename,
             "subtitle": subtitle,
             "seriesName": series_name,
@@ -403,7 +407,7 @@ class BookOrbitClient:
 
         Mirrors BookloreClient.search_books: query BookOrbit's metadata search,
         keep ebook-format hits, and enrich just those few with their filename.
-        Returns dicts with keys: id, title, authors, fileName, subtitle, seriesName, seriesIndex.
+        Returns normalized metadata including language when BookOrbit supplies it.
         """
         out = []
         for hit in self._search_raw(search_term, limit):
@@ -411,7 +415,12 @@ class BookOrbitClient:
                 continue
             enriched = self._enrich_ebook(
                 hit.get("id"),
-                {"title": hit.get("title"), "authors": self._format_authors(hit.get("authors")), "seriesName": hit.get("seriesName")},
+                {
+                    "title": hit.get("title"),
+                    "authors": self._format_authors(hit.get("authors")),
+                    "language": hit.get("language"),
+                    "seriesName": hit.get("seriesName"),
+                },
             )
             if enriched:
                 out.append(enriched)
@@ -426,13 +435,14 @@ class BookOrbitClient:
         detail enrichment (a detail call per book would hit the request
         throttle on a large library — mirrors get_all_ebooks).
         Returns dicts with keys: id, title, authors, duration_seconds, num_files,
-        total_size_bytes, subtitle, seriesName, seriesIndex.
+        total_size_bytes, subtitle, language, seriesName, seriesIndex.
         """
         safe_term = str(search_term or "").strip()
         if not safe_term:
             return [
                 {"id": info.get("id"), "title": info.get("title") or "",
                  "authors": info.get("authors") or "",
+                 "language": info.get("language") or "",
                  "duration_seconds": None, "num_files": None}
                 for info in self.get_all_books()
                 if info.get("kind") == "audiobook"
@@ -461,6 +471,7 @@ class BookOrbitClient:
                 "id": hit["id"],
                 "title": hit.get("title") or "",
                 "authors": self._format_authors(hit.get("authors")),
+                "language": str(detail.get("language") or hit.get("language") or "").strip(),
                 "duration_seconds": info.get("duration_seconds"),
                 "num_files": len(tracks),
                 "total_size_bytes": total_size,
@@ -486,6 +497,7 @@ class BookOrbitClient:
                 "id": info.get("id"),
                 "title": info.get("title") or "",
                 "authors": info.get("authors") or "",
+                "language": info.get("language") or "",
                 "fileName": None,
             })
         return out

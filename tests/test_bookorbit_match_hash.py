@@ -109,7 +109,10 @@ def test_kosync_id_prefers_selected_source_path_before_filename_glob():
 
         container, parser = _container(tmp, "unused")
         parser.get_kosync_id.return_value = "selectedhash"
-        with patch.object(web_server, "uc", return_value=_clients(bookorbit)), \
+        # Both candidates live in the library, as they do in a real install —
+        # a selected source path outside the library roots is refused.
+        with patch.dict(os.environ, {"BOOKS_DIR": tmp}), \
+             patch.object(web_server, "uc", return_value=_clients(bookorbit)), \
              patch.object(web_server, "container", container), \
              patch.object(web_server, "find_ebook_file", wraps=web_server.find_ebook_file):
             result = web_server.get_kosync_id_for_ebook(_EBOOK, source_path=str(selected))

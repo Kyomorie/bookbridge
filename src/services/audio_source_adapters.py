@@ -22,6 +22,7 @@ class AudioResult:
     subtitle: str = ""
     series_label: str = ""
     authors: str = ""
+    language: str = ""
     cover_url: str = ""
     duration: Optional[float] = None
     display_name: str = ""
@@ -219,6 +220,7 @@ class ABSAudioSourceAdapter(AudioSourceAdapter):
                     subtitle=subtitle,
                     series_label=series_label,
                     authors=authors,
+                    language=str(metadata.get("language") or "").strip(),
                     cover_url=cover_url,
                     duration=float(duration) if duration is not None else None,
                     display_name=title,
@@ -398,6 +400,7 @@ class BookLoreAudioSourceAdapter(AudioSourceAdapter):
                     subtitle=subtitle,
                     series_label=series_label,
                     authors=self._format_authors(book),
+                    language=str(book.get("language") or "").strip(),
                     cover_url=self.get_cover_url(str(book_id)) or "",
                     duration=duration,
                     display_name=title,
@@ -730,6 +733,7 @@ class BookOrbitAudioSourceAdapter(AudioSourceAdapter):
                     subtitle=subtitle,
                     series_label=series_label,
                     authors=book.get("authors") or "",
+                    language=str(book.get("language") or "").strip(),
                     cover_url=self.get_cover_url(str(book_id)) or "",
                     duration=float(duration) if duration else None,
                     display_name=title,

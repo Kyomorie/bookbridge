@@ -22,10 +22,11 @@ class BookMappingService:
 
     def __init__(self, database_service, booklore_client, ebook_parser,
                  abs_client, sync_clients, bookorbit_client=None,
-                 user_client_registry=None):
+                 kavita_client=None, user_client_registry=None):
         self.database_service = database_service
         self.booklore_client = booklore_client
         self.bookorbit_client = bookorbit_client
+        self.kavita_client = kavita_client
         self.ebook_parser = ebook_parser
         self.abs_client = abs_client
         # `sync_clients` is a dict-like provider (DI Dict provider yields a dict)
@@ -36,6 +37,8 @@ class BookMappingService:
         """Pick the library client that hosts the ebook, by source label."""
         if source_name == 'BookOrbit':
             return self.bookorbit_client
+        if source_name == 'Kavita':
+            return self.kavita_client
         return self.booklore_client
 
     def _resolve_library_client_for_user(self, source_name: Optional[str],
@@ -50,8 +53,9 @@ class BookMappingService:
             bundle = self._user_client_registry.get_clients(user_id)
             if source_name == 'BookOrbit':
                 return getattr(bundle, 'bookorbit_client', None)
-            else:
-                return getattr(bundle, 'booklore_client', None)
+            if source_name == 'Kavita':
+                return getattr(bundle, 'kavita_client', None)
+            return getattr(bundle, 'booklore_client', None)
         except Exception as exc:
             logger.warning("Shelf-watch: could not resolve %s client for user %s: %s", source_name, user_id, exc, exc_info=True)
             return None
@@ -271,6 +275,7 @@ class BookMappingService:
         ebook_source: str = "BookLore",
         ebook_source_id: Optional[str] = None,
         booklore_ebook_id: Optional[str] = None,
+        kosync_doc_id: Optional[str] = None,
         user_id: Optional[int] = None,
     ) -> Optional[Book]:
         """Create an ebook-only mapping when no audio candidate was found.
@@ -286,7 +291,7 @@ class BookMappingService:
             logger.warning("Shelf-watch: create_ebook_only_mapping missing ebook_filename")
             return None
 
-        kosync_doc_id = self._compute_kosync_id(
+        kosync_doc_id = kosync_doc_id or self._compute_kosync_id(
             ebook_filename, booklore_ebook_id or ebook_source_id, ebook_source,
             user_id=user_id,
         )

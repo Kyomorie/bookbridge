@@ -153,6 +153,10 @@ class KoSyncSyncClient(SyncClient):
         block_path = "/".join(normalized_steps[:last_block_idx + 1])
         return f"{prefix}/{block_path}.0"
 
+    def _reset_progress_xpath(self) -> str:
+        """Return the service-specific locator used when clearing progress."""
+        return ""
+
     def update_progress(self, book: Book, request: UpdateProgressRequest) -> SyncResult:
         pct = request.locator_result.percentage
         ko_id = book.kosync_doc_id if book else None
@@ -171,7 +175,7 @@ class KoSyncSyncClient(SyncClient):
             safe_xpath = self._sanitize_kosync_xpath(sentence_xpath, pct)
 
         if safe_xpath is None and pct is not None and pct <= 0:
-            safe_xpath = ""
+            safe_xpath = self._reset_progress_xpath()
 
         if safe_xpath is None and pct is not None and pct > 0:
             logger.warning(f"Skipping KoSync update due to unresolvable XPath for '{book.abs_title if book else 'unknown'}'")

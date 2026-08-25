@@ -19,6 +19,7 @@ from src.api.cwa_client import CWAClient
 from src.api.cwa_sync_api import CWASyncApi
 from src.api.hardcover_client import HardcoverClient
 from src.api.llm_client import create_llm_client
+from src.api.kavita_client import KavitaClient, KavitaKoSyncClient
 from src.api.storygraph_client import StorygraphClient
 from src.api.storyteller_api import StorytellerAPIClient
 from src.db.database_service import DatabaseService
@@ -38,6 +39,7 @@ from src.services.shelf_watch_service import ShelfWatchService
 from src.services.user_client_registry import UserClientRegistry
 from src.sync_clients.abs_sync_client import ABSSyncClient
 from src.sync_clients.kosync_sync_client import KoSyncSyncClient
+from src.sync_clients.kavita_sync_client import KavitaSyncClient
 from src.sync_clients.storyteller_sync_client import StorytellerSyncClient
 from src.sync_clients.booklore_sync_client import BookloreSyncClient
 from src.sync_clients.bookfusion_sync_client import BookFusionSyncClient
@@ -113,7 +115,8 @@ class Container(containers.DeclarativeContainer):
         database_service=database_service,
     )
     bookorbit_client = providers.Singleton(BookOrbitClient, ollama_client=ollama_client)
-    kavita_client = providers.Object(None)
+    kavita_client = providers.Singleton(KavitaClient)
+    kavita_kosync_client = providers.Singleton(KavitaKoSyncClient)
 
     hardcover_client = providers.Singleton(HardcoverClient)
     storygraph_client = providers.Singleton(StorygraphClient)
@@ -163,7 +166,8 @@ class Container(containers.DeclarativeContainer):
         cwa_client=cwa_client,
         abs_client=abs_client,
         epub_cache_dir=epub_cache_dir,
-        bookorbit_client=bookorbit_client
+        bookorbit_client=bookorbit_client,
+        kavita_client=kavita_client,
     )
 
     koreader_device_sync_service = providers.Singleton(
@@ -212,6 +216,12 @@ class Container(containers.DeclarativeContainer):
         KoSyncSyncClient,
         kosync_client,
         ebook_parser
+    )
+
+    kavita_sync_client = providers.Singleton(
+        KavitaSyncClient,
+        kavita_kosync_client,
+        ebook_parser,
     )
 
     storyteller_sync_client = providers.Singleton(
@@ -275,6 +285,7 @@ class Container(containers.DeclarativeContainer):
         ollama_client=ollama_client,
         booklore_client=booklore_client,
         bookorbit_client=bookorbit_client,
+        kavita_client=kavita_client,
     )
 
     storygraph_sync_client = providers.Singleton(
@@ -286,6 +297,7 @@ class Container(containers.DeclarativeContainer):
         ollama_client=ollama_client,
         booklore_client=booklore_client,
         bookorbit_client=bookorbit_client,
+        kavita_client=kavita_client,
     )
 
     abs_audio_source_adapter = providers.Singleton(
@@ -316,6 +328,7 @@ class Container(containers.DeclarativeContainer):
         ABS=abs_sync_client,
         ABSEbook=abs_ebook_sync_client,
         KoSync=kosync_sync_client,
+        Kavita=kavita_sync_client,
         Storyteller=storyteller_sync_client,
         BookLore=booklore_sync_client,
         BookFusion=bookfusion_sync_client,
@@ -335,6 +348,7 @@ class Container(containers.DeclarativeContainer):
         abs_client=abs_client,
         booklore_client=booklore_client,
         bookorbit_client=bookorbit_client,
+        kavita_client=kavita_client,
         storyteller_client=storyteller_client,
         library_service=library_service,
         ebook_parser=ebook_parser,
@@ -365,6 +379,7 @@ class Container(containers.DeclarativeContainer):
         database_service=database_service,
         booklore_client=booklore_client,
         bookorbit_client=bookorbit_client,
+        kavita_client=kavita_client,
         ebook_parser=ebook_parser,
         abs_client=abs_client,
         sync_clients=providers.Dict(
@@ -397,14 +412,26 @@ class Container(containers.DeclarativeContainer):
         user_client_registry=user_client_registry,
     )
 
+    shelf_watch_service_kavita = providers.Singleton(
+        ShelfWatchService,
+        booklore_client=kavita_client,
+        database_service=database_service,
+        book_mapping_service=book_mapping_service,
+        source_name='Kavita',
+        env_prefix='KAVITA',
+        user_client_registry=user_client_registry,
+    )
+
     shelf_watch_services = providers.List(
         shelf_watch_service,
         shelf_watch_service_bookorbit,
+        shelf_watch_service_kavita,
     )
 
     shelf_watch_services_by_client = providers.Dict(
         BookLore=shelf_watch_service,
         BookOrbit=shelf_watch_service_bookorbit,
+        Kavita=shelf_watch_service_kavita,
     )
 
     # Sync Manager
@@ -414,6 +441,7 @@ class Container(containers.DeclarativeContainer):
         booklore_client=booklore_client,
         bookfusion_client=bookfusion_client,
         bookorbit_client=bookorbit_client,
+        kavita_client=kavita_client,
         hardcover_client=hardcover_client,
         storyteller_client=storyteller_client,
         transcriber=transcriber,

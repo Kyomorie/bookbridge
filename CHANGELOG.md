@@ -4,6 +4,121 @@
 
 All notable changes to BookBridge will be documented in this file.
 
+## [Unreleased]
+
+## [7.5.0] - 2026-08-25
+
+Kavita joins as a full ebook source and reading client, your library cards can
+show you the text at your current position, and the dashboard learned to sort by
+when you added a book. This release also contains a **security fix that matters
+for multi-user installs** — see Security below.
+
+### Added
+
+- **Add Book and Suggestions now show each available edition's language.**
+  Language metadata is displayed as a compact badge for Audiobookshelf, CWA,
+  Grimmory, BookOrbit, BookFusion, and Kavita results when the provider supplies
+  it. Language remains display-only and does not affect search or match ranking.
+- **Kavita can now participate as a full ebook source and reading client.** BookBridge
+  can search and import Kavita EPUBs, download them to managed KOReader devices,
+  match them by their KOReader hash, synchronize progress in both directions, manage
+  the configured collection for shelf-watch and forge workflows, proxy covers, and
+  use Kavita books for Hardcover and StoryGraph metadata. Kavita credentials and
+  library/collection choices are per-user; polling and shelf-watch controls follow
+  the same model as Grimmory and BookOrbit.
+- **Library cards can now show you the text around your current position.** On any
+  book with an ebook, *Show position* beside the progress bar opens a short excerpt
+  with a marker at the spot you are synced to — enough to recognise where you are
+  without opening a reader. BookBridge uses the exact XPath or CFI when your reader
+  saved one, maps an audiobook position through the stored audio↔ebook alignment
+  when it did not, and clearly labels a percentage-only estimate as approximate
+  rather than implying it is exact. The excerpt is only loaded when you ask for it,
+  is scoped to your own books, and is not offered for audiobook-only mappings.
+  Contributed by @Kyomorie in #397 (#394).
+
+- **Sort your library by when you added a book.**
+  The sort menu has a *Date Added* option, and the arrow beside it flips between
+  newest and oldest first — so the books you just matched can sit at the top
+  instead of wherever the alphabet put them. A series sorts by its most recently
+  added book, so adding one title to a series you started long ago brings the whole
+  group forward. Books added before BookBridge began recording per-book dates share
+  a single stamp from that upgrade and stay grouped together, in title order.
+- **Searching the library for a book you have not added yet now leads somewhere.**
+  The search box above your books filters the books you already sync, so typing the
+  name of a book you have not matched yet emptied the page and said nothing about
+  why. It now offers to look for that title in your libraries instead, carrying what
+  you typed straight into Add Book's search. The offer also appears when a search
+  does find something, for when the book you actually wanted is the one that is
+  missing.
+- **The Add Book tab shows how many books are waiting in your queue.**
+  The match queue survives leaving the page, but nothing outside Add Book said so.
+  The tab now carries a count whenever you have books queued, so work in progress
+  is visible from anywhere and one click away.
+- **Suggestions names the service each audiobook came from.** A provider badge on
+  every suggestion tells you whether a proposed pair is using Audiobookshelf,
+  Grimmory, or BookOrbit audio before you approve it. Contributed by
+  @Marcelwalter in #407.
+
+### Changed
+
+- **The Settings page opens immediately again.** It was loading every stored
+  audio-to-ebook alignment map just to count them — on a large library that meant
+  reading well over a gigabyte from disk before the page would render. It now asks
+  the database for the counts instead.
+- **The dashboard no longer re-checks every cover each time you open it.** Covers
+  were served with no cache lifetime, so a browser revalidated all of them on every
+  visit — hundreds of round trips on a large library, all answered "unchanged".
+  They are cached properly now.
+
+- **Storyteller edition creation is now clearly separated from ordinary matching.**
+  Add Book and Suggestions show only **Match All** when the current reader has no
+  Storyteller account configured. When Storyteller is available, the former Forge
+  actions now say exactly what they do: **Create Storyteller Edition & Match All**
+  and **Create Storyteller Edition Only**. Stale pages and direct requests are also
+  blocked before they can drain the match queue or start an unusable job.
+
+### Security
+
+- **Forge and Match now confine a local ebook source to your configured library.**
+  BookBridge did not fully verify that a selected *Local File* ebook stayed inside
+  your configured ebook directories, so a signed-in account could cause the server
+  to read a file from outside them. Local sources are now restricted to
+  `BOOKS_DIR`, any `EXTRA_EBOOK_DIRS`, and the EPUB cache; anything outside those
+  roots is refused and logged.
+
+  **Who should update:** any install with accounts you would not trust with the
+  server's files — this is the multi-user case, and it is the reason to upgrade
+  promptly. On a single-user install, or one where every account is already trusted,
+  this granted nothing an administrator could not already reach. Affects 7.4.2 and
+  earlier. Found by external security review and reported privately; no exploitation
+  in the wild is known.
+
+### Fixed
+
+- **BridgeSync's *Test Connection* now tells you when you have pointed it at the
+  wrong server.** It only ever checked that the address accepted your login — and
+  any KoSync-compatible server does, including other reading apps. So aiming
+  BridgeSync at a different server passed the test and then failed on every real
+  operation with an unhelpful error from software that had never heard of
+  BookBridge. Test Connection now also asks the server to identify itself, and
+  says plainly when the answer is not BookBridge. On success it names BookBridge
+  and the plugin version it reported. Plugin updated to 0.6.6. (#403)
+
+- **The source badge on the Add Book page is visible now, and it leads the card.**
+  7.4.1 tried to stop a long title from pushing the badge out of sight and did not
+  go far enough — the card grew by a few pixels and went on slicing the badge off
+  its bottom edge, along with the book icon off the top. The card was locked to a
+  square, so anything that did not fit was simply cut in half; it now sizes itself
+  to whatever it holds. The badge naming the source — ABS, BookOrbit, CWA and the
+  rest — also moved to the top of the card, so the answer to "which copy is this?"
+  sits in the same place on every candidate rather than trailing a title whose
+  length varies. (#381)
+
+- **A KoSync timing setting you change now takes effect without a restart.** The
+  instant-sync debounce window was read once at startup, so editing it in Settings
+  appeared to save and then changed nothing until the container was restarted.
+  Contributed by @Kyomorie in #404.
+
 ## [7.4.2] - 2026-08-21
 
 A hotfix for the BridgeSync KOReader plugin. Every network operation in plugin
@@ -41,6 +156,7 @@ Nothing on the server changed.
   Do this on every device.
 - No database migration, and no settings changes. The server rebuilds the
   plugin zip automatically when the files change.
+
 
 ## [7.4.1] - 2026-08-21
 

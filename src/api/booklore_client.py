@@ -188,6 +188,7 @@ class BookloreClient:
                                 'title': db_book.title,
                                 'authors': db_book.authors
                             }
+                        book_info['language'] = self._extract_language(book_info)
 
                         self._book_cache[db_book.filename.lower()] = book_info
 
@@ -622,6 +623,11 @@ class BookloreClient:
 
         return ', '.join(author_list)
 
+    @staticmethod
+    def _extract_language(book):
+        metadata = book.get('metadata') or {}
+        return str(book.get('language') or metadata.get('language') or '').strip()
+
     def _extract_book_summary_fields(self, book):
         metadata = book.get('metadata') or {}
         primary_file = book.get('primaryFile') or {}
@@ -649,6 +655,7 @@ class BookloreClient:
             'title': title,
             'subtitle': subtitle,
             'authors': authors,
+            'language': self._extract_language(book),
             'fileName': file_name,
             'bookType': book_type,
         }
@@ -759,6 +766,7 @@ class BookloreClient:
                 'title': summary['title'] or lightweight_info.get('title') or '',
                 'subtitle': summary['subtitle'] or lightweight_info.get('subtitle') or '',
                 'authors': summary['authors'] or lightweight_info.get('authors') or '',
+                'language': summary['language'] or lightweight_info.get('language') or '',
                 'fileName': summary['fileName'] or lightweight_info.get('fileName'),
                 'bookType': summary['bookType'] or lightweight_info.get('bookType') or '',
                 'libraryId': book.get('libraryId'),
@@ -1177,6 +1185,7 @@ class BookloreClient:
             'title': title,
             'subtitle': subtitle,
             'authors': author_str,
+            'language': self._extract_language(detail),
             'metadata': metadata,
             'bookType': book_type,
             'primaryFile': detail.get('primaryFile'),

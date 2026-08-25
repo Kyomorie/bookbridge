@@ -1005,10 +1005,10 @@ def _update_grouped_kosync_session(book, doc_hash: str, device: str, device_id: 
 
 def _kosync_debounce_loop() -> None:
     """Check every 10s for books that stopped receiving KoSync PUTs."""
-    debounce_seconds = _get_kosync_put_debounce_seconds()
     while True:
         time.sleep(10)
         now = time.time()
+        debounce_seconds = _get_kosync_put_debounce_seconds()
         _flush_stale_kosync_sessions(now)
         to_sync = []
 
@@ -1493,10 +1493,10 @@ def _select_auto_map_candidate(ebook_meta, candidates):
 
 
 def _resolve_library_ebook_source(epub_filename):
-    """Resolve a filesystem EPUB to its library identity (BookOrbit/Grimmory).
+    """Resolve a filesystem EPUB to its library identity.
 
     The mapping must reference the library copy by source id so progress actually
-    syncs to BookOrbit/Grimmory rather than treating it as a bare local file.
+    syncs to BookOrbit/Grimmory/Kavita rather than treating it as a bare local file.
     Returns (source, source_id) or (None, None).
     """
     try:
@@ -1515,6 +1515,14 @@ def _resolve_library_ebook_source(epub_filename):
                 return "BookLore", str(match["id"])
     except Exception as e:
         logger.debug(f"Auto-map: Grimmory filename resolve failed: {e}")
+    try:
+        kavita = _container.kavita_client()
+        if kavita and kavita.is_configured():
+            match = kavita.find_book_by_filename(epub_filename, allow_refresh=False)
+            if match and match.get("id") is not None:
+                return "Kavita", str(match["id"])
+    except Exception as e:
+        logger.debug(f"Auto-map: Kavita filename resolve failed: {e}")
     return None, None
 
 

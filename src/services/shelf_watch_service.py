@@ -149,15 +149,23 @@ class ShelfWatchService:
             return None
         if self._source_name == 'BookOrbit':
             return getattr(bundle, 'bookorbit_client', None)
+        if self._source_name == 'Kavita':
+            return getattr(bundle, 'kavita_client', None)
         return getattr(bundle, 'booklore_client', None)
 
     def _kobo_shelf_name(self) -> str:
         """Return the user's destination shelf, falling back to environment."""
+        setting_key = (
+            'KAVITA_COLLECTION_NAME'
+            if self._source_name == 'Kavita'
+            else f'{self._env_prefix}_SHELF_NAME'
+        )
+        default_name = 'BookBridge' if self._source_name == 'Kavita' else 'Kobo'
         try:
             from src.utils.user_config import user_setting
-            return (user_setting(f'{self._env_prefix}_SHELF_NAME') or 'Kobo').strip()
+            return (user_setting(setting_key) or default_name).strip()
         except Exception:
-            return (os.environ.get(f'{self._env_prefix}_SHELF_NAME') or 'Kobo').strip()
+            return (os.environ.get(setting_key) or default_name).strip()
 
     def runs_in_global_cycle(self) -> bool:
         """True when this source polls in 'global' mode, so the full sync cycle
@@ -421,6 +429,7 @@ class ShelfWatchService:
             ebook_source=self._source_name,
             ebook_source_id=grimmory_id,
             booklore_ebook_id=grimmory_id,
+            kosync_doc_id=grimmory_book.get('koreader_hash'),
             user_id=user_id,
         )
         if not saved:
@@ -445,6 +454,7 @@ class ShelfWatchService:
             ebook_source=self._source_name,
             ebook_source_id=grimmory_id,
             booklore_ebook_id=grimmory_id,
+            kosync_doc_id=grimmory_book.get('koreader_hash'),
             user_id=user_id,
         )
         if not saved:

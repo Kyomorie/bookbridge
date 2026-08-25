@@ -120,6 +120,7 @@ class SyncManager:
                  booklore_client=None,
                  bookfusion_client=None,
                  bookorbit_client=None,
+                 kavita_client=None,
                  hardcover_client=None,
                  transcriber=None,
                  ebook_parser=None,
@@ -145,6 +146,7 @@ class SyncManager:
         self.booklore_client = booklore_client
         self.bookfusion_client = bookfusion_client
         self.bookorbit_client = bookorbit_client
+        self.kavita_client = kavita_client
         self.hardcover_client = hardcover_client
         self.transcriber = transcriber
         self.ebook_parser = ebook_parser
@@ -637,6 +639,10 @@ class SyncManager:
     @property
     def active_bookorbit_client(self):
         return self._active_bundle_attr("bookorbit_client")
+
+    @property
+    def active_kavita_client(self):
+        return self._active_bundle_attr("kavita_client")
 
     @property
     def active_storyteller_client(self):
@@ -1156,6 +1162,8 @@ class SyncManager:
             client = self.active_bookorbit_client
         elif ebook_source == "BookLore":
             client = self.active_booklore_client
+        elif ebook_source == "Kavita":
+            client = self.active_kavita_client
         else:
             return None
 
@@ -1288,6 +1296,24 @@ class SyncManager:
                     logger.error(f"❌ EPUB not found in BookOrbit: {sanitize_log_data(ebook_filename)}")
             except Exception as e:
                 logger.warning(f"⚠️ BookOrbit EPUB download failed: {e}", exc_info=True)
+
+        # Explicit Kavita mappings normally use the by-id branch above. This
+        # filename fallback keeps legacy mappings and shared mounted files
+        # working when their source metadata was not persisted.
+        kavita_client = self.active_kavita_client
+        if hasattr(kavita_client, 'is_configured') and kavita_client.is_configured():
+            try:
+                kavita_book = kavita_client.find_book_by_filename(ebook_filename)
+                if kavita_book:
+                    logger.info("Downloading EPUB from Kavita: %s", sanitize_log_data(ebook_filename))
+                    content = kavita_client.download_book(kavita_book.get('id'))
+                    if content:
+                        with open(cached_path, 'wb') as f:
+                            f.write(content)
+                        logger.info("Downloaded Kavita EPUB to cache: '%s'", cached_path)
+                        return cached_path
+            except Exception as e:
+                logger.warning("Kavita EPUB download failed: %s", e, exc_info=True)
 
         return None
 

@@ -3,8 +3,11 @@
    nav (is_admin = current_user and current_user.is_admin): Stats/Suggestions/
    Settings are admin-only as before; Logs joins them (it was never advertised
    to regular users on the dashboard). Add Book stays visible to every
-   logged-in user, matching today's dashboard button and route enforcement. #}
+   logged-in user, matching today's dashboard button and route enforcement.
+   Add Book also carries a count badge whenever the acting user's match
+   queue is non-empty. #}
 {% set is_admin = current_user and current_user.is_admin %}
+{% set queued_count = match_queue_count() %}
 <nav class="top-nav">
     <div class="logo-section">
         <a href="/">
@@ -15,7 +18,7 @@
 
     <div class="nav-tabs">
         <a href="/" class="nav-tab {% if active_page == 'library' %}active{% endif %}">Library</a>
-        <a href="{{ url_for('add_book') }}" class="nav-tab {% if active_page == 'add_book' %}active{% endif %}">Add Book</a>
+        <a href="{{ url_for('add_book') }}" class="nav-tab {% if active_page == 'add_book' %}active{% endif %}">Add Book{% if queued_count > 0 %} <span class="nav-tab-badge">{{ queued_count }}</span>{% endif %}</a>
         {% if is_admin %}
         <a href="/stats" class="nav-tab {% if active_page == 'stats' %}active{% endif %}">Stats</a>
         {% endif %}
@@ -46,9 +49,11 @@
     {% set abs_library_url = get_val('ABS_WEB_URL') or get_user_val('ABS_SERVER', abs_server) %}
     {% set grimmory_url = get_val('BOOKLORE_WEB_URL') or get_user_val('BOOKLORE_SERVER', booklore_server) %}
     {% set bookorbit_url = get_val('BOOKORBIT_WEB_URL') or get_user_val('BOOKORBIT_SERVER', get_val('BOOKORBIT_SERVER')) %}
+    {% set kavita_url = get_val('KAVITA_WEB_URL') or get_user_val('KAVITA_SERVER', get_val('KAVITA_SERVER')) %}
     {% set cwa_url = get_val('CWA_WEB_URL') or get_user_val('CWA_SERVER', get_val('CWA_SERVER')) %}
     {% set grimmory_configured = grimmory_url and get_user_bool('BOOKLORE_ENABLED') %}
     {% set bookorbit_configured = bookorbit_url and get_user_bool('BOOKORBIT_ENABLED') %}
+    {% set kavita_configured = kavita_url and get_user_bool('KAVITA_ENABLED') %}
     {% set cwa_configured = cwa_url and get_user_bool('CWA_ENABLED') %}
 
     <div class="library-links">
@@ -71,6 +76,8 @@
             {% set ebook_source = 'grimmory' %}
         {% elif bookorbit_configured %}
             {% set ebook_source = 'bookorbit' %}
+        {% elif kavita_configured %}
+            {% set ebook_source = 'kavita' %}
         {% endif %}
         {% if ebook_source and ebook_source != audio_source %}
             {% if ebook_source == 'cwa' %}
@@ -79,6 +86,8 @@
                 {{ library_link(grimmory_url, '/static/grimmory.webp', 'Grimmory ebook library') }}
             {% elif ebook_source == 'bookorbit' %}
                 {{ library_link(bookorbit_url, '/static/bookorbit.svg', 'BookOrbit ebook library') }}
+            {% elif ebook_source == 'kavita' %}
+                {{ library_link(kavita_url, '', 'Kavita ebook library') }}
             {% endif %}
         {% endif %}
 

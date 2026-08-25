@@ -27,6 +27,7 @@ class ClientPoller:
         ('BookLoreAudio', 'BOOKLORE_AUDIO'),
         ('BookOrbit', 'BOOKORBIT'),
         ('BookOrbitAudio', 'BOOKORBIT_AUDIO'),
+        ('Kavita', 'KAVITA'),
         ('CWA', 'CWA_SYNC'),
     ]
 

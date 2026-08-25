@@ -78,6 +78,7 @@ def test_refresh_book_cache_uses_nested_max_page_size(client):
                 "id": 1,
                 "title": "A Book",
                 "authors": [{"name": "Author"}],
+                "language": "de",
                 "files": [{"id": 11, "format": "epub", "role": "primary"}],
             }],
             "total": 1,
@@ -90,6 +91,7 @@ def test_refresh_book_cache_uses_nested_max_page_size(client):
         ("POST", "/api/v1/books/query", {"pagination": {"page": 0, "size": 200}})
     ]
     assert client.get_book_by_id(1, allow_refresh=False)["primaryFileId"] == 11
+    assert client.get_all_ebooks()[0]["language"] == "de"
 
 
 def test_get_ebook_progress_parses_list_response(client):
@@ -331,7 +333,7 @@ def test_search_ebooks_uses_search_endpoint_and_filters_by_format(client):
         return _Resp(hits)
 
     details = {
-        1: {"id": 1, "title": "Guests", "authors": [{"name": "A"}],
+        1: {"id": 1, "title": "Guests", "authors": [{"name": "A"}], "language": "fr",
             "files": [{"id": 11, "format": "epub", "role": "primary", "filename": "Guests.epub"}]},
     }
     with patch.object(client, '_make_request', side_effect=fake_request), \
@@ -340,6 +342,7 @@ def test_search_ebooks_uses_search_endpoint_and_filters_by_format(client):
     assert len(out) == 1  # m4b audiobook excluded by format
     assert out[0]["fileName"] == "Guests.epub"
     assert out[0]["id"] == 1
+    assert out[0]["language"] == "fr"
 
 
 def test_search_ebooks_empty_term_returns_empty(client):
@@ -442,7 +445,7 @@ def test_search_audiobooks_carries_edition_metadata(client):
 
     detail = {
         10: {"id": 10, "title": "Warlock", "subtitle": "Book 1",
-             "authors": [{"name": "D. Kensington"}], "seriesName": "Warlock",
+             "authors": [{"name": "D. Kensington"}], "language": "en", "seriesName": "Warlock",
              "seriesIndex": 1,
              "files": [{"id": 101, "format": "m4b", "role": "primary",
                         "filename": "Warlock_Book1.m4b", "durationSeconds": 3600.0,
@@ -464,6 +467,7 @@ def test_search_audiobooks_carries_edition_metadata(client):
     assert row["subtitle"] == "Book 1"
     assert row["seriesName"] == "Warlock"
     assert row["seriesIndex"] == 1
+    assert row["language"] == "en"
     assert row["duration_seconds"] == 3600.0
     assert row["num_files"] == 1
 
@@ -473,7 +477,7 @@ def test_search_audiobooks_empty_term_does_not_enrich(client):
     # deliberately skips per-book detail calls (a detail call per book would
     # hit BookOrbit's request throttle on a large library).
     cached = [
-        {"id": 5, "title": "Some Book", "authors": "A", "kind": "audiobook"},
+        {"id": 5, "title": "Some Book", "authors": "A", "language": "it", "kind": "audiobook"},
         {"id": 6, "title": "An Ebook", "authors": "B", "kind": "ebook"},
     ]
 
@@ -486,6 +490,7 @@ def test_search_audiobooks_empty_term_does_not_enrich(client):
     row = out[0]
     assert row["id"] == 5
     assert row["title"] == "Some Book"
+    assert row["language"] == "it"
     assert row["duration_seconds"] is None
     assert row["num_files"] is None
     mock_detail.assert_not_called()

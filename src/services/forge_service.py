@@ -11,6 +11,7 @@ from urllib.parse import urljoin
 import requests
 
 from src.services.alignment_service import ingest_storyteller_transcripts
+from src.utils.cache_paths import safe_library_path
 from src.utils.storyteller_transcript import StorytellerTranscript
 
 logger = logging.getLogger(__name__)
@@ -45,11 +46,12 @@ HARDLINK_STAGE_MODE = "hardlink"
 VALID_STAGE_MODES = {DEFAULT_STAGE_MODE, HARDLINK_STAGE_MODE}
 
 class ForgeService:
-    def __init__(self, database_service, abs_client, booklore_client, storyteller_client, library_service, ebook_parser, transcriber, alignment_service, bookorbit_client=None, sync_clients=None):
+    def __init__(self, database_service, abs_client, booklore_client, storyteller_client, library_service, ebook_parser, transcriber, alignment_service, bookorbit_client=None, kavita_client=None, sync_clients=None):
         self.database_service = database_service
         self.abs_client = abs_client
         self.booklore_client = booklore_client
         self.bookorbit_client = bookorbit_client
+        self.kavita_client = kavita_client
         self.sync_clients = sync_clients
         self.storyteller_client = storyteller_client
         self.library_service = library_service
@@ -86,6 +88,42 @@ class ForgeService:
             return default
 
     @staticmethod
+    def _local_source_path(text_item, context: str = "Forge") -> Path | None:
+        """Return the payload's local ebook path, contained to the library roots.
+
+        The path travels in a client-supplied forge payload, so it is confined to
+        BOOKS_DIR / EXTRA_EBOOK_DIRS / the epub cache before anything reads it.
+        Returns None when absent or outside those roots.
+        """
+        if not isinstance(text_item, dict):
+            return None
+        raw = str(text_item.get('path') or "").strip()
+        if not raw:
+            return None
+        if "://" in raw:
+            # A provider download_url (CWA), not a local file — never a staging source.
+            return None
+        safe_path = safe_library_path(raw)
+        if safe_path is None:
+            logger.warning(
+                "%s: refused local source outside the configured library roots: %s",
+                context,
+                raw,
+            )
+            return None
+        # A directory or special file inside a root is still not a stageable source.
+        # A missing path is left to the caller's own exists() check so its
+        # "Local file not found" diagnostic is preserved.
+        if safe_path.exists() and not safe_path.is_file():
+            logger.warning(
+                "%s: refused local source that is not a regular file: %s",
+                context,
+                raw,
+            )
+            return None
+        return safe_path
+
+    @staticmethod
     def _safe_resolve(path: Path) -> Path:
         try:
             return path.resolve()
@@ -109,6 +147,7 @@ class ForgeService:
             "grimmory": "Booklore",
             "booklore": "Booklore",
             "bookorbit": "BookOrbit",
+            "kavita": "Kavita",
             "abs": "ABS",
             "cwa": "CWA",
             "local file": "Local File",
@@ -136,6 +175,7 @@ class ForgeService:
             transcriber=self.transcriber,
             alignment_service=self.alignment_service,
             bookorbit_client=getattr(client_bundle, "bookorbit_client", self.bookorbit_client),
+            kavita_client=getattr(client_bundle, "kavita_client", self.kavita_client),
             sync_clients=getattr(client_bundle, "sync_clients", self.sync_clients),
         )
         worker.active_tasks = self.active_tasks
@@ -161,6 +201,18 @@ class ForgeService:
                 if added is False:
                     logger.warning(
                         "Auto-Forge: failed to add '%s' to the BookOrbit shelf",
+                        shelf_filename,
+                    )
+        elif ebook_source == 'kavita':
+            if self.kavita_client and self.kavita_client.is_configured():
+                ebook_source_id = getattr(book, 'ebook_source_id', None)
+                if ebook_source_id:
+                    added = self.kavita_client.add_book_id_to_shelf(ebook_source_id)
+                else:
+                    added = self.kavita_client.add_to_shelf(shelf_filename)
+                if added is False:
+                    logger.warning(
+                        "Auto-Forge: failed to add '%s' to the Kavita collection",
                         shelf_filename,
                     )
         elif self.booklore_client and self.booklore_client.is_configured():
@@ -956,8 +1008,12 @@ class ForgeService:
             text_success = False
 
             if source == 'Local File':
-                src_path = Path(text_item.get('path', ''))
-                if src_path.exists():
+                src_path = self._local_source_path(text_item, "Forge")
+                if src_path is None:
+                    logger.error(
+                        f"❌ Forge: Local file not usable: '{text_item.get('path', '')}'"
+                    )
+                elif src_path.exists():
                     self._stage_local_file(src_path, epub_path, stage_mode, "Forge")
                     text_success = True
                     logger.info(f"⚡ Forge: Local epub copied: {src_path.name}")
@@ -985,6 +1041,15 @@ class ForgeService:
                         logger.error(f"❌ Forge: BookOrbit download failed for '{bookorbit_id}'")
                 else:
                     logger.error(f"❌ Forge: BookOrbit client/id unavailable for '{bookorbit_id}'")
+            elif source == 'Kavita':
+                kavita_id = text_item.get('kavita_id') or text_item.get('source_id')
+                content = self.kavita_client.download_book(kavita_id) if self.kavita_client and kavita_id else None
+                if content:
+                    epub_path.write_bytes(content)
+                    text_success = True
+                    logger.info("Forge: Kavita epub downloaded")
+                else:
+                    logger.error("Forge: Kavita download failed for '%s'", kavita_id or 'unknown')
             elif source == 'ABS':
                 abs_item_id = text_item.get('abs_id')
                 if abs_item_id:
@@ -1206,7 +1271,12 @@ class ForgeService:
             epub_path = temp_dir / f"{safe_title}.epub"
             source = self._normalize_text_source(text_item.get('source'))
             if source == 'Local File':
-                self._stage_local_file(text_item.get('path'), epub_path, stage_mode, "Auto-Forge")
+                src_path = self._local_source_path(text_item, "Auto-Forge")
+                if src_path is None:
+                    raise Exception(
+                        f"Local file not usable: '{text_item.get('path', '')}'"
+                    )
+                self._stage_local_file(src_path, epub_path, stage_mode, "Auto-Forge")
             elif source == 'Booklore':
                 content = self.booklore_client.download_book(text_item.get('booklore_id'))
                 if content: epub_path.write_bytes(content)
@@ -1217,6 +1287,13 @@ class ForgeService:
                     epub_path.write_bytes(content)
                 else:
                     logger.error(f"❌ Auto-Forge: BookOrbit download failed for '{bookorbit_id or 'unknown'}'")
+            elif source == 'Kavita':
+                kavita_id = text_item.get('kavita_id') or text_item.get('source_id')
+                content = self.kavita_client.download_book(kavita_id) if self.kavita_client and kavita_id else None
+                if content:
+                    epub_path.write_bytes(content)
+                else:
+                    logger.error("Auto-Forge: Kavita download failed for '%s'", kavita_id or 'unknown')
             elif source == 'ABS':
                 ebook_files = self.abs_client.get_ebook_files(text_item.get('abs_id'))
                 if ebook_files: self.abs_client.download_file(ebook_files[0]['stream_url'], epub_path)
@@ -1525,9 +1602,9 @@ class ForgeService:
                 nocache_candidates = []
                 if original_name:
                     nocache_candidates.append(self.ebook_parser.epub_cache_dir / original_name)
-                source_path = text_item.get('path') if isinstance(text_item, dict) else None
+                source_path = self._local_source_path(text_item, "Auto-Forge")
                 if source_path:
-                    nocache_candidates.append(Path(source_path))
+                    nocache_candidates.append(source_path)
                 try:
                     nocache_candidates.append(self.ebook_parser.resolve_book_path(original_name))
                 except Exception:
@@ -1581,9 +1658,9 @@ class ForgeService:
                 if original_name:
                     original_candidates.append(self.ebook_parser.epub_cache_dir / original_name)
 
-                source_path = text_item.get('path') if isinstance(text_item, dict) else None
+                source_path = self._local_source_path(text_item, "Auto-Forge")
                 if source_path:
-                    original_candidates.append(Path(source_path))
+                    original_candidates.append(source_path)
 
                 try:
                     resolved_path = self.ebook_parser.resolve_book_path(original_name)
@@ -1687,6 +1764,7 @@ class ForgeService:
                     text_source = self._normalize_text_source(text_item.get('source'))
                     source_id_key = {
                         'BookOrbit': 'bookorbit_id',
+                        'Kavita': 'kavita_id',
                         'Booklore': 'booklore_id',
                         'ABS': 'abs_id',
                         'CWA': 'cwa_id',
@@ -1745,6 +1823,7 @@ class ForgeService:
             'original_ebook_filename': original,
             'booklore_id': source_id,
             'bookorbit_id': source_id,
+            'kavita_id': source_id,
             'cwa_id': source_id,
             'abs_id': source_id,
             'source_id': source_id,

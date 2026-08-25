@@ -23,7 +23,7 @@ import tempfile
 from pathlib import Path
 from collections import OrderedDict
 from src.sync_clients.sync_client_interface import LocatorResult
-from src.utils.cache_paths import safe_cache_path
+from src.utils.cache_paths import safe_cache_path, is_plain_basename
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +138,12 @@ class EbookParser:
         return [self.books_dir, *self.extra_book_dirs]
 
     def resolve_book_path(self, filename):
+        # 0. Filename-only lookup: a name carrying a directory component or ".."
+        #    would let the glob scans below walk outside the library roots.
+        if not is_plain_basename(filename):
+            logger.warning("Refused book path lookup for a non-basename filename: %s", filename)
+            raise FileNotFoundError(f"Could not locate {filename}")
+
         # 1. Path-resolution cache: avoid repeated recursive scans for the same file.
         with self._path_cache_lock:
             cached = self._path_cache.get(filename)
@@ -2517,11 +2523,17 @@ def build_readium_locator(locator, total_progression=None) -> Optional[str]:
     return json.dumps(payload, separators=(",", ":"))
 
 
-def resolve_ebook_identifiers(ebook_parser, book, booklore_client=None, bookorbit_client=None) -> dict:
+def resolve_ebook_identifiers(
+    ebook_parser,
+    book,
+    booklore_client=None,
+    bookorbit_client=None,
+    kavita_client=None,
+) -> dict:
     """Best-effort {title, author, isbn, asin} for a mapping's ebook.
 
     Reads the local EPUB first; when no usable identifier or author is found and
-    the ebook is library-hosted (BookOrbit/Grimmory), downloads the bytes from the
+    the ebook is library-hosted (BookOrbit/Grimmory/Kavita), downloads the bytes from the
     source and reads the embedded Dublin Core fields. This lets tracker auto-match
     use the book's real ISBN/author even when the file isn't on the bridge's disk
     (the common case for BookOrbit/KOReader ebook-only and ABS-linked mappings).
@@ -2552,6 +2564,8 @@ def resolve_ebook_identifiers(ebook_parser, book, booklore_client=None, bookorbi
         client = bookorbit_client
     elif source == "booklore":
         client = booklore_client
+    elif source == "kavita":
+        client = kavita_client
     else:
         client = None
 
