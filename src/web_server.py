@@ -3813,6 +3813,7 @@ def settings():
             'GRIMMORY_READING_SESSIONS',
             'CWA_ENABLED',
             'CWA_SYNC_ENABLED',
+            'CWA_KOBO_SPAN_SYNC',
             'HARDCOVER_ENABLED',
             'HARDCOVER_ANNOTATION_SYNC',
             'STORYGRAPH_ENABLED',

@@ -1385,6 +1385,16 @@
                         <label for="cwa_sync_toggle">Enable Sync</label>
                         <div class="help-text">Sync reading progress via CWA's Kobo sync protocol. Works with stock Kobo and KOReader.</div>
                     </div>
+                    <div class="checkbox-wrapper full-width">
+                        <input type="checkbox" id="cwa_kobo_span_toggle" name="CWA_KOBO_SPAN_SYNC"
+                            {% if get_bool('CWA_KOBO_SPAN_SYNC') %}checked{% endif %}>
+                        <label for="cwa_kobo_span_toggle">Write Kobo span bookmarks</label>
+                        <div class="help-text">A stock Kobo jumps to a synced position only when it is given a
+                            <code>KoboSpan</code> bookmark &mdash; a bare percentage updates the library tile but the
+                            book still reopens where the device left off, overwriting the synced position. With this on,
+                            BookBridge reads the KEPUB that CWA serves your device and writes the matching span.
+                            Turn it off to leave the device's own bookmark untouched and send percentage only.</div>
+                    </div>
 
                     <!-- Authoritative Identifier Mapping -->
                     <div class="full-width" style="margin: 10px 0; border-top: 1px solid rgba(255,255,255,0.1);"></div>

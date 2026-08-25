@@ -6,6 +6,7 @@ import time
 import traceback
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Optional
 import re
 
 
@@ -89,6 +90,19 @@ _COMPLETION_PROPAGATION_EXCLUDED_CLIENTS: frozenset[str] = frozenset({
     "StoryGraph",
     "Hardcover",
     "ABSEbook",
+})
+
+# Clients that navigate by locator rather than by percentage. ABSEbook rejects a
+# locator whose cfi is None outright; BookOrbit, Grimmory and CWA all back a Kobo
+# reading state, and a Kobo moves only when it is handed a KoboSpan — which those
+# services derive from the CFI we send them. Handed a bare percentage they store a
+# number the device ignores, so it reopens at its own bookmark and pushes it back
+# (#364). These clients get the CFI-hydrated locator when one can be resolved.
+_CFI_DEPENDENT_CLIENTS: frozenset[str] = frozenset({
+    "ABSEbook",
+    "BookOrbit",
+    "BookLore",
+    "CWA",
 })
 
 # Multi-user: per-cycle override of the active sync-client bundle. Set by
@@ -3056,6 +3070,68 @@ class SyncManager:
             return False
         return pct >= 1.0 - epsilon and leader_pct < pct - min_gap
 
+    def _hydrate_cfi_locator(self, locator: LocatorResult, epub, abs_id, title_snip,
+                             leader: str, leader_pct, leader_formatter) -> Optional[LocatorResult]:
+        """Re-express a percentage-only locator as a real position in the target EPUB.
+
+        Text matching is the primary path; when it misses, the cross-client locator
+        falls back to a bare percentage that carries no cfi/href/chapter_progress.
+        Locator-driven clients cannot act on that: ABSEbook rejects it outright, and
+        BookOrbit/Grimmory/CWA all back a Kobo reading state, where a position only
+        moves the device if it arrives as a KoboSpan — which those services derive
+        from the CFI we send them. Handed a percentage alone they store a number the
+        device ignores, so it reopens at its own bookmark and pushes it back (#364).
+
+        This does not make the position more accurate; it is the same percentage
+        expressed in a form the receiver can act on instead of discarded structure.
+
+        Returns the hydrated locator, or None when the offset cannot be round-tripped
+        to within 1% of its target or the resolution collapsed to start-of-book.
+        """
+        if not epub or str(epub).startswith("storyteller_") or locator.percentage is None:
+            return None
+        try:
+            _full_text, total_len = self._get_cached_ebook_text(epub)
+            if not total_len:
+                return None
+
+            target_offset = locator.match_index
+            if target_offset is None:
+                target_offset = int(locator.percentage * total_len)
+            target_offset = max(0, min(int(target_offset), total_len - 1))
+
+            hydrated = self.ebook_parser.get_locator_from_char_offset(epub, target_offset)
+            if not hydrated or not hydrated.cfi:
+                return None
+            hydrated.percentage = locator.percentage
+
+            # Round-trip the derived CFI back to an offset: a locator that does not
+            # resolve to where it was built from is worse than no locator at all.
+            cfi_offset = self.ebook_parser.resolve_cfi_to_index(epub, hydrated.cfi)
+            if cfi_offset is None or abs(int(cfi_offset) - target_offset) / total_len > 0.01:
+                return None
+
+            if self._locator_collapsed_to_start(
+                LocatorResult(percentage=cfi_offset / total_len), locator.percentage
+            ):
+                logger.info(
+                    f"🕳️ '{abs_id}' '{title_snip}' Collapse guard: blocked hydrated "
+                    f"CFI for leader '{leader}' at {leader_formatter(leader_pct)} — roundtrip "
+                    f"resolution collapsed to start-of-book (~0%); keeping percentage-based locator"
+                )
+                return None
+
+            logger.debug(
+                f"'{abs_id}' '{title_snip}' Hydrated missing CFI for leader '{leader}' "
+                f"at offset {target_offset} (roundtrip={cfi_offset})"
+            )
+            return hydrated
+        except Exception as exc:
+            logger.debug(
+                f"'{abs_id}' '{title_snip}' CFI hydration failed: {exc}", exc_info=True
+            )
+            return None
+
     def _persist_state_snapshot(self, book, client_name: str, state_current: dict, current_time: float) -> None:
         """Save a single client's current position to the DB without running a
         cross-client sync. Used to record a leader's own (unchanged) value so a
@@ -3671,67 +3747,22 @@ class SyncManager:
                 if txt is None:
                     txt = ""
 
+                # Locator-driven clients need a real position, not a bare percentage
+                # (see _hydrate_cfi_locator and #364). Resolve one once per cycle and
+                # hand it to whichever of them are in play.
+                hydrated_locator = None
+                if not locator.cfi and any(name in config for name in _CFI_DEPENDENT_CLIENTS):
+                    hydrated_locator = self._hydrate_cfi_locator(
+                        locator, epub, abs_id, title_snip, leader, leader_pct, leader_formatter
+                    )
+                    if hydrated_locator is not None and locator_source == "percent_fallback":
+                        locator_source = "percent_derived"
+
                 logger.debug(
                     f"'{abs_id}' '{title_snip}' Locator resolved via source={locator_source or 'unknown'} "
                     f"epub='{sanitize_log_data(epub)}' "
                     f"original_epub='{sanitize_log_data(getattr(book, 'original_ebook_filename', None))}'"
                 )
-
-                abs_ebook_locator = None
-                if (
-                    "ABSEbook" in config
-                    and not locator.cfi
-                    and epub
-                    and not str(epub).startswith("storyteller_")
-                    and locator.percentage is not None
-                ):
-                    try:
-                        _full_text, total_len = self._get_cached_ebook_text(epub)
-                        if total_len:
-                            target_offset = locator.match_index
-                            if target_offset is None:
-                                target_offset = int(locator.percentage * total_len)
-                            target_offset = max(0, min(int(target_offset), total_len - 1))
-                            hydrated = self.ebook_parser.get_locator_from_char_offset(
-                                epub, target_offset
-                            )
-                            if hydrated and hydrated.cfi:
-                                hydrated.percentage = locator.percentage
-                                cfi_offset = self.ebook_parser.resolve_cfi_to_index(
-                                    epub, hydrated.cfi
-                                )
-                            else:
-                                cfi_offset = None
-                            if (
-                                cfi_offset is not None
-                                and abs(int(cfi_offset) - target_offset) / total_len <= 0.01
-                                and not self._locator_collapsed_to_start(
-                                    LocatorResult(percentage=cfi_offset / total_len),
-                                    locator.percentage,
-                                )
-                            ):
-                                abs_ebook_locator = hydrated
-                                logger.debug(
-                                    f"'{abs_id}' '{title_snip}' Hydrated missing ABS ebook CFI "
-                                    f"at offset {target_offset} (roundtrip={cfi_offset})"
-                                )
-                            elif (
-                                cfi_offset is not None
-                                and abs(int(cfi_offset) - target_offset) / total_len <= 0.01
-                                and self._locator_collapsed_to_start(
-                                    LocatorResult(percentage=cfi_offset / total_len),
-                                    locator.percentage,
-                                )
-                            ):
-                                logger.info(
-                                    f"🕳️ '{abs_id}' '{title_snip}' Collapse guard: blocked hydrated ABS ebook "
-                                    f"CFI for leader '{leader}' at {leader_formatter(leader_pct)} — roundtrip "
-                                    f"resolution collapsed to start-of-book (~0%); keeping percentage-based locator"
-                                )
-                    except Exception as exc:
-                        logger.debug(
-                            f"'{abs_id}' '{title_snip}' ABS ebook CFI hydration failed: {exc}"
-                        )
 
                 # Guard: never write a start-of-book (0%) reset that came from a
                 # FAILED locator resolution. When the leader is materially ahead but
@@ -3794,8 +3825,8 @@ class SyncManager:
                             continue
 
                         target_locator = (
-                            abs_ebook_locator
-                            if client_name == "ABSEbook" and abs_ebook_locator
+                            hydrated_locator
+                            if hydrated_locator and client_name in _CFI_DEPENDENT_CLIENTS
                             else locator
                         )
                         request = UpdateProgressRequest(

@@ -6,6 +6,33 @@ All notable changes to BookBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Your Kobo no longer reverts the position BookBridge just synced.** A Kobo
+  navigates by an internal bookmark, not by a percentage — so when BookBridge could
+  only work out *how far* through a book you were and not *where* that was in the
+  text, the number updated everywhere but the device still reopened at its own last
+  page and pushed that back over the synced position. This is why it only ever went
+  wrong when an audiobook was linked: reading progress from an ebook already carries
+  an exact position, whereas an audiobook position has to be matched into the text
+  first, and when that match missed, only the percentage survived. BookBridge now
+  works the position back out of the book itself, so BookOrbit, Grimmory and
+  Calibre-Web Automated all receive something your Kobo can act on. (#364)
+- **BookBridge no longer erases the Kobo bookmarks stored in Calibre-Web
+  Automated.** Version 7.4.1 cleared the stored bookmark on every write, on the
+  theory that an out-of-date one would drag the device backwards. It did not help —
+  the Kobo keeps its own copy regardless — and it quietly wiped the bookmark for
+  every book in the library. BookBridge now writes a correct bookmark where it can,
+  and otherwise leaves yours untouched. Upgrading stops the erasure; bookmarks are
+  restored as each book next syncs.
+
+### Added
+
+- **New CWA setting: "Write Kobo span bookmarks"** (on by default). BookBridge reads
+  the KEPUB that Calibre-Web Automated serves your device and writes the matching
+  position marker into the Kobo reading state. Turn it off to send percentage only
+  and leave the device's own bookmark alone.
+
 ## [7.5.0] - 2026-08-25
 
 Kavita joins as a full ebook source and reading client, your library cards can
