@@ -134,6 +134,43 @@ class TestCWASyncApi(unittest.TestCase):
             "Reading",
         )
 
+    def test_update_clears_stale_location_that_would_rewind_stock_kobo(self):
+        """CWA must not retain a locator from the older reported percentage."""
+        stored_bookmark = {
+            "ProgressPercent": 12.0,
+            "location_source": "OEBPS/chapter.xhtml",
+            "location_type": "KoboSpan",
+            "location_value": "#point(/1/4/2/2:0)",
+        }
+
+        def apply_cwa_update(_url, json, timeout):
+            bookmark = json["ReadingStates"][0]["CurrentBookmark"]
+            stored_bookmark["ProgressPercent"] = bookmark["ProgressPercent"]
+            location = bookmark["Location"]
+            # This matches CWA v4.0.6: null preserves all three location fields,
+            # while a truthy object replaces them.
+            if location:
+                stored_bookmark["location_source"] = location["Source"]
+                stored_bookmark["location_type"] = location["Type"]
+                stored_bookmark["location_value"] = location["Value"]
+            response = Mock()
+            response.status_code = 200
+            response.json.return_value = {"RequestResult": "Success"}
+            return response
+
+        self.client._session = Mock()
+        self.client._session.put.side_effect = apply_cwa_update
+
+        self.assertTrue(
+            self.client.update_reading_state("test-uuid", 0.16, STATUS_READING)
+        )
+        self.assertEqual(stored_bookmark["ProgressPercent"], 16.0)
+        self.assertEqual(
+            stored_bookmark["location_value"],
+            "",
+            "A stale 12% KoboSpan makes stock Kobo reopen at 12% and send it back",
+        )
+
     def test_update_reading_state_failure(self):
         mock_resp = Mock()
         mock_resp.status_code = 500

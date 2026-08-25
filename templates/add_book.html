@@ -240,7 +240,14 @@
         align-items: center;
         justify-content: center;
         padding: 12px 8px;
-        aspect-ratio: 1/1;
+        /* Height follows the content, with a floor that keeps a short-title card
+           square at the grid's 140px minimum column (#381). `aspect-ratio: 1/1`
+           used to pin the height, so a title long enough to overflow was centred
+           and sliced at both edges -- the icon off the top, the source badge off
+           the bottom. `min-height: min-content` did not rescue it: a line-clamped
+           `-webkit-box` contributes almost nothing to min-content, so the card
+           still stopped short of its own laid-out contents. */
+        min-height: 150px;
         text-align: center;
         gap: 8px;
         position: relative;
@@ -261,7 +268,8 @@
     .resource-card.selected::after {
         content: '✓';
         position: absolute;
-        top: 8px;
+        /* Bottom corner, so it can never sit on top of the source badge row (#381). */
+        bottom: 8px;
         right: 8px;
         width: 28px;
         height: 28px;
@@ -304,17 +312,48 @@
         color: var(--text);
         line-height: 1.3;
         word-break: break-word;
+        /* Bounded so one very long title cannot dominate the grid; the full text
+           stays available in the element's title attribute. `flex-shrink: 0` keeps
+           the flex parent from squeezing the clamped box and cutting a line in half. */
+        flex-shrink: 0;
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
     }
 
     .resource-subtitle {
         font-size: 12px;
         color: var(--muted-soft);
         line-height: 1.2;
+        flex-shrink: 0;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+    }
+
+    /* Source badges ride in their own row at the top of the card, so the answer to
+       "which library is this copy from?" is always in the same place -- candidate
+       cards are otherwise identical and their order is not stable (#381). */
+    .card-badges {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        align-items: center;
+        gap: 4px;
+        max-width: 100%;
+        flex-shrink: 0;
+    }
+
+    .card-badges .source-badge {
+        margin-top: 0;
     }
 
     /* Source badge */
     .source-badge {
         display: inline-block;
+        flex-shrink: 0;
         padding: 2px 8px;
         border-radius: 4px;
         font-size: 10px;
@@ -322,6 +361,11 @@
         text-transform: uppercase;
         letter-spacing: 0.5px;
         margin-top: 6px;
+    }
+
+    .source-badge.language {
+        background: rgba(255, 255, 255, 0.1);
+        color: rgba(255, 255, 255, 0.82);
     }
 
     .source-badge.grimmory {
@@ -992,6 +1036,9 @@
                             {{ ab.title }}
                             {% set ab_src = 'Grimmory' if ab.source == 'BookLore' else ab.source %}
                             <span class="source-badge {{ ab_src.lower().replace(' ', '') }}">{{ ab_src }}</span>
+                            {% if ab.language %}
+                            <span class="source-badge language" title="Language">{{ ab.language }}</span>
+                            {% endif %}
                         </div>
                         {% set edition_label = ab.subtitle or ab.series_label %}
                         {% if edition_label %}
@@ -1014,15 +1061,17 @@
                     {% for st in storyteller_books %}
                     <div class="resource-card st-card {% if single_st_match %}selected{% endif %}"
                         data-value="{{ st.uuid }}" onclick="selectStoryteller(this, '{{ st.uuid }}')">
+                        {% if st.has_transcript %}
+                        <div class="card-badges">
+                            <span class="source-badge transcript">Transcript</span>
+                        </div>
+                        {% endif %}
                         <div class="resource-icon">⚡</div>
                         <div class="resource-title" title="{{ st.title }}{% if st.subtitle %}: {{ st.subtitle }}{% endif %}">
                             {{ st.title }}{% if st.subtitle %}: {{ st.subtitle }}{% endif %}
                         </div>
                         {% if st.authors %}
                         <div class="resource-subtitle">{{ st.authors|join(', ') }}</div>
-                        {% endif %}
-                        {% if st.has_transcript %}
-                        <span class="source-badge transcript">Transcript</span>
                         {% endif %}
                     </div>
                     {% endfor %}
@@ -1040,9 +1089,11 @@
                     <div class="resource-grid" id="ebook-card-grid">
                     <div class="resource-card eb-card audio-only-card ghost-card"
                         data-audio-only="true" onclick="selectAudioOnly(this)">
+                        <div class="card-badges">
+                            <span class="source-badge">Audio only</span>
+                        </div>
                         <div class="resource-icon">🎧</div>
                         <div class="resource-title">Audio only (no ebook)</div>
-                        <span class="source-badge">Audio only</span>
                     </div>
                     {% for eb in ebooks %}
                     <div class="resource-card eb-card {% if single_eb_match %}selected{% endif %}"
@@ -1053,19 +1104,26 @@
                         data-source-path="{{ eb.path if eb.path else '' }}"
                         data-abs-identifier="{{ eb.abs_identifier or '' }}"
                         onclick="selectEbookCard(this)">
+                        {% if eb.source or eb.abs_identifier or eb.language %}
+                        <div class="card-badges">
+                            {% if eb.source %}
+                            {% set badge_cls = eb.source.lower().replace(' ', '') %}
+                            <span class="source-badge {{ badge_cls }}">{{ eb.source }}</span>
+                            {% endif %}
+                            {% if eb.language %}
+                            <span class="source-badge language" title="Language">{{ eb.language }}</span>
+                            {% endif %}
+                            {% if eb.abs_identifier %}
+                            <span class="source-badge linked" title="Authoritative match via Calibre audiobookshelf_id">📌 Linked</span>
+                            {% endif %}
+                        </div>
+                        {% endif %}
                         <div class="resource-icon">📖</div>
                         <div class="resource-title" title="{{ eb.display_name }}">
                             {{ eb.title }}{% if eb.subtitle %}: {{ eb.subtitle }}{% endif %}
                         </div>
                         {% if eb.authors %}
                         <div class="resource-subtitle">{{ eb.authors }}</div>
-                        {% endif %}
-                        {% if eb.source %}
-                        {% set badge_cls = eb.source.lower().replace(' ', '') %}
-                        <span class="source-badge {{ badge_cls }}">{{ eb.source }}</span>
-                        {% endif %}
-                        {% if eb.abs_identifier %}
-                        <span class="source-badge linked" title="Authoritative match via Calibre audiobookshelf_id">📌 Linked</span>
                         {% endif %}
                     </div>
                     {% endfor %}
@@ -1189,37 +1247,37 @@
                     </button>
                 </form>
 
-                {% if queue_ns.forge_eligible > 0 %}
+                {% if storyteller_enabled and queue_ns.forge_eligible > 0 %}
                 <form method="POST" action="{{ url_for('add_book') }}">
                     <input type="hidden" name="action" value="forge_and_match_queue">
                     <button type="submit" class="btn btn-primary w-100"
                         data-primary-action="queue-actions"
-                        data-working-label="Forging + matching..."
-                        data-working-message="Forging queued Storyteller editions and saving matches..."
+                        data-working-label="Creating Storyteller editions..."
+                        data-working-message="Creating queued Storyteller editions and saving matches..."
                         data-feedback-target="queueFeedback">
-                        Forge & Match All ({{ queue|length }})
+                        Create Storyteller Edition &amp; Match All ({{ queue|length }})
                     </button>
                 </form>
-                <div class="queue-action-note">Forge applies to audio plus standard ebook items; Storyteller or text-only items are matched directly.</div>
+                <div class="queue-action-note">Creates Storyteller editions for audio plus standard ebook items; existing Storyteller or text-only items are matched directly.</div>
                 {% endif %}
 
-                {% if queue|length == 1 and queue_ns.forge_eligible == 1 %}
+                {% if storyteller_enabled and queue|length == 1 and queue_ns.forge_eligible == 1 %}
                 <form method="POST" action="{{ url_for('add_book') }}" id="forgeOnlyQueueForm">
                     <input type="hidden" name="action" value="forge_only_queue">
                     <input type="hidden" name="forge_stage_mode" id="forgeOnlyStageMode" value="">
                     <button type="submit" class="btn btn-primary w-100" id="forgeOnlyQueueBtn"
                         data-primary-action="queue-actions"
-                        data-working-label="Starting forge..."
-                        data-working-message="Starting the Storyteller forge and returning to the dashboard..."
+                        data-working-label="Creating Storyteller edition..."
+                        data-working-message="Starting Storyteller edition creation and returning to the dashboard..."
                         data-feedback-target="queueFeedback">
-                        Forge Only
+                        Create Storyteller Edition Only
                     </button>
                 </form>
-                {% elif queue|length > 1 and queue_ns.forge_eligible > 0 %}
-                <button type="button" class="btn btn-primary w-100" disabled title="Forge only is available for one queued book at a time.">
-                    Forge Only
+                {% elif storyteller_enabled and queue|length > 1 and queue_ns.forge_eligible > 0 %}
+                <button type="button" class="btn btn-primary w-100" disabled title="Storyteller edition creation is available for one queued book at a time.">
+                    Create Storyteller Edition Only
                 </button>
-                <div class="queue-action-note">Forge only is disabled when more than one item is queued.</div>
+                <div class="queue-action-note">Storyteller edition-only creation is disabled when more than one item is queued.</div>
                 {% endif %}
 
                 <form method="POST" action="{{ url_for('add_book') }}">
@@ -1241,9 +1299,10 @@
     </div>
 </div>
 
+{% if storyteller_enabled %}
 <div class="modal-overlay" id="forgeStageModal" aria-hidden="true">
     <div class="modal modal-card" role="dialog" aria-modal="true" aria-labelledby="forgeStageTitle">
-        <h3 id="forgeStageTitle">Forge staging mode</h3>
+        <h3 id="forgeStageTitle">Storyteller edition staging</h3>
         <p>Choose what happens to the staged source files after Storyteller finishes processing.</p>
         <div class="modal-options">
             <button type="button" class="modal-option" onclick="chooseForgeStageMode('cleanup')">
@@ -1260,6 +1319,7 @@
         </div>
     </div>
 </div>
+{% endif %}
 
 <script>
     let selectedAudiobookId = null;
@@ -1808,14 +1868,16 @@
     window.addEventListener('hashchange', openKosyncSectionFromHash);
 
     const forgeStageModal = document.getElementById('forgeStageModal');
-    forgeStageModal.addEventListener('click', (event) => {
-        if (event.target === forgeStageModal) {
-            closeForgeStageModal();
-        }
-    });
+    if (forgeStageModal) {
+        forgeStageModal.addEventListener('click', (event) => {
+            if (event.target === forgeStageModal) {
+                closeForgeStageModal();
+            }
+        });
+    }
 
     document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape' && forgeStageModal.classList.contains('open')) {
+        if (event.key === 'Escape' && forgeStageModal && forgeStageModal.classList.contains('open')) {
             closeForgeStageModal();
         }
     });

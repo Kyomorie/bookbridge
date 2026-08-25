@@ -13,12 +13,38 @@ It shows:
 - **Recent session stats** when session data is available for that mapping
 - **Source badges** so you can tell whether a mapping is using Audiobookshelf, Grimmory, BookOrbit, CWA, or another connected source
 - **Direct links** into supported services, including Grimmory and BookOrbit audio when a mapping uses them
+- **Show position** beside the progress bar on any book with an ebook, opening a short excerpt of the text where you are currently synced
 - Annotation sync status when the updated Bridge Sync KOReader plugin is in use
 - Quick access to **Add / Update Book**, **Batch Match**, **Suggestions**, **Forge**, **Settings**, and **Logs**
 
 If a book is significantly out of sync, the card is highlighted so you can spot it quickly.
 
-When you start actions like **Create Mapping**, **Forge & Match**, **Add to Queue**, or **Process All**, the page now shows a working message right away so you know the action started.
+### Sorting and searching
+
+Sort by title, author, series, progress, or **Date Added**; the arrow beside the
+menu flips the direction. A series sorts by its most recently added book, so
+adding one title to a series you started long ago brings the whole group forward.
+
+The search box filters the books you already sync. If you search for a book you
+have not matched yet, BookBridge offers to look for that title in your libraries
+instead and carries what you typed straight into **Add / Update Book**.
+
+### Show position
+
+On any book with an ebook, **Show position** opens a short excerpt with a marker
+at the spot you are synced to — enough to recognise where you are without opening
+a reader.
+
+- When your reader saved an exact XPath or CFI, the excerpt uses it.
+- When it did not, an audiobook position is mapped through the stored
+  audio-to-ebook alignment.
+- A percentage-only position is clearly labelled **approximate** rather than
+  presented as exact.
+
+The excerpt loads only when you ask for it, is scoped to your own books, and is
+not offered for audiobook-only mappings.
+
+When you start actions like **Create Mapping**, **Create Storyteller Edition & Match All**, **Add to Queue**, or **Process All**, the page now shows a working message right away so you know the action started.
 
 ---
 
@@ -32,7 +58,9 @@ The **Account** page is where you manage your own login and reader-specific setu
 - Shared engine settings, such as service URLs, poll intervals, and daemon behavior, still live in **Settings**.
 - BookFusion can be linked from **My Integrations** with the device-link button; a separate Calibre API key enables uploading local EPUBs to BookFusion.
 
-Regular readers do not inherit an admin's account credentials when their own fields are blank. This keeps one reader's BookFusion, Grimmory, BookOrbit, tracker, or KOSync account from being used for another reader by accident.
+Readers do not inherit anyone else's account credentials when their own fields are blank. This keeps one reader's BookFusion, Grimmory, BookOrbit, tracker, or KOSync account from being used for another reader by accident. Only the **primary admin** — the first admin account, whose logins the engine's shared settings are copied from — falls back to the server-wide values; a second admin account needs its own logins like anyone else.
+
+Admins can change an existing account between **user** and **admin** from **Settings -> Users** with the *Make admin* / *Make user* button. Promoting someone does not hand over your service logins, and it leaves their books, progress and saved credentials untouched. The primary admin and the last remaining active admin cannot be demoted.
 
 ---
 
@@ -83,12 +111,12 @@ The bridge still runs a normal background sync every 5 minutes by default, but i
 
 ### Per-client polling
 
-Storyteller, Grimmory, BookOrbit, and CWA/Kobo sync can also use their own polling intervals when those integrations are enabled:
+Storyteller, Grimmory, BookOrbit, Kavita, and CWA/Kobo sync can also use their own polling intervals when those integrations are enabled:
 
 - **Global** uses the normal background cycle.
 - **Custom** lets that client be checked on its own schedule.
 
-This is useful when you often read directly in Storyteller, Grimmory, BookOrbit, or a CWA/Kobo client and want the bridge to notice sooner.
+This is useful when you often read directly in Storyteller, Grimmory, BookOrbit, Kavita, or a CWA/Kobo client and want the bridge to notice sooner.
 
 ---
 
@@ -145,7 +173,8 @@ You can choose:
 - **None / Skip** for an ebook-only link
 - **Audio only (no ebook)** when you want an audiobook mapping without text
 
-The source badge on each card tells you where the audiobook came from.
+The source badge at the top of each card tells you where the audiobook came from,
+and a language badge appears beside it when the provider supplies one.
 
 ### Step 2: Choose Storyteller (optional)
 
@@ -161,16 +190,21 @@ The bridge can pull ebook choices from:
 1. Audiobookshelf ebook files
 2. Grimmory
 3. BookOrbit
-4. CWA
-5. Local `/books` files
+4. Kavita
+5. CWA
+6. BookFusion
+7. Local files from `BOOKS_DIR` and any folder listed in `EXTRA_EBOOK_DIRS`
 
 ### Final actions
 
 - **Create Mapping** creates the link immediately.
-- **Forge & Match** uploads the book to Storyteller for processing first, then finishes the link when Forge completes.
+- **Create Storyteller Edition & Match All** uploads the book to Storyteller for processing first, then finishes the link when processing completes. This appears only when the current reader has a Storyteller account configured.
 
 If you skip audio, **Create Mapping** makes an ebook-only link instead.
 If you choose **Audio only (no ebook)**, the mapping activates immediately without EPUB or transcript processing.
+
+The match queue survives leaving the page, and the **Add Book** tab carries a
+count whenever books are waiting in it.
 
 ---
 
@@ -209,6 +243,10 @@ The **Suggestions** page is a review workspace for likely matches that are not l
 - **Dismiss** hides a suggestion for now.
 - **Never** hides it permanently so it does not come back.
 
+Each suggestion carries a **provider badge** naming the service its audiobook came
+from — Audiobookshelf, Grimmory, or BookOrbit — and a **language badge** when the
+provider supplies one, so you can tell candidates apart before approving.
+
 Suggestions can create:
 
 - Audiobook-backed links from Audiobookshelf, Grimmory, or BookOrbit
@@ -228,14 +266,27 @@ Suggestions can create:
 
 ### Two ways to use it
 
-1. **Forge & Match from Add / Update Book**
+1. **Create Storyteller Edition & Match All** from Add / Update Book or Suggestions
    - Starts the Storyteller upload and processing workflow
    - Finishes the mapping when processing completes
 
-2. **Standalone Forge page**
+2. **Create Storyteller Edition Only**
    - Uploads a Storyteller-ready book without creating a sync mapping yet
 
+These actions appear only when the current reader has a Storyteller account
+configured. Without one, you see **Match All** on its own. (Before 7.5.0 both
+actions were named "Forge".)
+
 Forge stages files locally, then uploads them directly to Storyteller over the API. A Storyteller library mount is optional and only needed for local fallback access to Storyteller-generated files.
+
+### Local file sources
+
+A **Local File** text source must live in `BOOKS_DIR`, one of the folders listed
+in `EXTRA_EBOOK_DIRS`, or the internal EPUB cache. Anything outside those roots is
+refused — see
+[Local ebook sources are confined to these directories](configuration.md#local-ebook-sources-are-confined-to-these-directories).
+If Forge reports that a local file cannot be used, the usual cause is a library
+folder that is not listed in `EXTRA_EBOOK_DIRS`.
 
 ---
 

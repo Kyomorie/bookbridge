@@ -86,6 +86,7 @@ services:
     volumes:
       - ./data:/data
       - /path/to/ebooks:/books
+      # - /path/to/other/library:/calibre_library:ro         # Optional: a second ebook library (also set EXTRA_EBOOK_DIRS)
       # - /path/to/storyteller/library:/storyteller_library  # Optional: local Storyteller fallback/download access
       # - /path/to/storyteller/assets:/storyteller/assets    # Optional: Storyteller transcript ingest
 ```

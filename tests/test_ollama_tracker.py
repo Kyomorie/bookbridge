@@ -367,6 +367,16 @@ class TestResolveEbookIdentifiers(unittest.TestCase):
         resolve_ebook_identifiers(parser, book, bookorbit_client=bo)
         bo.download_book.assert_not_called()
 
+    def test_downloads_from_kavita_when_local_empty(self):
+        parser = self._parser(from_bytes={"title": "T", "author": "A", "isbn": "321", "asin": ""})
+        kavita = MagicMock()
+        kavita.is_configured.return_value = True
+        kavita.download_book.return_value = b"epub-bytes"
+        book = SimpleNamespace(ebook_filename="x.epub", ebook_source="Kavita", ebook_source_id="73")
+        meta = resolve_ebook_identifiers(parser, book, kavita_client=kavita)
+        kavita.download_book.assert_called_once_with("73")
+        self.assertEqual(meta["isbn"], "321")
+
 
 class TestAbsLinkedEpubIsbnSupplement(unittest.TestCase):
     """An ABS-linked book whose ABS metadata lacks an ISBN should fall back to the

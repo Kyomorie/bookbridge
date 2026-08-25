@@ -1,16 +1,21 @@
 """Per-user credential resolution (multi-user Phase 2).
 
 API clients accept an optional per-user credentials dict. When a value is set
-for the user it wins. Admin users may fall back to the global os.environ value
-(the shared/admin config); regular users must provide their own account-level
-values so blank fields do not accidentally sync the admin library.
+for the user it wins. Only the primary admin may fall back to the global
+os.environ value (the shared/admin config, which is that account mirrored
+outward); every other user — including a second admin — must provide their own
+account-level values so blank fields do not accidentally sync someone else's
+library. See global_fallback_allowed().
 
 In the shared-NAS model only auth/account values differ per user — server URLs,
 library IDs and engine settings stay global, so they simply fall through to
 os.environ when absent from the user's dict.
 """
 
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 _ALLOW_GLOBAL_FALLBACK_KEY = "__allow_global_fallback__"
 
@@ -34,6 +39,8 @@ PER_USER_CREDENTIAL_KEYS = frozenset({
     "BOOKORBIT_SHELF_NAME",
     # BookOrbit KOReader-sync account (annotation hub spoke; kosync-style creds)
     "BOOKORBIT_KOSYNC_USER", "BOOKORBIT_KOSYNC_KEY", "BOOKORBIT_KOSYNC_OWNER",
+    # Kavita (auth key identifies the Kavita user; collection/library are user choices)
+    "KAVITA_ENABLED", "KAVITA_API_KEY", "KAVITA_LIBRARY_ID", "KAVITA_COLLECTION_NAME",
     # Grimmory / BookLore (account + the user's own shelf/library)
     "BOOKLORE_USER", "BOOKLORE_PASSWORD", "BOOKLORE_ENABLED",
     "BOOKLORE_SHELF_NAME", "BOOKLORE_LIBRARY_ID", "BOOKLORE_ANNOTATION_SYNC",
@@ -60,6 +67,7 @@ ENGINE_MIRROR_KEYS = (
     "ABS_KEY", "ABS_LIBRARY_ID",
     "BOOKLORE_USER", "BOOKLORE_PASSWORD", "BOOKLORE_SHELF_NAME", "BOOKLORE_LIBRARY_ID",
     "BOOKORBIT_USER", "BOOKORBIT_PASSWORD", "BOOKORBIT_SHELF_NAME",
+    "KAVITA_API_KEY", "KAVITA_LIBRARY_ID", "KAVITA_COLLECTION_NAME",
     "CWA_USERNAME", "CWA_PASSWORD", "CWA_SYNC_TOKEN",
 )
 
@@ -129,6 +137,12 @@ PER_USER_FIELD_GROUPS = [
         ("BOOKORBIT_KOSYNC_KEY", "KOReader sync password (highlight sync)", "secret"),
         ("BOOKORBIT_KOSYNC_OWNER", "KOReader sync owner (must match BookOrbit username)", "text"),
     ]),
+    ("Kavita", [
+        ("KAVITA_ENABLED", "Enabled", "bool"),
+        ("KAVITA_API_KEY", "Authentication key", "secret"),
+        ("KAVITA_LIBRARY_ID", "Library ID (optional; blank uses all libraries)", "text"),
+        ("KAVITA_COLLECTION_NAME", "Collection name (synced books moved here)", "text"),
+    ]),
     ("Readest", [
         ("READEST_ANNOTATION_SYNC", "Highlight sync", "bool"),
         ("READEST_EMAIL", "Account email", "text"),
@@ -174,6 +188,30 @@ def resolve_setting(credentials, key, default=None):
         if key in PER_USER_CREDENTIAL_KEYS and credentials.get(_ALLOW_GLOBAL_FALLBACK_KEY) is False:
             return default
     return os.environ.get(key, default)
+
+
+def global_fallback_allowed(database_service, user) -> bool:
+    """Whether this user's BLANK per-user credentials may fall back to the global config.
+
+    The single source of truth for the ``_ALLOW_GLOBAL_FALLBACK_KEY`` flag that
+    callers put in the credentials dict ``resolve_setting`` consumes. Only the
+    PRIMARY admin may inherit: the global settings are that admin's own account
+    mirrored outward (see ENGINE_MIRROR_KEYS), so letting a second admin inherit
+    them would silently sync their books against the primary admin's
+    Audiobookshelf/Grimmory/BookOrbit/CWA accounts.
+
+    Fails closed — a database hiccup must never widen credential access.
+    """
+    if user is None or not getattr(user, "is_admin", False) or database_service is None:
+        return False
+    try:
+        return bool(database_service.is_primary_admin(getattr(user, "id", None)))
+    except Exception as e:
+        logger.warning(
+            "Primary-admin lookup failed for user %s; denying global credential fallback: %s",
+            getattr(user, "id", "?"), e, exc_info=True,
+        )
+        return False
 
 
 def user_setting(key, default=None):

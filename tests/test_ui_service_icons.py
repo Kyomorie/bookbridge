@@ -29,6 +29,9 @@ class ServiceIconUiTestCase(unittest.TestCase):
             get_bool=lambda key: shelfmark and key == "SHELFMARK_ENABLED",
             get_user_val=lambda key, default="": values.get(key, default),
             get_user_bool=lambda key: key in enabled,
+            # Supplied by inject_global_vars() in the real app; the nav calls it
+            # for the Add Book queue badge.
+            match_queue_count=lambda: 0,
         )
 
     def test_nav_uses_abs_for_audio_and_cwa_for_ebook(self):

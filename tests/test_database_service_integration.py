@@ -162,11 +162,53 @@ class TestDatabaseServiceIntegration(unittest.TestCase):
         self.assertEqual(prov['summary'].get('lexical'), 1)
         # Only the linear map is flagged for re-alignment.
         self.assertEqual(prov['needs_realign'], 1)
-        flagged = {b['abs_id']: b['needs_realign'] for b in prov['books']}
-        self.assertTrue(flagged['lin-1'])
-        self.assertFalse(flagged['lex-1'])
+        # Under the new contract, books[] ONLY contains re-align candidates.
+        # lin-1 should be present with needs_realign=True; lex-1 should be absent.
+        book_ids = {b['abs_id'] for b in prov['books']}
+        self.assertIn('lin-1', book_ids)
+        self.assertNotIn('lex-1', book_ids)
+        lin_entry = next(b for b in prov['books'] if b['abs_id'] == 'lin-1')
+        self.assertTrue(lin_entry['needs_realign'])
         # Re-running is a no-op (nothing left NULL).
         self.assertEqual(self.db_service.backfill_alignment_methods(), 0)
+
+    def test_alignment_provenance_never_selects_map_blob(self):
+        """Regression test: get_alignment_provenance must not SELECT alignment_map_json.
+        
+        Captures all SQL emitted during the call and asserts no statement contains
+        the substring 'alignment_map_json' (case-insensitive). Also verifies the
+        returned data is still correct (needs_realign == 1 for the seeded linear map).
+        """
+        from sqlalchemy import event
+        # Seed both a 2-point (flagged) and a many-point (non-flagged) map
+        self._seed_alignment('lin-prov', 'Linear Prov', points=2)
+        self._seed_alignment('lex-prov', 'Lexical Prov', points=500)
+        self.db_service.backfill_alignment_methods()
+
+        captured_statements = []
+        engine = self.db_service.db_manager.engine
+        
+        def capture_sql(conn, cursor, statement, parameters, context, executemany):
+            captured_statements.append(statement)
+        
+        event.listen(engine, 'before_cursor_execute', capture_sql)
+        try:
+            prov = self.db_service.get_alignment_provenance()
+        finally:
+            event.remove(engine, 'before_cursor_execute', capture_sql)
+        
+        # Verify returned data is still correct
+        self.assertEqual(prov['needs_realign'], 1)
+        book_ids = {b['abs_id'] for b in prov['books']}
+        self.assertIn('lin-prov', book_ids)
+        self.assertNotIn('lex-prov', book_ids)
+        
+        # Assert no captured statement selects alignment_map_json
+        offending = [stmt for stmt in captured_statements if 'alignment_map_json' in stmt.lower()]
+        self.assertEqual(
+            len(offending), 0,
+            f"get_alignment_provenance() emitted SQL selecting alignment_map_json: {offending}"
+        )
 
     def test_get_books_needing_llm_realign_targets_only_linear(self):
         self._seed_alignment('lin-2', 'Linear', points=2)

@@ -34,9 +34,10 @@ from src.utils.user_context import (
     get_current_user_credentials, get_current_user_id,
 )
 from src.utils.user_config import user_setting
+from src.utils.user_config import global_fallback_allowed as _global_fallback_allowed
 
-from src.utils.config_loader import ConfigLoader, env_truthy
-from src.utils.cache_paths import safe_cache_path
+from src.utils.config_loader import ConfigLoader, KNOWN_SETTING_KEYS, env_truthy
+from src.utils.cache_paths import safe_cache_path, safe_library_path, is_plain_basename
 from src.utils.logging_utils import memory_log_handler, LOG_PATH
 from src.utils.logging_utils import sanitize_log_data
 from src.utils.logging_utils import get_persistent_condition_logger
@@ -496,6 +497,14 @@ def current_user():
     return user
 
 
+class _UnavailableClient:
+    def is_configured(self):
+        return False
+
+
+_UNAVAILABLE_CLIENT = _UnavailableClient()
+
+
 class _GlobalClients:
     """Fallback that exposes the global singletons under the same attribute names
     as a per-user bundle (used for unauthenticated/admin/global contexts)."""
@@ -507,6 +516,10 @@ class _GlobalClients:
     def bookfusion_client(self): return container.bookfusion_client()
     @property
     def bookorbit_client(self): return container.bookorbit_client()
+    @property
+    def kavita_client(self):
+        provider = getattr(container, "kavita_client", None)
+        return provider() if provider else _UNAVAILABLE_CLIENT
     @property
     def cwa_client(self): return container.cwa_client()
     @property
@@ -571,6 +584,17 @@ def _client_bundle_kwargs(clients):
     if isinstance(clients, _GlobalClients):
         return {}
     return {"client_bundle": clients}
+
+
+def _optional_client_configured(clients, attribute: str) -> bool:
+    """Safely test an optional bundle client, including legacy test bundles."""
+    if attribute not in getattr(clients, "__dict__", {}) and not hasattr(type(clients), attribute):
+        return False
+    client = getattr(clients, attribute, None)
+    try:
+        return bool(client and client.is_configured())
+    except Exception:
+        return False
 
 
 # --- Deferred tracker auto-match -------------------------------------------------
@@ -861,10 +885,12 @@ def _bind_request_user_context(user):
     # Mark whether global (admin) env fallback is permitted. Without this flag,
     # resolve_setting's `... is False` guard reads None on a non-admin's creds
     # and silently falls back to the admin's global values (per-user leak). Only
-    # admins inherit the global config; regular users are isolated. This ambient
-    # dict is also what _spawn_user_background copies onto worker threads.
+    # the primary admin inherits the global config — it is their own account
+    # mirrored outward — so every other user, second admins included, is
+    # isolated. This ambient dict is also what _spawn_user_background copies
+    # onto worker threads.
     creds = dict(creds)
-    creds[_ALLOW_GLOBAL_FALLBACK_KEY] = bool(getattr(user, "is_admin", False))
+    creds[_ALLOW_GLOBAL_FALLBACK_KEY] = _global_fallback_allowed(database_service, user)
     g._uctx_id_token = set_current_user_id(user.id)
     g._uctx_creds_token = set_current_user_credentials(creds)
 
@@ -1162,7 +1188,7 @@ def account_integrations():
         groups=PER_USER_FIELD_GROUPS,
         creds=creds,
         master=master,
-        allow_master_fallback=bool(getattr(user, "is_admin", False)),
+        allow_master_fallback=_global_fallback_allowed(database_service, user),
         message=message,
         account_user=user,
         user_test_services=_USER_TEST_SERVICES,
@@ -1256,7 +1282,7 @@ def admin_user_integrations(user_id):
         groups=PER_USER_FIELD_GROUPS,
         creds=creds,
         master=master,
-        allow_master_fallback=bool(getattr(target, "is_admin", False)),
+        allow_master_fallback=_global_fallback_allowed(database_service, target),
         message=message,
         target_user=target,
         user_test_services=_USER_TEST_SERVICES,
@@ -1270,6 +1296,7 @@ _USER_TEST_SERVICES = {
     "Grimmory": "booklore",
     "BookFusion": "bookfusion",
     "BookOrbit": "bookorbit",
+    "Kavita": "kavita",
     "Readest": "readest",
     "Calibre-Web Automated": "cwa",
     "Hardcover": "hardcover",
@@ -1286,6 +1313,7 @@ _TEST_CONNECTION_FIELDS = {
     'storyteller': ['STORYTELLER_ENABLED', 'STORYTELLER_API_URL', 'STORYTELLER_USER', 'STORYTELLER_PASSWORD'],
     'booklore': ['BOOKLORE_ENABLED', 'BOOKLORE_SERVER', 'BOOKLORE_USER', 'BOOKLORE_PASSWORD'],
     'bookorbit': ['BOOKORBIT_ENABLED', 'BOOKORBIT_SERVER', 'BOOKORBIT_USER', 'BOOKORBIT_PASSWORD'],
+    'kavita': ['KAVITA_ENABLED', 'KAVITA_SERVER', 'KAVITA_API_KEY'],
     'bookfusion': ['BOOKFUSION_ENABLED', 'BOOKFUSION_API_URL', 'BOOKFUSION_ACCESS_TOKEN'],
     'cwa': ['CWA_ENABLED', 'CWA_SERVER', 'CWA_USERNAME', 'CWA_PASSWORD', 'CWA_SYNC_TOKEN'],
     'readest': ['READEST_ANNOTATION_SYNC', 'READEST_EMAIL', 'READEST_PASSWORD', 'READEST_SUPABASE_URL'],
@@ -1309,7 +1337,7 @@ def _posted_user_test_credentials(target, submitted):
 
     stored = database_service.get_user_credentials(target.id) or {}
     creds = {k: v for k, v in stored.items() if k in PER_USER_CREDENTIAL_KEYS}
-    creds[_ALLOW_GLOBAL_FALLBACK_KEY] = bool(getattr(target, "is_admin", False))
+    creds[_ALLOW_GLOBAL_FALLBACK_KEY] = _global_fallback_allowed(database_service, target)
 
     field_types = {
         key: ftype
@@ -1424,7 +1452,10 @@ def account_booklore_libraries():
 
 # User-management actions accepted by both the legacy /admin/users page and the
 # Settings → Users tab (which posts to /settings).
-_USER_ADMIN_ACTIONS = {'create', 'reset_password', 'toggle_active', 'delete'}
+# Every action _apply_user_admin_action handles MUST be listed here: POST /settings
+# routes anything missing into the settings-save branch instead, which writes the
+# whole settings form and restarts.
+_USER_ADMIN_ACTIONS = {'create', 'reset_password', 'toggle_active', 'set_role', 'delete', 'share_library'}
 
 
 def _apply_user_admin_action(form):
@@ -1490,6 +1521,43 @@ def _apply_user_admin_action(form):
                     except Exception:
                         pass
                     message = f"{'Disabled' if disabling else 'Enabled'} '{target.username}'"
+        elif action == 'set_role':
+            uid = int(form.get('user_id'))
+            new_role = (form.get('role') or '').strip().lower()
+            target = database_service.get_user(uid)
+            demoting = new_role == 'user'
+            if not target:
+                error = "User not found"
+            elif new_role not in ('admin', 'user'):
+                error = "Invalid role"
+            elif target.role == new_role:
+                error = f"'{target.username}' is already {new_role}"
+            elif demoting and database_service.is_primary_admin(uid):
+                # The global service settings are this account mirrored outward
+                # (ENGINE_MIRROR_KEYS) and it owns un-scoped rows, so demoting it
+                # would leave the engine authenticating as a regular user.
+                error = "Can't demote the primary admin — the global service settings belong to that account"
+            elif demoting and _active_admin_count() <= 1:
+                error = "Can't demote the last active admin"
+            else:
+                database_service.set_user_role(uid, new_role)
+                # The cached client bundle carries the global-fallback flag, which
+                # this change flips.
+                try:
+                    container.user_client_registry().invalidate(uid)
+                except Exception:
+                    pass
+                logger.info(
+                    "👤 Role change: '%s' is now '%s'",
+                    sanitize_log_data(target.username), new_role,
+                )
+                if demoting:
+                    message = f"'{target.username}' is now a regular user"
+                else:
+                    message = (
+                        f"'{target.username}' is now an admin. They still use their own "
+                        f"service logins — set them under Integrations."
+                    )
         elif action == 'delete':
             uid = int(form.get('user_id'))
             target = database_service.get_user(uid)
@@ -1509,6 +1577,21 @@ def _apply_user_admin_action(form):
                     message = f"Deleted '{target.username}'"
                 else:
                     error = "User not found"
+        elif action == 'share_library':
+            if not env_truthy('SHARE_ALL_BOOKS_WITH_ALL_USERS'):
+                error = "Enable Features → Shared Library first, then share the existing catalog."
+            else:
+                result = database_service.share_all_books_with_active_users()
+                links = result.get('links', 0)
+                users = result.get('users', 0)
+                logger.info(
+                    "🔗 Shared %d existing book link(s) across %d active user(s) (share-all-books reconcile)",
+                    links, users,
+                )
+                if links:
+                    message = f"Shared {links} book link(s) across {users} user(s)"
+                else:
+                    message = f"All {users} user(s) already see the full library"
     except Exception as e:
         error = f"Action failed: {e}"
     return message, error
@@ -1526,12 +1609,17 @@ def admin_users():
         message, error = _apply_user_admin_action(request.form)
 
     users = database_service.list_users()
+    try:
+        primary_admin_id = database_service._default_user_id()
+    except Exception:
+        primary_admin_id = None
     return render_template(
         'admin_users.html',
         users=users,
         message=message,
         error=error,
         current_user_id=current_user().id,
+        primary_admin_id=primary_admin_id,
     )
 
 
@@ -1592,6 +1680,17 @@ def inject_global_vars():
         from src.utils.user_config import user_setting
         return str(user_setting(key, 'false')).lower() in ('true', '1', 'yes', 'on')
 
+    def match_queue_count() -> int:
+        """Number of queued Add Book items for the acting user (0 if unavailable).
+
+        Called lazily from the nav so pages without a user context (login, setup)
+        never pay the queue read, and a queue failure can never break a render.
+        """
+        try:
+            return len(_load_match_queue())
+        except Exception:
+            return 0
+
     return dict(
         shelfmark_url=os.environ.get("SHELFMARK_URL", ""),
         abs_server=_display_abs_server(),
@@ -1600,6 +1699,7 @@ def inject_global_vars():
         get_bool=get_bool,
         get_user_val=get_user_val,
         get_user_bool=get_user_bool,
+        match_queue_count=match_queue_count,
         current_user=current_user(),
     )
 
@@ -1637,6 +1737,7 @@ def _run_diagnostics_send(
         'booklore': _flag(lambda: container.booklore_client().is_configured()),
         'bookfusion': _flag(lambda: container.bookfusion_client().is_configured()),
         'book_orbit': _flag(lambda: container.bookorbit_client().is_configured()),
+        'kavita': _flag(lambda: container.kavita_client().is_configured()),
         'cwa': _flag(lambda: container.cwa_client().is_configured()),
         'hardcover': _flag(lambda: container.hardcover_client().is_configured()),
         'storygraph': _flag(lambda: container.storygraph_client().is_configured()),
@@ -1698,6 +1799,12 @@ def sync_daemon():
 # ---------------- ORIGINAL ABS-KOSYNC HELPERS ----------------
 
 def find_ebook_file(filename):
+    if not is_plain_basename(filename):
+        logger.warning(
+            "Refused ebook lookup for a non-basename filename: %s",
+            sanitize_log_data(str(filename or "")),
+        )
+        return None
     base = EBOOK_DIR
     escaped_filename = glob.escape(filename)
     matches = list(base.rglob(escaped_filename))
@@ -1705,13 +1812,27 @@ def find_ebook_file(filename):
 
 
 def get_kosync_id_for_ebook(ebook_filename, booklore_id=None, original_filename=None,
-                            bookorbit_id=None, source_path=None):
+                            bookorbit_id=None, kavita_id=None, source_path=None):
     """Get KOSync document ID for an ebook.
     Tries Grimmory API first (if configured and booklore_id provided),
     falls back to filesystem, then BookOrbit / ABS / CWA on-demand downloads.
     """
     # Try Grimmory API first
     clients = uc()
+
+    if kavita_id and clients.kavita_client.is_configured():
+        try:
+            book = clients.kavita_client.get_book_by_id(kavita_id, allow_refresh=False)
+            source_hash = str((book or {}).get('koreader_hash') or '').strip()
+            if source_hash:
+                return source_hash
+            content = clients.kavita_client.download_book(kavita_id)
+            if content:
+                kosync_id = container.ebook_parser().get_kosync_id_from_bytes(ebook_filename, content)
+                if kosync_id:
+                    return kosync_id
+        except Exception as e:
+            logger.warning("Failed to get KOSync ID from Kavita: %s", e, exc_info=True)
 
     if booklore_id and clients.booklore_client.is_configured():
         try:
@@ -1727,8 +1848,8 @@ def get_kosync_id_for_ebook(ebook_filename, booklore_id=None, original_filename=
     # Fall back to filesystem. When a queue item carries the selected local source path,
     # prefer it over filename-only globbing so duplicate basenames do not hash the wrong book.
     ebook_path = None
-    source_path_text = str(source_path or "").strip()
-    if source_path_text and "://" not in source_path_text:
+    source_path_text = _safe_local_source_path(source_path) if "://" not in str(source_path or "") else ""
+    if source_path_text:
         try:
             selected_path = Path(source_path_text)
             if selected_path.exists() and selected_path.is_file():
@@ -1864,12 +1985,14 @@ def get_kosync_id_for_ebook(ebook_filename, booklore_id=None, original_filename=
     # Neither source available - log helpful warning
     if (not clients.booklore_client.is_configured()
             and not clients.bookorbit_client.is_configured()
+            and not _optional_client_configured(clients, "kavita_client")
             and not EBOOK_DIR.exists()):
         logger.warning(
             f"⚠️ Cannot compute KOSync ID for '{ebook_filename}': "
             "No ebook source configured. Enable Grimmory (BOOKLORE_SERVER, BOOKLORE_USER, "
             "BOOKLORE_PASSWORD), enable BookOrbit (BOOKORBIT_SERVER, BOOKORBIT_USER, "
-            "BOOKORBIT_PASSWORD), or mount the ebooks directory to /books"
+            "BOOKORBIT_PASSWORD), enable Kavita (KAVITA_SERVER, KAVITA_API_KEY), "
+            "or mount the ebooks directory to /books"
         )
     elif not booklore_id and not ebook_path:
         logger.warning(f"⚠️ Cannot compute KOSync ID for '{ebook_filename}': File not found in Grimmory, filesystem, or remote sources")
@@ -1925,6 +2048,7 @@ def _shelve_matched_ebook(shelf_filename, ebook_source=None, ebook_source_id=Non
     from src.utils.user_config import user_setting
     clients = uc()
     is_bookorbit = (ebook_source or "").strip().lower() == "bookorbit"
+    is_kavita = (ebook_source or "").strip().lower() == "kavita"
     if is_bookorbit:
         client = clients.bookorbit_client
         kobo_shelf = (user_setting("BOOKORBIT_SHELF_NAME") or "Kobo").strip()
@@ -1932,6 +2056,13 @@ def _shelve_matched_ebook(shelf_filename, ebook_source=None, ebook_source_id=Non
             "true", "1", "yes", "on"
         )
         watch_shelf = (os.environ.get("BOOKORBIT_SHELF_WATCH_NAME") or "Up Next").strip()
+    elif is_kavita:
+        client = clients.kavita_client
+        kobo_shelf = (user_setting("KAVITA_COLLECTION_NAME") or "BookBridge").strip()
+        watch_enabled = str(os.environ.get("KAVITA_SHELF_WATCH_ENABLED", "false")).strip().lower() in (
+            "true", "1", "yes", "on"
+        )
+        watch_shelf = (os.environ.get("KAVITA_SHELF_WATCH_NAME") or "Up Next").strip()
     else:
         client = clients.booklore_client
         kobo_shelf = user_setting("BOOKLORE_SHELF_NAME", "Kobo")
@@ -1945,7 +2076,7 @@ def _shelve_matched_ebook(shelf_filename, ebook_source=None, ebook_source_id=Non
 
     # Prefer the known BookOrbit book id (filenames like "Title - Author.epub"
     # don't reliably resolve via BookOrbit's title-based search).
-    use_id = is_bookorbit and ebook_source_id and hasattr(client, "add_book_id_to_shelf")
+    use_id = (is_bookorbit or is_kavita) and ebook_source_id and hasattr(client, "add_book_id_to_shelf")
     try:
         if use_id:
             added = client.add_book_id_to_shelf(ebook_source_id, kobo_shelf)
@@ -1965,7 +2096,7 @@ def _shelve_matched_ebook(shelf_filename, ebook_source=None, ebook_source_id=Non
 
     same_shelf = (
         client._shelf_key(watch_shelf) == client._shelf_key(kobo_shelf)
-        if is_bookorbit else watch_shelf == kobo_shelf
+        if is_bookorbit or is_kavita else watch_shelf == kobo_shelf
     )
     if watch_enabled and watch_shelf and not same_shelf:
         try:
@@ -2244,7 +2375,12 @@ def _upsert_storyteller_mapping(
             bl_book = uc().booklore_client.find_book_by_filename(resolved_ebook_filename)
             if bl_book:
                 booklore_id = bl_book.get("id")
-        kosync_doc_id = get_kosync_id_for_ebook(resolved_ebook_filename, booklore_id)
+        kosync_doc_id = get_kosync_id_for_ebook(
+            resolved_ebook_filename,
+            booklore_id,
+            bookorbit_id=selected_ebook_source_id if selected_ebook_source == "BookOrbit" else None,
+            kavita_id=selected_ebook_source_id if selected_ebook_source == "Kavita" else None,
+        )
         if not kosync_doc_id and target_book and target_book.kosync_doc_id:
             kosync_doc_id = target_book.kosync_doc_id
 
@@ -2445,11 +2581,12 @@ def _upsert_storyteller_mapping(
 class EbookResult:
     """Wrapper to provide consistent interface for ebooks from Grimmory, CWA, ABS, or filesystem."""
 
-    def __init__(self, name, title=None, subtitle=None, authors=None, booklore_id=None, path=None, source=None, source_id=None, abs_identifier=None):
+    def __init__(self, name, title=None, subtitle=None, authors=None, booklore_id=None, path=None, source=None, source_id=None, abs_identifier=None, language=None):
         self.name = name
         self.title = title or Path(name).stem
         self.subtitle = subtitle or ''
         self.authors = authors or ''
+        self.language = str(language or '').strip()
         self.booklore_id = booklore_id
         self.path = path # Public path
         self.source = source  # 'booklore', 'cwa', 'abs', 'filesystem'
@@ -2707,6 +2844,7 @@ def get_suggestion_audiobooks():
                 "audio_source_id": source_id,
                 "audio_title": title,
                 "audio_author": author,
+                "audio_language": item.language or "",
                 "audio_duration": item.duration,
                 "audio_cover_url": cover_url,
                 "audio_path": item.path or "",
@@ -2779,6 +2917,7 @@ def get_searchable_ebooks(search_term):
                             title=b.get('title'),
                             subtitle=_ebook_edition_label(b),
                             authors=b.get('authors'),
+                            language=b.get('language'),
                             booklore_id=b.get('id'),
                             path=b.get('filePath') or b.get('filepath') or b.get('path'),
                             source='Grimmory'
@@ -2813,6 +2952,7 @@ def get_searchable_ebooks(search_term):
                     name=fname,
                     title=b.get('title'),
                     authors=b.get('authors'),
+                    language=b.get('language'),
                     path=b.get('filePath') or b.get('filepath') or b.get('path'),
                     source='BookOrbit',
                     source_id=b.get('id'),
@@ -2841,12 +2981,43 @@ def get_searchable_ebooks(search_term):
                     name=fname,
                     title=title,
                     authors=authors,
+                    language=b.get('language'),
                     path=None,
                     source='BookFusion',
                     source_id=bf_id,
                 ))
         except Exception as e:
             logger.warning(f"⚠️ BookFusion search failed: {e}", exc_info=True)
+
+    # 1d. Kavita
+    kavita_client = getattr(clients, "kavita_client", None)
+    if kavita_client and kavita_client.is_configured():
+        try:
+            kavita_books = (
+                kavita_client.search_ebooks(search_term)
+                if search_term
+                else kavita_client.get_all_books()
+            )
+            for book in kavita_books or []:
+                filename = book.get('fileName') or book.get('filename') or ''
+                if not filename.lower().endswith('.epub'):
+                    continue
+                if filename.lower() in found_filenames:
+                    continue
+                found_filenames.add(filename.lower())
+                found_stems.add(Path(filename).stem.lower())
+                results.append(EbookResult(
+                    name=filename,
+                    title=book.get('title'),
+                    subtitle=_ebook_edition_label(book),
+                    authors=book.get('authors') or book.get('author'),
+                    language=book.get('language'),
+                    path=book.get('filePath') or book.get('path'),
+                    source='Kavita',
+                    source_id=book.get('id'),
+                ))
+        except Exception as e:
+            logger.warning("Kavita search failed: %s", e, exc_info=True)
 
     # 2. ABS ebook libraries
     if search_term:
@@ -2865,6 +3036,7 @@ def get_searchable_ebooks(search_term):
                                     name=fname,
                                     title=ab.get('title'),
                                     authors=ab.get('author'),
+                                    language=ab.get('language'),
                                     source='ABS',
                                     source_id=ab.get('id'),
                                     subtitle=_ebook_edition_label(ab)
@@ -2902,6 +3074,7 @@ def get_searchable_ebooks(search_term):
                                 name=fname,
                                 title=cr.get('title'),
                                 authors=cr.get('author'),
+                                language=cr.get('language'),
                                 path=cr.get('download_url'),
                                 source='CWA',
                                 source_id=cwa_id,
@@ -2937,6 +3110,7 @@ def get_searchable_ebooks(search_term):
     if (not results and not EBOOK_DIR.exists()
             and not clients.booklore_client.is_configured()
             and not clients.bookorbit_client.is_configured()
+            and not _optional_client_configured(clients, "kavita_client")
             and not clients.bookfusion_client.is_configured()):
         get_persistent_condition_logger().warn(
             logger,
@@ -2944,6 +3118,7 @@ def get_searchable_ebooks(search_term):
             "⚠️ No ebooks available: No ebook source configured. "
             "Enable Grimmory (BOOKLORE_SERVER, BOOKLORE_USER, BOOKLORE_PASSWORD), "
             "enable BookOrbit (BOOKORBIT_SERVER, BOOKORBIT_USER, BOOKORBIT_PASSWORD), "
+            "enable Kavita (KAVITA_SERVER, KAVITA_API_KEY), "
             "link BookFusion, "
             "or mount the ebooks directory to /books"
         )
@@ -2997,6 +3172,23 @@ def _audio_source_from_bridge_key(bridge_key):
     return "ABS" if key else ""
 
 
+# Map internal audio source key -> (UI badge label, CSS class).
+# These are the FULL product names used on UI chips, deliberately distinct from
+# _audio_source_display_name(), which stays short ("ABS") because it feeds
+# generated book titles.
+_AUDIO_SOURCE_BADGE_LABELS = {
+    "ABS": ("Audiobookshelf", "abs"),
+    "BookLore": ("Grimmory", "grimmory"),
+    "BookOrbit": ("BookOrbit", "bookorbit"),
+}
+
+
+def suggestion_source_badge(audio_source: str | None, bridge_key: str | None = None) -> tuple[str, str]:
+    """Resolve a suggestion's audio provider to a (label, css_class) badge pair."""
+    source = (audio_source or _audio_source_from_bridge_key(bridge_key) or "ABS").strip()
+    return _AUDIO_SOURCE_BADGE_LABELS.get(source, (source, "unknown"))
+
+
 def _build_bridge_key(audio_source, audio_source_id):
     if audio_source_id is None:
         return None
@@ -3022,12 +3214,34 @@ def _normalize_text_source_type(raw_source):
         "booklore": "Booklore",
         "grimmory": "Booklore",
         "bookorbit": "BookOrbit",
+        "kavita": "Kavita",
         "bookfusion": "BookFusion",
         "abs": "ABS",
         "cwa": "CWA",
         "local file": "Local File",
     }
     return source_map.get(source_text.lower(), source_text)
+
+
+def _safe_local_source_path(raw_path) -> str:
+    """Return a local ebook path only when it resolves inside a library root.
+
+    The value arrives in a request payload, so it is confined to BOOKS_DIR /
+    EXTRA_EBOOK_DIRS / the epub cache before any staging, parsing, hashing, or
+    upload reads it. Returns '' for a missing or out-of-tree path, which the
+    forge callers already treat as "local file path unavailable".
+    """
+    raw = str(raw_path or "").strip()
+    if not raw:
+        return ""
+    safe_path = safe_library_path(raw)
+    if safe_path is None:
+        logger.warning(
+            "Refused local ebook source outside the configured library roots: %s",
+            sanitize_log_data(raw),
+        )
+        return ""
+    return str(safe_path)
 
 
 def _build_forge_text_item(source_type, source_id, source_path, original_filename):
@@ -3040,6 +3254,7 @@ def _build_forge_text_item(source_type, source_id, source_path, original_filenam
         "path": normalized_source_path,
         "booklore_id": normalized_source_id,
         "bookorbit_id": normalized_source_id,
+        "kavita_id": normalized_source_id,
         "bookfusion_id": normalized_source_id,
         "cwa_id": normalized_source_id,
         "abs_id": normalized_source_id,
@@ -3053,6 +3268,8 @@ def _build_forge_text_item(source_type, source_id, source_path, original_filenam
         text_item["booklore_id"] = normalized_source_id
     if normalized_source == "BookOrbit":
         text_item["bookorbit_id"] = normalized_source_id
+    if normalized_source == "Kavita":
+        text_item["kavita_id"] = normalized_source_id
     if normalized_source == "BookFusion":
         text_item["bookfusion_id"] = normalized_source_id
     if normalized_source == "CWA":
@@ -3060,7 +3277,7 @@ def _build_forge_text_item(source_type, source_id, source_path, original_filenam
         if normalized_source_path:
             text_item["download_url"] = normalized_source_path
     if normalized_source == "Local File":
-        text_item["path"] = normalized_source_path
+        text_item["path"] = _safe_local_source_path(normalized_source_path)
 
     return text_item
 
@@ -3137,6 +3354,7 @@ def _create_or_update_library_audio_mapping(
             resolved_ebook_filename,
             booklore_ebook_id,
             bookorbit_id=ebook_source_id if ebook_source == "BookOrbit" else None,
+            kavita_id=ebook_source_id if ebook_source == "Kavita" else None,
             source_path=ebook_source_path,
         )
 
@@ -3582,8 +3800,10 @@ def settings():
             'KOSYNC_USE_PERCENTAGE_FROM_SERVER',
             'KOSYNC_AUTO_MAP_ON_AGREEMENT',
             'KOSYNC_HASH_RECONCILE_ENABLED',
+            'KOSYNC_XPATH_ORDER_ENABLED',
             'KOREADER_ANNOTATION_SYNC',
             'SYNC_FRESHNESS_GUARDS',
+            'SYNC_COMPLETION_PROPAGATION',
             'SYNC_ABS_EBOOK',
             'XPATH_FALLBACK_TO_PREVIOUS_SEGMENT',
             'KOSYNC_ENABLED',
@@ -3598,6 +3818,7 @@ def settings():
             'STORYGRAPH_ENABLED',
             'TELEGRAM_ENABLED',
             'SUGGESTIONS_ENABLED',
+            'SUGGESTIONS_AUTO_MATCH_ENABLED',
             'ABS_ONLY_SEARCH_IN_ABS_LIBRARY_ID',
             'REPROCESS_ON_CLEAR_IF_NO_ALIGNMENT',
             'INSTANT_SYNC_ENABLED',
@@ -3609,6 +3830,8 @@ def settings():
             'BOOKORBIT_ENABLED',
             'BOOKORBIT_READING_SESSIONS',
             'BOOKORBIT_SHELF_WATCH_ENABLED',
+            'KAVITA_ENABLED',
+            'KAVITA_SHELF_WATCH_ENABLED',
             'CALIBRE_USE_ABS_IDENTIFIER',
             'SHELFMARK_ENABLED',
             'OLLAMA_ENABLED',
@@ -3642,6 +3865,7 @@ def settings():
         url_keys = [
             'SHELFMARK_URL', 'ABS_SERVER', 'ABS_WEB_URL', 'BOOKLORE_SERVER', 'BOOKLORE_WEB_URL',
             'BOOKORBIT_WEB_URL', 'CWA_WEB_URL', 'BOOKFUSION_API_URL',
+            'KAVITA_SERVER', 'KAVITA_WEB_URL',
             'STORYTELLER_API_URL', 'CWA_SERVER', 'KOSYNC_SERVER',
             'OLLAMA_URL', 'LLM_BASE_URL',
         ]
@@ -3672,6 +3896,23 @@ def settings():
         # Iterate over form to find other keys
         for key, value in request.form.items():
             if key in bool_keys: continue
+
+            # Only recognized settings are persisted. The posted form also carries
+            # control fields — csrf_token, injected into every form by the CSRF
+            # bootstrap script — and this loop used to write each of them to the
+            # settings table as if it were configuration.
+            if key not in KNOWN_SETTING_KEYS:
+                if key.isupper():
+                    # Looks like a setting but is registered nowhere: almost always
+                    # a new field added to the template without ALL_SETTINGS.
+                    logger.warning(
+                        "⚠️ Settings save: ignoring unregistered key '%s' — add it to "
+                        "ALL_SETTINGS/DEFAULT_CONFIG in config_loader.py to make it savable",
+                        sanitize_log_data(key),
+                    )
+                else:
+                    logger.debug("Settings save: ignoring non-setting form field '%s'", key)
+                continue
 
             clean_value = _normalize_abs_form_value(key, value)
 
@@ -3724,12 +3965,17 @@ def settings():
     except Exception:
         users = []
     cu = current_user()
+    try:
+        primary_admin_id = database_service._default_user_id()
+    except Exception:
+        primary_admin_id = None
 
     response = make_response(render_template('settings.html',
                          message=message,
                          is_error=is_error,
                          users=users,
                          current_user_id=(cu.id if cu else None),
+                         primary_admin_id=primary_admin_id,
                          user_message=user_message,
                          user_error=user_error))
     response.headers['Cache-Control'] = 'no-store, max-age=0'
@@ -3827,6 +4073,14 @@ def _finalize_series_group(group: dict) -> None:
         if ts > last_sync_unix:
             last_sync_unix = ts
 
+    # A series sorts by its most recent addition, so adding one book to a series
+    # started long ago surfaces the whole group rather than burying it.
+    added_at_unix = 0.0
+    for c in children:
+        ts = c.get("added_at_unix") or 0.0
+        if ts > added_at_unix:
+            added_at_unix = ts
+
     author_counts = Counter(
         (c.get("display_author") or "").strip() for c in children if c.get("display_author")
     )
@@ -3840,6 +4094,7 @@ def _finalize_series_group(group: dict) -> None:
         "avg_progress": avg,
         "next_book": next_book,
         "last_sync_unix": last_sync_unix,
+        "added_at_unix": added_at_unix,
         "stack_cover_urls": [c.get("cover_url") for c in children[:3] if c.get("cover_url")],
         "section_bucket": "finished" if finished == total else "not_started",
         "dom_id": "series-" + re.sub(r"[^a-z0-9]+", "-", group["series_key"]).strip("-"),
@@ -4180,6 +4435,12 @@ def _get_dashboard_sync_warning_clients(mapping, integrations):
     ):
         client_names.append('bookorbit')
 
+    if integrations.get('kavita') and (
+        mapping.get('ebook_source') == 'Kavita'
+        or 'kavita' in mapping.get('states', {})
+    ):
+        client_names.append('kavita')
+
     return client_names
 
 
@@ -4360,7 +4621,7 @@ def _dashboard_leader_service(leader_client: str | None) -> str | None:
     The returned key matches the lowercase client name used in ``mapping["states"]``
     and the per-service ``.service-item`` blocks in ``index.html`` (``'abs'``,
     ``'kosync'``, ``'storyteller'``, ``'booklore'``, ``'bookloreaudio'``,
-    ``'bookorbit'``, ``'bookorbitaudio'``, ``'cwa'``), so the 'In Progress' card can
+    ``'bookorbit'``, ``'bookorbitaudio'``, ``'kavita'``, ``'cwa'``), so the 'In Progress' card can
     subtly dot whichever service last moved the position.
 
     This is display-only: internal client keys are never renamed. KoSync device
@@ -4388,6 +4649,8 @@ def _dashboard_leader_service(leader_client: str | None) -> str | None:
         return "bookorbit"
     if key == "bookorbitaudio":
         return "bookorbitaudio"
+    if key == "kavita":
+        return "kavita"
     if key == "cwa":
         return "cwa"
     return None
@@ -4498,6 +4761,31 @@ def _public_link_base(web_url_key: str, server_fallback: str) -> str:
     return (os.environ.get(web_url_key, '') or '').strip().rstrip('/') or (server_fallback or '').rstrip('/')
 
 
+def _prefetch_bookfusion_links(books: list, integrations: dict | None) -> dict:
+    """Resolve every book's BookFusion link in one query instead of one per book.
+
+    Returns ``{abs_id: link_dict}``, empty when BookFusion is unconfigured or no
+    user resolves. The dashboard template gates the BookFusion tile on the same
+    ``integrations['bookfusion']`` flag, so skipping the query when that flag is
+    falsey changes nothing the user sees.
+    """
+    if not integrations or not integrations.get('bookfusion'):
+        return {}
+    user_id = _active_bookfusion_link_user_id()
+    if user_id is None:
+        return {}
+    abs_ids = [
+        abs_id for abs_id in (getattr(book, "abs_id", None) for book in (books or [])) if abs_id
+    ]
+    if not abs_ids:
+        return {}
+    try:
+        return database_service.get_user_bookfusion_links_for_books(user_id, abs_ids) or {}
+    except Exception as exc:
+        logger.debug("BookFusion dashboard link prefetch failed: %s", exc, exc_info=True)
+        return {}
+
+
 def _build_dashboard_mapping(
     book,
     states_by_book,
@@ -4506,6 +4794,8 @@ def _build_dashboard_mapping(
     storygraph_by_book,
     reading_stats_by_book,
     cached_booklore_by_filename,
+    claim_times_by_book=None,
+    bookfusion_by_book=None,
 ):
     states = states_by_book.get(book.abs_id, [])
     state_by_client = {state.client_name: state for state in states}
@@ -4548,6 +4838,7 @@ def _build_dashboard_mapping(
         "unified_progress": 0,
         "duration": book.duration or 0,
         "storyteller_uuid": book.storyteller_uuid,
+        "added_at_unix": (claim_times_by_book or {}).get(book.abs_id, 0.0),
         "states": {},
     }
 
@@ -4639,19 +4930,7 @@ def _build_dashboard_mapping(
             "storygraph_review_count": None,
         })
 
-    bookfusion_link = None
-    try:
-        user = current_user()
-    except RuntimeError:
-        user = None
-    try:
-        if user is not None:
-            bookfusion_link = database_service.get_user_bookfusion_link(user.id, book.abs_id)
-        elif current_app.config.get('LOGIN_DISABLED'):
-            uid = database_service._default_user_id()
-            bookfusion_link = database_service.get_user_bookfusion_link(uid, book.abs_id) if uid else None
-    except Exception as exc:
-        logger.debug("BookFusion dashboard link lookup failed for '%s': %s", book.abs_id, exc)
+    bookfusion_link = (bookfusion_by_book or {}).get(book.abs_id)
     if not isinstance(bookfusion_link, dict):
         bookfusion_link = None
     mapping.update({
@@ -4695,6 +4974,15 @@ def _build_dashboard_mapping(
         mapping["bookorbit_audio_url"] = f"{_bo_base}/book/{mapping['audio_source_id']}"
     else:
         mapping["bookorbit_audio_url"] = None
+
+    # Kavita stores BookBridge's source id at chapter level while its browser
+    # route is series-based. Link to the configured web root rather than guess.
+    _kavita_base = _public_link_base('KAVITA_WEB_URL', os.environ.get("KAVITA_SERVER") or "")
+    mapping["kavita_url"] = (
+        _kavita_base
+        if _kavita_base and mapping.get("ebook_source") == "Kavita"
+        else None
+    )
 
     mapping.update({
         "goodreads_rating": None,
@@ -4747,12 +5035,17 @@ def _build_dashboard_mappings(
     all_storygraph=None,
     reading_stats_by_book=None,
     cached_booklore_by_filename=None,
+    claim_times_by_book=None,
+    bookfusion_by_book=None,
 ):
     hardcover_by_book = {h.abs_id: h for h in (all_hardcover or [])}
     storygraph_by_book = {s.abs_id: s for s in (all_storygraph or [])}
     states_by_book = _group_dashboard_states_by_book(all_states)
     reading_stats_by_book = reading_stats_by_book or {}
     cached_booklore_by_filename = cached_booklore_by_filename or {}
+    claim_times_by_book = claim_times_by_book or {}
+    if bookfusion_by_book is None:
+        bookfusion_by_book = _prefetch_bookfusion_links(books, integrations)
 
     mappings = []
     total_duration = 0
@@ -4767,6 +5060,8 @@ def _build_dashboard_mappings(
             storygraph_by_book,
             reading_stats_by_book,
             cached_booklore_by_filename,
+            claim_times_by_book,
+            bookfusion_by_book=bookfusion_by_book,
         )
         mappings.append(mapping)
 
@@ -4942,6 +5237,7 @@ def index():
     all_storygraph = database_service.get_all_storygraph_details()
     all_reading_stats = database_service.get_all_reading_stats(user_id=user_id)
     cached_booklore_by_filename = _index_cached_booklore_books(database_service.get_all_booklore_books())
+    claim_times_by_book = database_service.get_book_claim_times(user_id=user_id)
     integrations = _build_dashboard_integrations()
     mappings, overall_progress = _build_dashboard_mappings(
         books,
@@ -4951,6 +5247,7 @@ def index():
         all_storygraph=all_storygraph,
         reading_stats_by_book=all_reading_stats,
         cached_booklore_by_filename=cached_booklore_by_filename,
+        claim_times_by_book=claim_times_by_book,
     )
 
     suggestions = []
@@ -5174,7 +5471,31 @@ def forge_search_text():
     except Exception as e:
         logger.warning(f"⚠️ Forge: BookOrbit search failed: {e}", exc_info=True)
 
-    # 2b. BookFusion
+    # 2b. Kavita
+    try:
+        kavita_client = getattr(clients, "kavita_client", None)
+        if kavita_client and kavita_client.is_configured():
+            for book in kavita_client.search_ebooks(query) or []:
+                filename = book.get('fileName') or book.get('filename') or ''
+                if not filename.lower().endswith('.epub'):
+                    continue
+                key = f"kavita_{book.get('id', filename)}"
+                if key in found_ids:
+                    continue
+                found_ids.add(key)
+                results.append({
+                    "id": key,
+                    "title": book.get('title') or filename or 'Unknown',
+                    "author": _coerce_author_display(book.get('authors') or book.get('author')),
+                    "source": "Kavita",
+                    "filename": filename,
+                    "kavita_id": book.get('id'),
+                    "source_id": book.get('id'),
+                })
+    except Exception as e:
+        logger.warning("Forge: Kavita search failed: %s", e, exc_info=True)
+
+    # 2c. BookFusion
     try:
         bookfusion_client = clients.bookfusion_client
         if bookfusion_client and bookfusion_client.is_configured():
@@ -5297,6 +5618,16 @@ def forge_process():
 
     if not text_item:
         return jsonify({"error": "Missing text_item"}), 400
+    # text_item is client-supplied: a filesystem path must name a file in the library,
+    # never an arbitrary container path whose bytes would be uploaded upstream. A URL
+    # (CWA carries its download_url here) is not a local path and is left alone.
+    if isinstance(text_item, dict):
+        raw_path = str(text_item.get('path') or '').strip()
+        if raw_path and "://" not in raw_path:
+            safe_path = _safe_local_source_path(raw_path)
+            if not safe_path:
+                return jsonify({"error": "Invalid local file path"}), 400
+            text_item['path'] = safe_path
     if audio_source == "ABS" and not requested_abs_id:
         return jsonify({"error": "Missing abs_id"}), 400
     if audio_source in _LIBRARY_AUDIO_SOURCES and not audio_source_id:
@@ -5304,6 +5635,8 @@ def forge_process():
 
     abs_id = requested_abs_id if audio_source == "ABS" else _build_bridge_key(audio_source, audio_source_id)
     clients = uc()
+    if not clients.storyteller_client.is_configured():
+        return jsonify({"error": "Storyteller is not configured"}), 409
 
     # Get title/author from the audio provider for folder naming
     title = "Unknown"
@@ -5441,6 +5774,8 @@ def match():
         ebook_filename = selected_filename
         original_ebook_filename = selected_filename
         clients = uc()
+        if request.form.get('action') == 'forge_match' and not clients.storyteller_client.is_configured():
+            return "Storyteller is not configured", 409
         audiobooks = get_audiobooks_conditionally()
         selected_ab = next((ab for ab in audiobooks if ab['id'] == abs_id), None) if abs_id else None
 
@@ -5606,6 +5941,7 @@ def match():
                 original_filename,
                 initial_booklore_id,
                 bookorbit_id=source_id if normalized_source_type == 'BookOrbit' else None,
+                kavita_id=source_id if normalized_source_type == 'Kavita' else None,
                 source_path=source_path,
             )
 
@@ -5732,6 +6068,7 @@ def match():
                 ebook_filename,
                 booklore_id,
                 bookorbit_id=ebook_source_id if ebook_source == 'BookOrbit' else None,
+                kavita_id=ebook_source_id if ebook_source == 'Kavita' else None,
                 source_path=source_path,
             )
 
@@ -6186,6 +6523,7 @@ def _process_batch_queue(queue_items):
                 ebook_filename,
                 booklore_id,
                 bookorbit_id=item.get('ebook_source_id') if _item_ebook_source == 'BookOrbit' else None,
+                kavita_id=item.get('ebook_source_id') if _item_ebook_source == 'Kavita' else None,
                 source_path=item.get('ebook_source_path'),
             )
 
@@ -6464,7 +6802,7 @@ def _process_forge_match_queue(queue_items):
             resolved_path = find_ebook_file(original_filename)
             source_path = str(resolved_path) if resolved_path else ''
 
-        if source_type in ('ABS', 'Booklore', 'BookOrbit', 'CWA') and not source_id:
+        if source_type in ('ABS', 'Booklore', 'BookOrbit', 'Kavita', 'CWA') and not source_id:
             logger.warning(
                 "Batch Forge skipped '%s': missing source id for source type '%s'",
                 sanitize_log_data(item.get('audio_title') or item.get('abs_title') or item.get('abs_id')),
@@ -6484,6 +6822,7 @@ def _process_forge_match_queue(queue_items):
             original_filename,
             initial_booklore_id,
             bookorbit_id=source_id if text_item.get('source') == 'BookOrbit' else None,
+            kavita_id=source_id if text_item.get('source') == 'Kavita' else None,
             source_path=source_path,
         )
         if not kosync_doc_id:
@@ -6702,8 +7041,12 @@ def _queue_item_from_match_form(clients) -> "dict | None":
 def _add_book_view():
     """Render and handle the unified queue-based Add Book view."""
     clients = uc()
+    storyteller_enabled = bool(clients.storyteller_client.is_configured())
     if request.method == 'POST':
         action = request.form.get('action')
+        if action in ('forge_and_match_queue', 'forge_only_queue') and not storyteller_enabled:
+            flash("Configure Storyteller before creating a Storyteller edition.", "warning")
+            return redirect(url_for('add_book'))
         if action == 'add_to_queue':
             queue_item = _queue_item_from_match_form(clients)
             if queue_item:
@@ -6746,7 +7089,7 @@ def _add_book_view():
         ebooks = _promote_authoritative_ebook_matches(audiobooks, ebooks)
 
         # Search Storyteller
-        if clients.storyteller_client.is_configured():
+        if storyteller_enabled:
             try:
                 storyteller_books = clients.storyteller_client.search_books(search)
             except Exception as e:
@@ -6754,7 +7097,8 @@ def _add_book_view():
 
     return render_template('add_book.html', audiobooks=audiobooks, ebooks=ebooks,
                            storyteller_books=storyteller_books,
-                           queue=_load_match_queue(), search=search)
+                           queue=_load_match_queue(), search=search,
+                           storyteller_enabled=storyteller_enabled)
 
 
 def batch_match():
@@ -6878,6 +7222,117 @@ def _start_suggestions_scan_job(cached_suggestions_by_abs=None, cached_no_match_
     return job_id
 
 
+def _auto_match_threshold() -> float:
+    """Return the auto-match threshold as a float (0-100 scale).
+
+    Reads the SUGGESTIONS_AUTO_MATCH_THRESHOLD setting from the environment,
+    clamping to the valid range. Defaults to 100.0.
+    """
+    try:
+        value = float(os.environ.get('SUGGESTIONS_AUTO_MATCH_THRESHOLD', '100'))
+    except (TypeError, ValueError):
+        value = 100.0
+    return max(0.0, min(value, 100.0))
+
+
+def _is_same_folder_match(match: dict) -> bool:
+    """Return True if the match is a same-folder candidate and should be excluded from auto-matching.
+
+    Same-folder matches (match_reason starting with 'same_folder') receive a score of 100.0
+    or 94.0 merely because the audiobook and ebook share a folder with a loose title
+    agreement (fuzzy ratio >= 45). They are explicitly surfaced for human review with a
+    'Same folder?' badge and must not be auto-linked, as a wrong link would sync a
+    reader's position into the wrong book.
+    """
+    reason = match.get('match_reason') or ''
+    return reason.startswith('same_folder')
+
+
+def _auto_match_suggestions(results: object, user_id: int | None) -> object:
+    """Auto-link suggestions whose best eligible candidate meets the threshold.
+
+    Walks the suggestions produced by a library scan, selects the highest-scoring
+    *eligible* candidate from each suggestion's matches list (excluding same-folder
+    matches), and if that candidate's score is at or above the configurable threshold,
+    links the book automatically via book_mapping_service.create_audio_mapping_from_match.
+    Suggestions that are not auto-matched remain in the list for human review.
+
+    Args:
+        results: The scan results object (expected to be a dict with 'suggestions' key).
+        user_id: Ambient user id to own the created mappings, or None.
+
+    Returns:
+        The (potentially modified) results object.
+    """
+    if not env_truthy('SUGGESTIONS_AUTO_MATCH_ENABLED'):
+        return results
+    if not isinstance(results, dict):
+        return results
+    suggestions = results.get('suggestions') or []
+    if not suggestions:
+        return results
+
+    threshold = _auto_match_threshold()
+    mapping_service = container.book_mapping_service()
+    cache_by_abs = results.get('cache_by_abs') or {}
+    remaining = []
+    matched = 0
+
+    for suggestion in suggestions:
+        matches = suggestion.get('matches') or []
+        eligible_matches = [m for m in matches if not _is_same_folder_match(m)]
+        best_overall = max(matches, key=lambda m: m.get('score') or 0.0) if matches else None
+        top = max(eligible_matches, key=lambda m: m.get('score') or 0.0) if eligible_matches else None
+        if best_overall is not None and _is_same_folder_match(best_overall):
+            # The highest-scoring candidate was suppressed. Log the decision and its
+            # reason so an operator can see why a 100-scoring match was not linked.
+            logger.debug(
+                f"Auto-match excluded the top same-folder candidate for "
+                f"'{suggestion.get('abs_title')}' "
+                f"(score={best_overall.get('score') or 0.0:.1f}) — left for review"
+            )
+        score = float(top.get('score') or 0.0) if top else 0.0
+        if not top or score < threshold:
+            remaining.append(suggestion)
+            continue
+        try:
+            saved = mapping_service.create_audio_mapping_from_match(
+                audio_source=suggestion.get('audio_source') or 'ABS',
+                audio_source_id=suggestion.get('audio_source_id') or suggestion.get('abs_id') or '',
+                audio_title=suggestion.get('audio_title') or suggestion.get('abs_title') or '',
+                ebook_filename=top.get('ebook_filename') or '',
+                audio_cover_url=suggestion.get('audio_cover_url'),
+                audio_duration=suggestion.get('audio_duration') or suggestion.get('duration'),
+                audio_provider_book_id=suggestion.get('audio_provider_book_id'),
+                audio_provider_file_id=suggestion.get('audio_provider_file_id'),
+                ebook_source=top.get('source'),
+                ebook_source_id=str(top.get('source_id')) if top.get('source_id') is not None else None,
+                user_id=user_id,
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ Auto-match failed for '{suggestion.get('abs_title')}': {e}", exc_info=True)
+            remaining.append(suggestion)
+            continue
+        if not saved:
+            remaining.append(suggestion)
+            continue
+        matched += 1
+        cache_by_abs.pop(suggestion.get('abs_id'), None)
+        logger.info(
+            f"🔗 Auto-matched '{suggestion.get('abs_title')}' to "
+            f"'{top.get('display_name') or top.get('ebook_filename')}' at {score:.1f}%"
+        )
+
+    if matched:
+        results['suggestions'] = remaining
+        results['cache_by_abs'] = cache_by_abs
+        stats = results.get('stats') or {}
+        stats['auto_matched'] = matched
+        results['stats'] = stats
+        logger.info(f"🔗 Auto-match created {matched} mapping(s) at or above {threshold:.1f}%")
+    return results
+
+
 def _run_suggestions_scan_job(job_id, cached_suggestions_by_abs=None, cached_no_match_abs_ids=None):
     def update_progress(progress_payload):
         with SUGGESTIONS_SCAN_JOBS_LOCK:
@@ -6891,6 +7346,7 @@ def _run_suggestions_scan_job(job_id, cached_suggestions_by_abs=None, cached_no_
             cached_no_match_abs_ids=cached_no_match_abs_ids,
             progress_callback=update_progress,
         )
+        results = _auto_match_suggestions(results, get_current_user_id())
         _save_persisted_suggestions_cache({
             "scan_cache_by_abs": results.get('cache_by_abs', {}) if isinstance(results, dict) else {},
             "scan_cache_no_match_abs_ids": results.get('no_match_abs_ids', []) if isinstance(results, dict) else [],
@@ -7312,7 +7768,11 @@ def _match_queue_response():
     """Re-render the queue panel fragment for an XHR add/remove/clear (so the page
     isn't reloaded and scroll position is preserved); otherwise redirect to /suggestions."""
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
-        return render_template('_match_queue_panel.html', queue=_load_match_queue())
+        return render_template(
+            '_match_queue_panel.html',
+            queue=_load_match_queue(),
+            storyteller_enabled=bool(uc().storyteller_client.is_configured()),
+        )
     return redirect(url_for('suggestions'))
 
 
@@ -7358,12 +7818,17 @@ def _queue_item_from_suggestion(suggestion: dict) -> "dict | None":
 
 def suggestions_page():
     _clear_legacy_suggestions_session_payload()
+    clients = uc()
+    storyteller_enabled = bool(clients.storyteller_client.is_configured())
     state_id, suggestions_state = _get_suggestions_state(create=True)
     if suggestions_state is None:
         suggestions_state = _default_suggestions_state()
 
     if request.method == 'POST':
         action = request.form.get('action')
+        if action == 'forge_and_match_queue' and not storyteller_enabled:
+            flash("Configure Storyteller before creating a Storyteller edition.", "warning")
+            return redirect(url_for('suggestions'))
 
         if action in ('scan', 'scan_full'):
             full_refresh = (action == 'scan_full')
@@ -7464,7 +7929,7 @@ def suggestions_page():
             return redirect(url_for('suggestions'))
 
         elif action == 'add_to_queue':
-            queue_item = _queue_item_from_match_form(uc())
+            queue_item = _queue_item_from_match_form(clients)
             if queue_item:
                 _match_queue_add(queue_item)
             return _match_queue_response()
@@ -7696,7 +8161,7 @@ def suggestions_page():
         scan_in_progress=scan_in_progress,
         scan_error=scan_error,
         scan_stats=suggestions_state.get('scan_last_stats', {}),
-        storyteller_enabled=bool(uc().storyteller_client.is_configured()),
+        storyteller_enabled=storyteller_enabled,
     )
 
 
@@ -7874,6 +8339,7 @@ def cleanup_mapping_resources(book, defer_audio_cache: bool = False):
     if book.ebook_filename:
         shelf_filename = book.original_ebook_filename or book.ebook_filename
         is_bookorbit = (getattr(book, 'ebook_source', None) or '').strip().lower() == 'bookorbit'
+        is_kavita = (getattr(book, 'ebook_source', None) or '').strip().lower() == 'kavita'
         try:
             if is_bookorbit:
                 client = clients.bookorbit_client
@@ -7884,13 +8350,23 @@ def cleanup_mapping_resources(book, defer_audio_cache: bool = False):
                         client.remove_book_id_from_shelf(ebook_source_id, shelf_name)
                     else:
                         client.remove_from_shelf(shelf_filename, shelf_name)
+            elif is_kavita:
+                client = clients.kavita_client
+                if client.is_configured():
+                    shelf_name = (user_setting('KAVITA_COLLECTION_NAME', 'BookBridge') or 'BookBridge').strip()
+                    ebook_source_id = getattr(book, 'ebook_source_id', None)
+                    if ebook_source_id:
+                        client.remove_book_id_from_shelf(ebook_source_id, shelf_name)
+                    else:
+                        client.remove_from_shelf(shelf_filename, shelf_name)
             else:
                 client = clients.booklore_client
                 if client.is_configured():
                     shelf_name = user_setting('BOOKLORE_SHELF_NAME', 'Kobo')
                     client.remove_from_shelf(shelf_filename, shelf_name)
         except Exception as e:
-            logger.warning(f"⚠️ Failed to remove from {'BookOrbit' if is_bookorbit else 'Grimmory'} shelf: {e}", exc_info=True)
+            source_label = 'BookOrbit' if is_bookorbit else ('Kavita' if is_kavita else 'Grimmory')
+            logger.warning(f"⚠️ Failed to remove from {source_label} shelf: {e}", exc_info=True)
 
 
 def _user_may_modify_book(user, abs_id) -> bool:
@@ -8361,6 +8837,26 @@ def _extracted_cover_is_stale(cover_path, source_path) -> bool:
 _COVER_FRESH_TTL_SECONDS = 300
 _cover_fresh_until: dict = {}
 
+# Browser-side cache window for extracted covers. Flask leaves `max_age` unset by
+# default, which sends `Cache-Control: no-cache` — the browser then revalidates
+# EVERY cover on EVERY dashboard load, so a large library pays hundreds of
+# conditional round trips just to be told 304. Covers are auth-gated, hence
+# `private`. The window deliberately matches _COVER_FRESH_TTL_SECONDS: a re-extracted
+# cover is already allowed to be up to that stale server-side, so the browser cache
+# adds no staleness the server does not already accept.
+_COVER_BROWSER_MAX_AGE_SECONDS = _COVER_FRESH_TTL_SECONDS
+
+
+def _send_cover_cached(filename: str):
+    """Serve an extracted cover with a browser cache window (see the constant)."""
+    response = send_from_directory(
+        COVERS_DIR, filename, max_age=_COVER_BROWSER_MAX_AGE_SECONDS
+    )
+    response.headers['Cache-Control'] = (
+        f'private, max-age={_COVER_BROWSER_MAX_AGE_SECONDS}'
+    )
+    return response
+
 
 def serve_cover(filename):
     """Serve cover images with lazy extraction."""
@@ -8378,7 +8874,7 @@ def serve_cover(filename):
     # book per TTL instead of on every request; an ebook edited inside the window is
     # picked up on the next one.
     if cover_path.exists() and _cover_fresh_until.get(doc_hash, 0) > time.time():
-        return send_from_directory(COVERS_DIR, filename)
+        return _send_cover_cached(filename)
 
     book = database_service.get_book_by_kosync_id(doc_hash)
 
@@ -8391,7 +8887,7 @@ def serve_cover(filename):
                 logger.debug(f"Cover freshness check could not resolve the ebook: {e}")
         if not source_path or not _extracted_cover_is_stale(cover_path, source_path):
             _cover_fresh_until[doc_hash] = time.time() + _COVER_FRESH_TTL_SECONDS
-            return send_from_directory(COVERS_DIR, filename)
+            return _send_cover_cached(filename)
         _cover_fresh_until.pop(doc_hash, None)
         logger.info(
             "🖼️ Re-extracting cover for '%s': the ebook changed since it was cached",
@@ -8421,7 +8917,7 @@ def serve_cover(filename):
              full_book_path = parser.resolve_book_path(book.ebook_filename)
 
              if parser.extract_cover(full_book_path, cover_path):
-                 return send_from_directory(COVERS_DIR, filename)
+                 return _send_cover_cached(filename)
         except Exception as e:
             logger.debug(f"Lazy cover extraction failed: {e}")
 
@@ -9904,6 +10400,25 @@ def proxy_bookorbit_audiobook_cover(book_id):
         return "Error loading cover", 500
 
 
+def proxy_kavita_cover(series_id):
+    """Stream a Kavita series cover without exposing the user's auth key."""
+    client = uc().kavita_client
+    if not client or not client.is_configured():
+        return "Kavita not configured", 400
+    try:
+        content, content_type = client.get_cover_bytes(series_id)
+        if not content:
+            return "Cover not found", 404
+        from flask import Response
+
+        response = Response(content, content_type=content_type or "image/jpeg")
+        response.headers['Cache-Control'] = 'private, max-age=300'
+        return response
+    except Exception as e:
+        logger.error("Error proxying Kavita cover for '%s': %s", series_id, e, exc_info=True)
+        return "Error loading cover", 500
+
+
 def api_booklore_refresh():
     """Clear Grimmory cache and trigger a full refresh."""
     client = container.booklore_client()
@@ -10029,6 +10544,11 @@ def _run_test_connection(service: str, payload: dict):
             _normalize_test_url(data.get('BOOKORBIT_SERVER')),
             _coerce_test_str(data.get('BOOKORBIT_USER')),
             _coerce_test_str(data.get('BOOKORBIT_PASSWORD')),
+        ),
+        'kavita': lambda data: _test_kavita(
+            _coerce_test_bool(data.get('KAVITA_ENABLED')),
+            _normalize_test_url(data.get('KAVITA_SERVER')),
+            _coerce_test_str(data.get('KAVITA_API_KEY')),
         ),
         'bookfusion': lambda data: _test_bookfusion(
             _coerce_test_bool(data.get('BOOKFUSION_ENABLED')),
@@ -10820,6 +11340,23 @@ def _test_bookorbit(enabled: bool, url: str, user: str, pwd: str) -> dict:
     return {"ok": False, "message": f"Login returned {r.status_code}"}
 
 
+def _test_kavita(enabled: bool, url: str, api_key: str) -> dict:
+    if not enabled:
+        return {"ok": False, "message": "Kavita is disabled"}
+    if not url or not api_key:
+        return {"ok": False, "message": "Missing URL or authentication key"}
+    response = requests.get(
+        f"{url}/api/Library/libraries",
+        headers={"x-api-key": api_key, "X-Kavita-Client": "BookBridge"},
+        timeout=10,
+    )
+    if response.status_code == 200:
+        return {"ok": True, "message": "Authenticated successfully"}
+    if response.status_code in (401, 403):
+        return {"ok": False, "message": "Invalid authentication key"}
+    return {"ok": False, "message": f"Kavita returned {response.status_code}"}
+
+
 def _test_cwa(enabled: bool, url: str, user: str, pwd: str, sync_token: str = "") -> dict:
     if not enabled or not url:
         return {"ok": False, "message": "CWA not configured or disabled"}
@@ -11170,6 +11707,7 @@ def create_app(test_container=None):
     # Register context processors, jinja globals, etc.
     app.context_processor(inject_global_vars)
     app.jinja_env.globals['safe_folder_name'] = safe_folder_name
+    app.jinja_env.globals['suggestion_source_badge'] = suggestion_source_badge
 
     def format_duration(seconds: int) -> str:
         """Convert seconds to human-readable duration."""
@@ -11261,6 +11799,7 @@ def create_app(test_container=None):
     app.add_url_rule('/api/cover-proxy/<abs_id>', 'proxy_cover', proxy_cover)
     app.add_url_rule('/api/booklore/audiobook-cover/<book_id>', 'proxy_booklore_audiobook_cover', proxy_booklore_audiobook_cover, methods=['GET'])
     app.add_url_rule('/api/bookorbit/audiobook-cover/<book_id>', 'proxy_bookorbit_audiobook_cover', proxy_bookorbit_audiobook_cover, methods=['GET'])
+    app.add_url_rule('/api/kavita/cover/<series_id>', 'proxy_kavita_cover', proxy_kavita_cover, methods=['GET'])
     app.add_url_rule('/api/booklore/libraries', 'get_booklore_libraries', get_booklore_libraries, methods=['GET'])
     app.add_url_rule('/api/booklore/shelves', 'get_booklore_shelves', get_booklore_shelves, methods=['GET'])
     app.add_url_rule('/api/abs/libraries', 'get_abs_libraries', get_abs_libraries, methods=['GET'])
@@ -11468,12 +12007,15 @@ if __name__ == '__main__':
     # Check ebook source configuration
     booklore_configured = container.booklore_client().is_configured()
     bookorbit_configured = container.bookorbit_client().is_configured()
+    kavita_configured = container.kavita_client().is_configured()
     books_volume_exists = container.books_dir().exists()
 
     if booklore_configured:
         logger.info(f"✅ Grimmory integration enabled - ebooks sourced from API")
     elif bookorbit_configured:
         logger.info(f"✅ BookOrbit integration enabled - ebooks sourced from API")
+    elif kavita_configured:
+        logger.info("Kavita integration enabled - ebooks sourced from API")
     elif books_volume_exists:
         logger.info(f"✅ Ebooks directory mounted at {container.books_dir()}")
     else:
@@ -11481,6 +12023,7 @@ if __name__ == '__main__':
             "⚠️  NO EBOOK SOURCE CONFIGURED: No ebook source available. "
             "New book matches will fail. Enable Grimmory (BOOKLORE_SERVER, BOOKLORE_USER, BOOKLORE_PASSWORD), "
             "enable BookOrbit (BOOKORBIT_SERVER, BOOKORBIT_USER, BOOKORBIT_PASSWORD), "
+            "enable Kavita (KAVITA_SERVER, KAVITA_API_KEY), "
             "or mount the ebooks directory to /books."
         )
 

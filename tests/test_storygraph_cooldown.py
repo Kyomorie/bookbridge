@@ -1,6 +1,7 @@
 import os
 import threading
 import unittest
+from unittest.mock import patch
 
 from src.db.models import State
 from src.sync_clients.sync_client_interface import SyncResult
@@ -47,6 +48,29 @@ class FakeDatabaseService:
         return state
 
 
+class FakeTimer:
+    instances = []
+
+    def __init__(self, interval, function, args=None, kwargs=None):
+        self.interval = interval
+        self.function = function
+        self.args = args or []
+        self.kwargs = kwargs or {}
+        self.daemon = False
+        self.started = False
+        self.cancelled = False
+        self.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+    def fire(self):
+        self.function(*self.args, **self.kwargs)
+
+
 class TestStoryGraphCooldown(unittest.TestCase):
     def setUp(self):
         self.sg = FakeStoryGraphClient()
@@ -56,6 +80,12 @@ class TestStoryGraphCooldown(unittest.TestCase):
         self.mgr.database_service = self.db
         self.mgr._storygraph_cooldown = {}
         self.mgr._storygraph_cooldown_lock = threading.Lock()
+        self.mgr._tracker_cooldown_timers = {}
+        self.mgr._tracker_cooldown_timers_lock = threading.Lock()
+        FakeTimer.instances = []
+        self.timer_patch = patch('src.sync_manager.threading.Timer', FakeTimer)
+        self.timer_patch.start()
+        self.addCleanup(self.timer_patch.stop)
         os.environ['STORYGRAPH_UPDATE_COOLDOWN_MINS'] = '60'
         self.book = FakeBook('book1')
 
@@ -83,6 +113,48 @@ class TestStoryGraphCooldown(unittest.TestCase):
         # t=3601: same pct, already in sync -> no duplicate post.
         self.mgr._handle_storygraph_cooldown(self.book, self._config(0.5), now=3601.0)
         self.assertEqual(self.sg.calls, [0.5])
+
+    def test_five_minute_cooldown_posts_without_later_external_sync_cycle(self):
+        os.environ['STORYGRAPH_UPDATE_COOLDOWN_MINS'] = '5'
+        config = self._config(0.5)
+        self.mgr.user_client_registry = None
+        self.mgr._sync_lock = threading.Lock()
+        self.mgr._post_cycle_callbacks = []
+        self.mgr._dispatch_pending_syncs = lambda: None
+        self.mgr._sync_cycle_internal = lambda target_abs_id=None: (
+            self.mgr._handle_storygraph_cooldown(self.book, config, now=300.0)
+        )
+
+        self.mgr._handle_storygraph_cooldown(self.book, config, now=0.0)
+
+        self.assertEqual(self.sg.calls, [])
+        self.assertEqual(len(FakeTimer.instances), 1)
+        timer = FakeTimer.instances[0]
+        self.assertEqual(timer.interval, 300)
+        self.assertTrue(timer.daemon)
+        self.assertTrue(timer.started)
+
+        with self.assertLogs('src.sync_manager', level='INFO') as captured:
+            timer.fire()
+
+        self.assertEqual(self.sg.calls, [0.5])
+        self.assertTrue(any(
+            "StoryGraph cooldown post: 50.0% (idle≥5m)" in line
+            for line in captured.output
+        ))
+
+    def test_passive_observation_does_not_schedule_followup(self):
+        self.mgr._handle_storygraph_cooldown(
+            self.book, self._config(0.5), now=0.0, schedule_followup=False
+        )
+
+        self.assertEqual(FakeTimer.instances, [])
+
+    def test_same_book_deadlines_share_one_followup(self):
+        self.mgr._schedule_tracker_cooldown_check('book1', None, 0.5, 300)
+        self.mgr._schedule_tracker_cooldown_check('book1', None, 0.5, 300)
+
+        self.assertEqual(len(FakeTimer.instances), 1)
 
     def test_resume_within_cooldown_resets_timer(self):
         self.mgr._handle_storygraph_cooldown(self.book, self._config(0.5), now=0.0)

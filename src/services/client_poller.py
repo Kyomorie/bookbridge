@@ -27,6 +27,7 @@ class ClientPoller:
         ('BookLoreAudio', 'BOOKLORE_AUDIO'),
         ('BookOrbit', 'BOOKORBIT'),
         ('BookOrbitAudio', 'BOOKORBIT_AUDIO'),
+        ('Kavita', 'KAVITA'),
         ('CWA', 'CWA_SYNC'),
     ]
 
@@ -288,10 +289,14 @@ class ClientPoller:
 
                 try:
                     creds = self._db.get_user_credentials(user_id) or {}
-                    from src.utils.user_config import _ALLOW_GLOBAL_FALLBACK_KEY, PER_USER_CREDENTIAL_KEYS
+                    from src.utils.user_config import (
+                        _ALLOW_GLOBAL_FALLBACK_KEY,
+                        PER_USER_CREDENTIAL_KEYS,
+                        global_fallback_allowed,
+                    )
                     user = self._db.get_user(user_id) if hasattr(self._db, 'get_user') else None
                     creds = {k: v for k, v in creds.items() if k in PER_USER_CREDENTIAL_KEYS}
-                    creds[_ALLOW_GLOBAL_FALLBACK_KEY] = bool(user and getattr(user, 'is_admin', False))
+                    creds[_ALLOW_GLOBAL_FALLBACK_KEY] = global_fallback_allowed(self._db, user)
                     creds_token = set_current_user_credentials(creds)
                 except Exception:
                     pass

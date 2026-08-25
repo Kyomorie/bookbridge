@@ -251,7 +251,10 @@ class CWAClient:
             # OPDS is Atom-based
             # Namespaces are annoying in ElementTree, ignore them or handle them
             # For simplicity, we'll try to handle standard Atom namespace
-            namespaces = {'atom': 'http://www.w3.org/2005/Atom'}
+            namespaces = {
+                'atom': 'http://www.w3.org/2005/Atom',
+                'dcterms': 'http://purl.org/dc/terms/',
+            }
             
             root = ET.fromstring(xml_content)
             
@@ -268,6 +271,13 @@ class CWAClient:
                 
                 author_elem = entry.find('atom:author/atom:name', namespaces)
                 author = author_elem.text if author_elem is not None else "Unknown"
+
+                language_elem = entry.find('dcterms:language', namespaces)
+                language = (
+                    language_elem.text.strip()
+                    if language_elem is not None and language_elem.text
+                    else ""
+                )
                 
                 # Find EPUB link
                 epub_link = None
@@ -318,6 +328,7 @@ class CWAClient:
                         "id": entry_id,
                         "title": title,
                         "author": author,
+                        "language": language,
                         "download_url": epub_link,
                         "ext": "epub",
                         "source": "CWA"

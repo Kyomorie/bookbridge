@@ -339,6 +339,7 @@ class TestMatchPathsRegression(unittest.TestCase):
 
     @patch("src.web_server.get_kosync_id_for_ebook", return_value="hash-forge-1")
     def test_match_forge_action_only_stages(self, _mock_kosync):
+        self.mock_container.mock_storyteller_client.is_configured.return_value = True
         response = self.client.post(
             "/match",
             data={
@@ -373,6 +374,7 @@ class TestMatchPathsRegression(unittest.TestCase):
 
     @patch("src.web_server.get_kosync_id_for_ebook", return_value="hash-forge-hardlink")
     def test_match_forge_action_forwards_stage_mode(self, _mock_kosync):
+        self.mock_container.mock_storyteller_client.is_configured.return_value = True
         response = self.client.post(
             "/match",
             data={
@@ -391,6 +393,7 @@ class TestMatchPathsRegression(unittest.TestCase):
         self.assertEqual(kwargs["stage_mode"], "hardlink")
 
     def test_forge_process_forwards_stage_mode(self):
+        self.mock_container.mock_storyteller_client.is_configured.return_value = True
         response = self.client.post(
             "/api/forge/process",
             json={
@@ -432,6 +435,7 @@ class TestMatchPathsRegression(unittest.TestCase):
         self.assertEqual(payload[0]["id"], "booklore:42")
 
     def test_forge_process_booklore_audio_uses_bridge_key_and_audio_kwargs(self):
+        self.mock_container.mock_storyteller_client.is_configured.return_value = True
         self.mock_container.mock_booklore_client.get_book_by_id.return_value = {
             "id": "42",
             "title": "BookLore Audio",
@@ -462,6 +466,7 @@ class TestMatchPathsRegression(unittest.TestCase):
 
     @patch("src.web_server.get_kosync_id_for_ebook", return_value="hash-forge-booklore")
     def test_match_forge_booklore_uses_bridge_key_identity(self, _mock_kosync):
+        self.mock_container.mock_storyteller_client.is_configured.return_value = True
         response = self.client.post(
             "/match",
             data={
@@ -490,6 +495,112 @@ class TestMatchPathsRegression(unittest.TestCase):
         self.assertEqual(kwargs["abs_id"], "booklore:42")
         self.assertEqual(kwargs["audio_source"], "BookLore")
         self.assertEqual(kwargs["audio_source_id"], "42")
+
+    def test_storyteller_configuration_controls_forge_ui(self):
+        self.client.post(
+            "/add-book",
+            data={
+                "action": "add_to_queue",
+                "audiobook_id": "ab-1",
+                "audio_source": "ABS",
+                "audio_source_id": "ab-1",
+                "ebook_filename": "source.epub",
+                "ebook_display_name": "Source Book",
+                "ebook_source": "Booklore",
+                "ebook_source_id": "42",
+            },
+        )
+
+        for path in ("/add-book", "/suggestions"):
+            with self.subTest(path=path, configured=False):
+                html = self.client.get(path).get_data(as_text=True)
+                self.assertIn("Match All (1)", html)
+                self.assertNotIn("Create Storyteller Edition", html)
+                self.assertNotIn('id="forgeStageModal"', html)
+
+        fragment = self.client.post(
+            "/suggestions",
+            data={"action": "remove_from_queue", "abs_id": "not-in-queue"},
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        ).get_data(as_text=True)
+        self.assertIn("Match All (1)", fragment)
+        self.assertNotIn("Create Storyteller Edition", fragment)
+
+        self.mock_container.mock_storyteller_client.is_configured.return_value = True
+
+        add_book_html = self.client.get("/add-book").get_data(as_text=True)
+        self.assertIn("Create Storyteller Edition &amp; Match All (1)", add_book_html)
+        self.assertIn("Create Storyteller Edition Only", add_book_html)
+        self.assertIn('id="forgeStageModal"', add_book_html)
+        self.assertNotIn("Forge &amp; Match All", add_book_html)
+
+        suggestions_html = self.client.get("/suggestions").get_data(as_text=True)
+        self.assertIn("Create Storyteller Edition &amp; Match All (1)", suggestions_html)
+        self.assertNotIn("Forge &amp; Match All", suggestions_html)
+
+        fragment = self.client.post(
+            "/suggestions",
+            data={"action": "remove_from_queue", "abs_id": "not-in-queue"},
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        ).get_data(as_text=True)
+        self.assertIn("Create Storyteller Edition &amp; Match All (1)", fragment)
+
+    def test_unconfigured_storyteller_preserves_queue_on_forge_posts(self):
+        for path, action, redirect_suffix in (
+            ("/add-book", "forge_and_match_queue", "/add-book"),
+            ("/add-book", "forge_only_queue", "/add-book"),
+            ("/suggestions", "forge_and_match_queue", "/suggestions"),
+        ):
+            with self.subTest(path=path, action=action):
+                web_server._match_queue_clear()
+                self.client.post(
+                    "/add-book",
+                    data={
+                        "action": "add_to_queue",
+                        "audiobook_id": "ab-1",
+                        "audio_source": "ABS",
+                        "audio_source_id": "ab-1",
+                        "ebook_filename": "source.epub",
+                        "ebook_display_name": "Source Book",
+                        "ebook_source": "Booklore",
+                        "ebook_source_id": "42",
+                    },
+                )
+
+                with patch("src.web_server._spawn_user_background") as mock_spawn:
+                    response = self.client.post(path, data={"action": action})
+
+                self.assertEqual(response.status_code, 302)
+                self.assertTrue(response.location.endswith(redirect_suffix))
+                self.assertEqual(len(web_server._load_match_queue()), 1)
+                mock_spawn.assert_not_called()
+
+    def test_unconfigured_storyteller_rejects_legacy_forge_endpoints(self):
+        api_response = self.client.post(
+            "/api/forge/process",
+            json={
+                "abs_id": "ab-1",
+                "text_item": {"source": "Booklore", "booklore_id": "42"},
+            },
+        )
+        self.assertEqual(api_response.status_code, 409)
+        self.assertEqual(api_response.get_json()["error"], "Storyteller is not configured")
+
+        match_response = self.client.post(
+            "/match",
+            data={
+                "action": "forge_match",
+                "audiobook_id": "ab-1",
+                "ebook_filename": "source.epub",
+                "source_type": "Booklore",
+                "source_id": "42",
+            },
+        )
+        self.assertEqual(match_response.status_code, 409)
+        self.assertIn("Storyteller is not configured", match_response.get_data(as_text=True))
+        self.mock_container.mock_forge_service.start_manual_forge.assert_not_called()
+        self.mock_container.mock_forge_service.start_auto_forge_match.assert_not_called()
+        self.mock_container.mock_database_service.save_book.assert_not_called()
 
     @patch("src.web_server.get_kosync_id_for_ebook", return_value="hash-batch-1")
     def test_batch_match_add_and_process_queue(self, _mock_kosync):
@@ -688,7 +799,8 @@ class TestMatchPathsRegression(unittest.TestCase):
         self.mock_container.mock_forge_service.start_manual_forge.assert_not_called()
 
     @patch("src.web_server.get_kosync_id_for_ebook", return_value="hash-batch-forge-1")
-    def test_batch_match_add_and_forge_queue_stages_without_storyteller(self, _mock_kosync):
+    def test_batch_match_add_and_forge_queue_stages_standard_ebook(self, _mock_kosync):
+        self.mock_container.mock_storyteller_client.is_configured.return_value = True
         add_response = self.client.post(
             "/batch-match",
             data={
@@ -733,6 +845,7 @@ class TestMatchPathsRegression(unittest.TestCase):
     @patch("src.web_server.ingest_storyteller_transcripts", return_value=None)
     @patch("src.web_server.get_kosync_id_for_ebook", return_value="hash-batch-forge-story")
     def test_batch_match_forge_queue_storyteller_items_use_direct_match(self, _mock_kosync, _mock_ingest):
+        self.mock_container.mock_storyteller_client.is_configured.return_value = True
         self.mock_container.mock_storyteller_client.download_book.return_value = True
 
         add_response = self.client.post(
@@ -761,6 +874,7 @@ class TestMatchPathsRegression(unittest.TestCase):
 
     @patch("src.web_server.get_kosync_id_for_ebook", return_value="hash-batch-forge-booklore")
     def test_batch_match_forge_queue_booklore_uses_bridge_key_identity(self, _mock_kosync):
+        self.mock_container.mock_storyteller_client.is_configured.return_value = True
         add_response = self.client.post(
             "/batch-match",
             data={
@@ -1255,6 +1369,7 @@ class TestMatchPathsRegression(unittest.TestCase):
 
     @patch("src.web_server.get_kosync_id_for_ebook", return_value="hash-sugg-forge-1")
     def test_suggestions_forge_and_match_queue(self, _mock_kosync):
+        self.mock_container.mock_storyteller_client.is_configured.return_value = True
         # The Suggestions page can run the same forge/match-all path as Add Book, so the
         # user no longer has to switch pages to process the queue.
         self.client.post(
@@ -1922,6 +2037,7 @@ class TestMatchPathsRegression(unittest.TestCase):
     @patch("src.web_server.ingest_storyteller_transcripts", return_value=None)
     @patch("src.web_server.get_kosync_id_for_ebook", return_value="hash-batch-forge-nocache")
     def test_batch_forge_queue_no_epub_cache_uses_original_epub(self, _mock_kosync, _mock_ingest):
+        self.mock_container.mock_storyteller_client.is_configured.return_value = True
         self._enable_no_cache_with_resolvable_original("batch-forge-original.epub")
 
         add_response = self.client.post(

@@ -4,6 +4,90 @@ For the full history of changes, please refer to the **[GitHub Releases](https:/
 
 ---
 
+## [7.5.0]
+
+Kavita joins as a full ebook source and reading client, library cards can show you the text at your current position, and the dashboard learned to sort by when you added a book. This release also carries a **security fix that matters for multi-user installs** — see below.
+
+### Security
+
+- **Forge and Match now confine a local ebook source to your configured library.** BookBridge did not fully verify that a selected *Local File* ebook stayed inside your configured ebook directories, so a signed-in account could cause the server to read a file from outside them. Local sources are now restricted to `BOOKS_DIR`, `EXTRA_EBOOK_DIRS`, and the EPUB cache; anything outside those roots is refused and logged. **Upgrade promptly if other people have accounts on your install.** Affects 7.4.2 and earlier. Reported privately by external security review; no exploitation in the wild is known.
+
+### What's New
+
+- **Kavita is a first-class ebook source and reading client.** Search and import Kavita EPUBs, download them to managed KOReader devices, match by KOReader hash, sync progress both ways, manage a collection for shelf-watch and Storyteller workflows, proxy covers, and use Kavita books for tracker metadata. Progress rides Kavita's native KOReader endpoint. Credentials and library/collection choices are per-reader.
+- **See the text at your current position.** *Show position* beside the progress bar opens a short excerpt with a marker where you are synced to, using the exact XPath or CFI when your reader saved one and labelling a percentage-only estimate as approximate. Contributed by [@Kyomorie](https://github.com/Kyomorie) in #397 (#394).
+- **Sort your library by Date Added**, newest or oldest first. A series sorts by its most recently added book.
+- **Searching for a book you have not added yet now leads somewhere** — the library search offers to look for that title in your libraries, carrying your text into Add Book.
+- **The Add Book tab shows how many books are queued.**
+- **Add Book and Suggestions show each edition's language** as a badge when the provider supplies it. Contributed by [@Kyomorie](https://github.com/Kyomorie) in #405.
+- **Suggestions names the service each audiobook came from.** Contributed by [@Marcelwalter](https://github.com/Marcelwalter) in #407.
+
+### Fixed
+
+- **BridgeSync's *Test Connection* tells you when you have pointed it at the wrong server (#403).** It only checked that the address accepted your login, which any KoSync-compatible server does. It now asks the server to identify itself. Plugin updated to **0.6.6**.
+- **The source badge on the Add Book page is visible, and leads the card (#381).** The card no longer locks itself to a square and slice off whatever does not fit.
+- **A KoSync timing setting you change takes effect without a restart.** Contributed by [@Kyomorie](https://github.com/Kyomorie) in #404.
+
+### Changed
+
+- **The Settings page opens immediately again** — it was reading every stored alignment map just to count them.
+- **The dashboard no longer re-checks every cover on each visit.**
+- **Storyteller edition creation is clearly separated from ordinary matching:** **Create Storyteller Edition & Match All** and **Create Storyteller Edition Only**, with only **Match All** shown when the reader has no Storyteller account.
+
+### Operational Notes
+
+- One database migration (a covering index behind the Settings fix); it applies automatically on boot.
+- Kavita is off until configured, and needs a non-expiring auth key per reader from **User Settings -> 3rd Party Clients**.
+- If your ebooks live outside `BOOKS_DIR`, list those folders in `EXTRA_EBOOK_DIRS` — a local file outside your configured roots is now refused rather than silently read.
+
+---
+
+## [7.4.2]
+
+A hotfix for the BridgeSync KOReader plugin. Every network operation in plugin versions 0.6.1 through 0.6.4 ran itself twice over — it crashed KOReader outright on Kindle, and on Android it made Test Connection, plugin update checks, book sync, stats sync and highlight sync fail no matter how correct your settings were. Nothing on the server changed.
+
+### Fixed
+
+- **BridgeSync no longer crashes your Kindle on Test Connection, and authentication works again (#370, #401).** Since 0.6.1 the plugin ran every non-download request inside a second background process nested inside the first, leaving two copies of KOReader on the same screen and input devices. Plugin updated to **0.6.5**.
+- **A background operation that crashes no longer reports itself as a rejected login.** A crash that returned no result was read as success-with-nothing-in-it, so it reached you as a wrong username and password.
+
+### Operational Notes
+
+- **Re-download the plugin by hand — it cannot update itself out of this.** "Check for Plugin Update" is one of the broken operations, so no device on 0.6.1–0.6.4 can pull the fix through the plugin. Download the zip from your BookBridge account page, unzip it into `koreader/plugins/` over the existing `bridgesync.koplugin` folder, and restart KOReader on every device.
+
+---
+
+## [7.4.1]
+
+A maintenance release for 7.4.0. The headline is **the BridgeSync plugin starts on a fresh install again** — 0.6.3 crashed before it ever ran on any device without an existing BridgeSync log file, which meant every new KOReader setup. It also stops Hardcover losing the read you already finished, keeps a stock Kobo from dragging CWA progress back, and adds five opt-in settings.
+
+### What's New
+
+- **Share an existing library with the people who already have accounts.** Settings → Users gains a **Share library with all users** button that hands the whole catalog to every active user at once, instead of *Shared Library* only applying to accounts created afterwards. Visibility only. (#384)
+- **Change an existing account between user and admin.** Settings → Users gains a *Make admin* / *Make user* button, instead of delete-and-recreate being the only way to widen access. A promoted admin keeps using their own service accounts — admins no longer inherit the global service credentials, which belong to the primary admin. (#385)
+- **Propagate Completion.** Finishing a book on one service can mark it finished everywhere, since raw percentages never agree at the end of a book. Off by default, under Settings → Sync. Contributed by [@benjitobz](https://github.com/benjitobz). (#374)
+- **Auto-match suggestions.** High-confidence candidates link themselves as a scan finds them. Off by default; loose title matches and same-folder candidates are never linked automatically. Contributed by [@benjitobz](https://github.com/benjitobz). (#375)
+- **Cross-device rewind policy.** The protection that ignores a lower percentage from a second device is now a setting, still on by default. Contributed by [@Kyomorie](https://github.com/Kyomorie). (#391)
+- **Compare text positions when percentages disagree**, for when a reader and BookBridge measure the same EPUB on slightly different scales. Off by default. Contributed by [@Kyomorie](https://github.com/Kyomorie). (#380)
+
+### Fixed
+
+- **BridgeSync 0.6.4 starts on a fresh install (#370)**, with better managed-folder detection and error reporting. Fixed by [@theryanmc](https://github.com/theryanmc). (#373, #377)
+- **Re-reading a book no longer overwrites the read you already finished (#390)**, and a stale reader at a low percentage no longer invents one. Contributed by [@Kyomorie](https://github.com/Kyomorie). (#398)
+- **Saving settings no longer writes junk rows into your configuration** — the handler stored every posted form field, including the CSRF token each form carries. Only registered settings are saved now.
+- **A broken Hardcover connection is reported once, clearly, with the next step**, and transient failures are retried.
+- **Startup checks the admin's own credentials**, not the abandoned global copies left by the multi-user upgrade, so a rotated token no longer reports as broken.
+- **Positions at the very start of a chapter no longer drift forward (#276)**. Contributed by [@Kyomorie](https://github.com/Kyomorie). (#382)
+- **CWA progress no longer snaps back when a stock Kobo opens the book (#364)**, and **Audiobookshelf lookups ask for the expanded record** so audio files and chapters are present — contributed by [@TheSingularis](https://github.com/TheSingularis). (#371)
+- **Mark Complete works on titles containing an apostrophe**, the source badge stays visible on long Add Book titles (#381), and tracker cooldowns fire when their timer expires.
+- **KOReader position comparisons survive a restart**, now that XPath ordering is persisted and prewarmed. Contributed by [@Kyomorie](https://github.com/Kyomorie). (#389)
+
+### Upgrade Notes
+
+Restart to apply the database migration (automatic on container start) and re-download the BridgeSync plugin on each KOReader device — 0.6.3 cannot update itself. Every new setting defaults to current behavior. If you run a **second admin account** with blank Integrations, fill them in: admins no longer inherit the primary admin's service logins, so that account's services are skipped until it has its own.
+
+---
+
 ## [7.4.0]
 
 The headline is **positions you can trust again**: an audiobook transcribed from a partial download used to align happily against the part it received, and a position saved by the Audiobookshelf mobile app couldn't be read at all. Both are fixed, along with the cases where a book got stuck at 100% and every reset came straight back. KOReader device sync is also usable immediately after a restart — the first sync on a 400-book library went from about ten minutes to effectively instant — and a book's link to your reader now survives editing its metadata.

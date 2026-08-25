@@ -7,10 +7,11 @@ import json
 import logging
 import os
 import re
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from contextlib import contextmanager
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,7 @@ from .models import (
     Setting,
     KosyncDocument,
     KosyncUserProgress,
+    KosyncXpathOrderCache,
     PendingSuggestion,
     BookloreBook,
     ReadingSession,
@@ -45,6 +47,10 @@ from src.utils import secret_store
 from src.utils.time_utils import utcnow
 
 logger = logging.getLogger(__name__)
+
+# SQLite limits bound parameters per statement (SQLITE_MAX_VARIABLE_NUMBER, historically 999).
+# Use 500 to stay well under the cap with room for other query parameters.
+_SQL_IN_CHUNK = 500
 
 
 class DatabaseService:
@@ -306,6 +312,22 @@ class DatabaseService:
             user.active = 1 if active else 0
             return True
 
+    def set_user_role(self, user_id: int, role: str) -> bool:
+        """Set a user's role to 'admin' or 'user'. Returns False if not found."""
+        normalized = (role or "").strip().lower()
+        if normalized not in ('admin', 'user'):
+            raise ValueError(f"Invalid role: {role}")
+        with self.get_session() as session:
+            user = session.query(User).filter(User.id == user_id).first()
+            if not user:
+                return False
+            user.role = normalized
+            # A role change can move which account is the primary admin, and the
+            # default-user id is cached for the process lifetime, so recompute it
+            # on next access — same reason delete_user clears it.
+            self._default_uid = None
+            return True
+
     def set_username(self, user_id: int, new_username: str) -> tuple:
         """Rename a user. Returns (ok, error_message). Enforces uniqueness
         (case-insensitive) and a non-empty name."""
@@ -556,53 +578,119 @@ class DatabaseService:
     def get_alignment_provenance(self) -> dict:
         """Report how each stored alignment map was built.
 
-        Returns {'summary': {method: count, ...}, 'books': [{abs_id, title,
-        align_method, llm_used, last_updated}, ...]}. NULL align_method (maps built
-        before provenance tracking) is reported as 'pre_llm'.
+        Returns {'summary': {method: count, ...}, 'total': int, 'needs_realign': int,
+        'books': [{abs_id, title, align_method, llm_used, needs_realign, last_updated}, ...]}.
+        NULL align_method (maps built before provenance tracking) is reported as 'pre_llm'.
+
+        The 'books' list now ONLY contains rows that need re-aligning (NULL align_method,
+        'linear', or 'storyteller_linear'). The 'summary' and 'total' still cover every
+        stored map. The alignment_map_json blob is deliberately never selected.
         """
+        from sqlalchemy import func, case, or_
         with self.get_session() as session:
-            rows = (
-                session.query(BookAlignment, Book.abs_title)
-                .outerjoin(Book, Book.abs_id == BookAlignment.abs_id)
+            # Summary + total from aggregate query grouped by align_method
+            summary_rows = (
+                session.query(
+                    case(
+                        (BookAlignment.align_method.is_(None), "pre_llm"),
+                        else_=BookAlignment.align_method
+                    ).label("method"),
+                    func.count().label("count")
+                )
+                .group_by("method")
                 .all()
             )
-            # A map is worth re-aligning only if it's a flat linear fallback (lexical
-            # anchoring failed) or pre-provenance/unknown — a clean lexical or llm_anchor
-            # map gains nothing from a re-run.
-            realign_methods = {None, "linear", "storyteller_linear"}
-            books = []
             summary: dict = {}
-            for alignment, title in rows:
-                method = alignment.align_method or "pre_llm"
-                summary[method] = summary.get(method, 0) + 1
+            total = 0
+            for method, count in summary_rows:
+                summary[method] = count
+                total += count
+
+            # books now contains ONLY rows that need re-aligning
+            realign_methods = {None, "linear", "storyteller_linear"}
+            book_rows = (
+                session.query(
+                    BookAlignment.abs_id,
+                    BookAlignment.align_method,
+                    BookAlignment.last_updated,
+                    Book.abs_title
+                )
+                .outerjoin(Book, Book.abs_id == BookAlignment.abs_id)
+                .filter(
+                    or_(
+                        BookAlignment.align_method.is_(None),
+                        BookAlignment.align_method.in_(["linear", "storyteller_linear"]),
+                    )
+                )
+                .all()
+            )
+            books = []
+            for abs_id, align_method, last_updated, title in book_rows:
                 books.append({
-                    "abs_id": alignment.abs_id,
-                    "title": title or alignment.abs_id,
-                    "align_method": alignment.align_method,
-                    "llm_used": alignment.align_method == "llm_anchor",
-                    "needs_realign": alignment.align_method in realign_methods,
-                    "last_updated": alignment.last_updated.isoformat() if alignment.last_updated else None,
+                    "abs_id": abs_id,
+                    "title": title or abs_id,
+                    "align_method": align_method,
+                    "llm_used": align_method == "llm_anchor",
+                    "needs_realign": align_method in realign_methods,
+                    "last_updated": last_updated.isoformat() if last_updated else None,
                 })
             books.sort(key=lambda b: (b["llm_used"], (b["align_method"] or "")))
-            needs_realign = sum(1 for b in books if b["needs_realign"])
-            return {"summary": summary, "total": len(books), "needs_realign": needs_realign, "books": books}
+            needs_realign = len(books)
+            return {"summary": summary, "total": total, "needs_realign": needs_realign, "books": books}
+
+    def _chunked_bulk_update(
+        self, abs_ids: list[str], method: str
+    ) -> int:
+        """Apply an align_method value to abs_ids in chunks to avoid SQLite's
+        bound-parameter limit. Returns the total number of rows updated."""
+        if not abs_ids:
+            return 0
+        total_updated = 0
+        with self.get_session() as session:
+            for i in range(0, len(abs_ids), _SQL_IN_CHUNK):
+                chunk = abs_ids[i : i + _SQL_IN_CHUNK]
+                total_updated += session.query(BookAlignment).filter(
+                    BookAlignment.abs_id.in_(chunk)
+                ).update({BookAlignment.align_method: method}, synchronize_session=False)
+        return total_updated
 
     def backfill_alignment_methods(self) -> int:
         """Classify legacy NULL-method maps without re-transcribing, by inspecting the
         stored map: a <=2-point map is a flat linear fallback (lexical anchoring failed →
         an LLM re-align could help); more points means lexical anchoring already succeeded
-        (re-aligning adds nothing). Returns how many rows were updated."""
+        (re-aligning adds nothing). Returns how many rows were updated.
+
+        This method streams the alignment_map_json column in small batches using yield_per
+        to avoid loading multi-megabyte blobs all at once. Classifications are collected
+        in memory as tiny (abs_id, method) tuples, then applied in grouped bulk updates.
+        Bulk updates are chunked to stay within SQLite's bound-parameter limit.
+        """
         import json as _json
-        updated = 0
+
+        linear_ids = []
+        lexical_ids = []
+
         with self.get_session() as session:
-            rows = session.query(BookAlignment).filter(BookAlignment.align_method.is_(None)).all()
-            for alignment in rows:
+            # Pass 1: stream just the columns we need, in small batches
+            query = (
+                session.query(BookAlignment.abs_id, BookAlignment.alignment_map_json)
+                .filter(BookAlignment.align_method.is_(None))
+                .yield_per(10)
+            )
+            for abs_id, map_json in query:
                 try:
-                    points = len(_json.loads(alignment.alignment_map_json))
+                    points = len(_json.loads(map_json))
                 except Exception:
                     continue
-                alignment.align_method = "linear" if points <= 2 else "lexical"
-                updated += 1
+                if points <= 2:
+                    linear_ids.append(abs_id)
+                else:
+                    lexical_ids.append(abs_id)
+
+        # Pass 2: apply classifications with chunked bulk updates (separate session)
+        updated = 0
+        updated += self._chunked_bulk_update(linear_ids, "linear")
+        updated += self._chunked_bulk_update(lexical_ids, "lexical")
         return updated
 
     def get_books_needing_llm_realign(self) -> List[str]:
@@ -870,6 +958,41 @@ class DatabaseService:
                 session.add(UserBook(user_id=user_id, abs_id=abs_id))
             return len(missing)
 
+    def share_all_books_with_active_users(self) -> dict:
+        """Claim every catalog book for every active user. Returns {"users": <count>, "links": <count>}.
+
+        This is the bulk reconcile counterpart to:
+        - backfill_user_books_for_user (one user gets all books)
+        - link_book_to_all_active_users (one book goes to all users)
+
+        Idempotent: only creates missing UserBook visibility links. Progress, KoSync
+        documents, and stats remain per-user and are not affected.
+        """
+        with self.get_session() as session:
+            all_book_ids = {row[0] for row in session.query(Book.abs_id).all()}
+            if not all_book_ids:
+                user_count = session.query(User.id).filter(User.active == 1).count()
+                return {"users": user_count, "links": 0}
+
+            active_user_ids = {
+                row[0] for row in session.query(User.id).filter(User.active == 1).all()
+            }
+            if not active_user_ids:
+                return {"users": 0, "links": 0}
+
+            by_user: dict[int, set[str]] = defaultdict(set)
+            for user_id, abs_id in session.query(UserBook.user_id, UserBook.abs_id).all():
+                by_user[user_id].add(abs_id)
+
+            links_created = 0
+            for user_id in active_user_ids:
+                missing = all_book_ids - by_user.get(user_id, set())
+                for abs_id in missing:
+                    session.add(UserBook(user_id=user_id, abs_id=abs_id))
+                    links_created += 1
+
+            return {"users": len(active_user_ids), "links": links_created}
+
     def unlink_user_book(self, user_id: int, abs_id: str) -> int:
         """Remove a user's claim on a book. Returns rows deleted."""
         if user_id is None or not abs_id:
@@ -895,6 +1018,30 @@ class DatabaseService:
         with self.get_session() as session:
             rows = session.query(UserBook.abs_id).filter(UserBook.user_id == user_id).all()
             return {r[0] for r in rows}
+    def get_book_claim_times(self, user_id: Optional[int] = None) -> dict:
+        """Map abs_id -> when the book was added, as a UTC epoch timestamp.
+
+        Sourced from ``user_books.created_at`` — the moment the user claimed the
+        book — which ``UserBook.__init__`` stamps on every claim, so there are no
+        gaps to fall back from. ``user_id=None`` (single-user / LOGIN_DISABLED)
+        takes the newest claim across all users, matching the unscoped book fetch
+        the dashboard makes in that mode.
+
+        Note the column holds *naive UTC* (``time_utils.utcnow``), so it is
+        stamped as UTC before conversion rather than being read as local time.
+        """
+        with self.get_session() as session:
+            query = session.query(UserBook.abs_id, UserBook.created_at)
+            if user_id is not None:
+                query = query.filter(UserBook.user_id == user_id)
+            claim_times = {}
+            for abs_id, created_at in query.all():
+                if not abs_id or created_at is None:
+                    continue
+                stamp = created_at.replace(tzinfo=timezone.utc).timestamp()
+                if stamp > claim_times.get(abs_id, 0.0):
+                    claim_times[abs_id] = stamp
+            return claim_times
 
     # ---- per-user BookFusion book links (shared catalog, user-specific remote ids) ----
     def _serialize_bookfusion_link(self, link: UserBookFusionLink) -> dict:
@@ -923,12 +1070,15 @@ class DatabaseService:
         """Return BookFusion links keyed by abs_id for a user's visible books."""
         if user_id is None or not abs_ids:
             return {}
+        links: dict = {}
         with self.get_session() as session:
-            rows = session.query(UserBookFusionLink).filter(
-                UserBookFusionLink.user_id == user_id,
-                UserBookFusionLink.abs_id.in_(abs_ids),
-            ).all()
-            return {link.abs_id: self._serialize_bookfusion_link(link) for link in rows}
+            for i in range(0, len(abs_ids), _SQL_IN_CHUNK):
+                rows = session.query(UserBookFusionLink).filter(
+                    UserBookFusionLink.user_id == user_id,
+                    UserBookFusionLink.abs_id.in_(abs_ids[i : i + _SQL_IN_CHUNK]),
+                ).all()
+                links.update({link.abs_id: self._serialize_bookfusion_link(link) for link in rows})
+        return links
 
     def set_user_bookfusion_link(
         self,
@@ -1250,6 +1400,17 @@ class DatabaseService:
                     or session.query(User).order_by(User.id).first())
             self._default_uid = user.id if user else None
         return self._default_uid
+
+    def is_primary_admin(self, user_id: int) -> bool:
+        """Whether this user is the primary admin.
+
+        The primary admin owns un-scoped state and is the account the engine's
+        global settings are mirrored from (ENGINE_MIRROR_KEYS), so it is the only
+        account allowed to inherit the global configuration.
+        """
+        if user_id is None:
+            return False
+        return user_id == self._default_user_id()
 
     def get_state(self, abs_id: str, client_name: str, user_id: int = None) -> Optional[State]:
         """Get a specific state by book + client (+ user)."""
@@ -1842,6 +2003,102 @@ class DatabaseService:
             for row in rows:
                 session.expunge(row)
             return rows
+
+    def get_kosync_xpath_order(self, key_hash: str, file_key: str) -> Optional[Tuple[int, int]]:
+        """Get the cached (device_index, synced_index) tuple for a key_hash.
+
+        This is a pure cache read. A file_key mismatch is a deliberate miss —
+        the row is only valid for the exact EPUB version it was computed from,
+        so a replaced or edited book must miss rather than return stale indices.
+        """
+        if not key_hash or not file_key:
+            return None
+        with self.get_session() as session:
+            row = session.query(KosyncXpathOrderCache).filter(
+                KosyncXpathOrderCache.key_hash == key_hash
+            ).first()
+            if not row:
+                return None
+            if str(row.file_key or "") != file_key:
+                return None
+            return (row.device_index, row.synced_index)
+
+    def save_kosync_xpath_order(self, key_hash: str, document_hash: str, filename: str,
+                                device_xpath: str, synced_xpath: str, device_index: int,
+                                synced_index: int, file_key: str,
+                                ttl_seconds: float, max_per_document: int) -> bool:
+        """Upsert one xpath order cache row and prune the table.
+
+        Returns True when the row was written, False on invalid input.
+
+        Mirrors the behavior of _persist_pair in kosync_canonical.py:
+        - Rejects falsy key_hash/file_key or None indices
+        - Coerces indices to int, rejects negative values
+        - Uses float unix timestamp for updated_at (not DateTime)
+        - Upserts by key_hash, leaving identity columns (document_hash, filename,
+          device_xpath, synced_xpath) unchanged on conflict
+        - Prunes rows older than ttl_seconds
+        - Keeps only max_per_document most recent rows per document_hash
+        """
+        if not key_hash or not file_key:
+            return False
+        if device_index is None or synced_index is None:
+            return False
+        try:
+            device_index = int(device_index)
+            synced_index = int(synced_index)
+        except (TypeError, ValueError):
+            return False
+        if device_index < 0 or synced_index < 0:
+            return False
+
+        now = time.time()
+        with self.get_session() as session:
+            # Upsert by key_hash
+            existing = session.query(KosyncXpathOrderCache).filter(
+                KosyncXpathOrderCache.key_hash == key_hash
+            ).first()
+            if existing:
+                existing.device_index = device_index
+                existing.synced_index = synced_index
+                existing.file_key = file_key
+                existing.updated_at = now
+            else:
+                new_row = KosyncXpathOrderCache(
+                    key_hash=key_hash,
+                    document_hash=document_hash,
+                    filename=filename,
+                    device_xpath=device_xpath,
+                    synced_xpath=synced_xpath,
+                    device_index=device_index,
+                    synced_index=synced_index,
+                    file_key=file_key,
+                    updated_at=now,
+                )
+                session.add(new_row)
+
+            # Prune: delete rows older than ttl_seconds
+            cutoff = now - ttl_seconds
+            session.query(KosyncXpathOrderCache).filter(
+                KosyncXpathOrderCache.updated_at < cutoff
+            ).delete(synchronize_session=False)
+
+            # Prune: keep only max_per_document most recent rows per document_hash
+            # Select ids to keep
+            keep_ids = session.query(KosyncXpathOrderCache.id).filter(
+                KosyncXpathOrderCache.document_hash == document_hash
+            ).order_by(
+                KosyncXpathOrderCache.updated_at.desc(),
+                KosyncXpathOrderCache.id.desc()
+            ).limit(max_per_document).all()
+            keep_id_set = {row[0] for row in keep_ids}
+            if keep_id_set:
+                session.query(KosyncXpathOrderCache).filter(
+                    KosyncXpathOrderCache.document_hash == document_hash,
+                    ~KosyncXpathOrderCache.id.in_(keep_id_set)
+                ).delete(synchronize_session=False)
+
+            return True
 
     def delete_kosync_data_for_book(self, abs_id: str) -> tuple[int, int]:
         """Delete every KoSync document and per-user progress row for a book.

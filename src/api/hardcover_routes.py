@@ -4,6 +4,7 @@ import logging
 from flask import Blueprint, jsonify, request, redirect, url_for, flash, g
 
 from src.utils.ebook_utils import resolve_ebook_identifiers
+from src.utils.user_config import global_fallback_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -45,12 +46,12 @@ def _active_user_clients(container):
     try:
         return container.user_client_registry().get_clients(user.id)
     except Exception as exc:
-        # A logged-in NON-admin whose per-user bundle can't be built must NOT
-        # silently fall through to the global (admin) client — that would land
-        # their Hardcover write on the admin's account. Admins share the global
-        # config, so for them the fallback is safe.
-        if getattr(user, "is_admin", False):
-            logger.debug("Falling back to global Hardcover route clients for admin: %s", exc)
+        # A user whose per-user bundle can't be built must NOT silently fall
+        # through to the global (admin) client — that would land their Hardcover
+        # write on the primary admin's account. Only the primary admin shares
+        # the global config, so only for them is the fallback safe.
+        if global_fallback_allowed(_database_service, user):
+            logger.debug("Falling back to global Hardcover route clients for the primary admin: %s", exc)
             return None
         logger.error(
             "Could not build per-user Hardcover clients for user %s: %s",
@@ -77,6 +78,14 @@ def _booklore_client(container):
 def _bookorbit_client(container):
     clients = _active_user_clients(container)
     return clients.bookorbit_client if clients is not None else container.bookorbit_client()
+
+
+def _kavita_client(container):
+    clients = _active_user_clients(container)
+    if clients is not None:
+        return getattr(clients, "kavita_client", None)
+    provider = getattr(container, "kavita_client", None)
+    return provider() if provider else None
 
 
 def _user_may_modify_book(database_service, abs_id: str) -> bool:
@@ -154,6 +163,7 @@ def api_hardcover_resolve():
                 ebook_meta = resolve_ebook_identifiers(
                     container.ebook_parser(), book,
                     _booklore_client(container), _bookorbit_client(container),
+                    _kavita_client(container),
                 )
                 title = title or ebook_meta.get("title") or book.abs_title
                 author = author or ebook_meta.get("author")

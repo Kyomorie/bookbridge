@@ -274,6 +274,46 @@ BookOrbit notes:
     docker exec abs_kosync python -m scripts.migrate_grimmory_to_bookorbit --apply
     ```
 
+#### Kavita
+
+Kavita is a supported EPUB source and bidirectional reading-progress client. It can
+provide books to Match, Batch Match, Suggestions, Forge, managed KOReader devices,
+and ebook-only mappings. BookBridge uses Kavita's native KOReader progress endpoint,
+so the same Kavita position is visible in its web reader and other compatible
+clients.
+
+| Setting | Env Var | Default | Notes |
+| --- | --- | --- | --- |
+| Enable | `KAVITA_ENABLED` | `false` | Turns on Kavita catalog and progress support. |
+| Server URL | `KAVITA_SERVER` | empty | Internal/reachable Kavita base URL used by BookBridge. |
+| Browser URL | `KAVITA_WEB_URL` | empty | Optional public URL used for dashboard links; falls back to Server URL. |
+| Auth Key | `KAVITA_API_KEY` | empty | Per-reader Kavita auth key from **User Settings -> 3rd Party Clients**. Treat it like a password. |
+| Library ID | `KAVITA_LIBRARY_ID` | empty | Per-reader optional numeric library ID; blank searches all EPUB libraries visible to that key. |
+| Collection Name | `KAVITA_COLLECTION_NAME` | `BookBridge` | Per-reader collection that successfully matched books are moved to. |
+| Poll Mode | `KAVITA_POLL_MODE` | `global` | `global` uses the main sync cycle. `custom` polls Kavita separately. |
+| Poll Interval | `KAVITA_POLL_SECONDS` | `300` | Used when Poll Mode is `custom`. |
+
+Optional "Up Next" collection watch — add an EPUB to a Kavita collection and the
+bridge auto-matches it on the next poll:
+
+| Setting | Env Var | Default | Notes |
+| --- | --- | --- | --- |
+| Watch a Collection | `KAVITA_SHELF_WATCH_ENABLED` | `false` | Turns on auto-matching from a watched Kavita collection. |
+| Collection Name | `KAVITA_SHELF_WATCH_NAME` | `Up Next` | Books placed here are auto-matched and moved to the collection above on success. |
+| Match Threshold | `KAVITA_SHELF_WATCH_THRESHOLD` | `95` | Minimum match confidence (60–100) before a book is auto-linked. |
+| Rescan Interval (Hours) | `KAVITA_SHELF_WATCH_RESCAN_HOURS` | `24` | How often a still-unmatched book is retried. |
+
+Kavita notes:
+
+- Create a non-expiring auth key for each reader in Kavita under **User Settings ->
+  3rd Party Clients**, then save it under **Account -> My Integrations -> Kavita**.
+- The Kavita user behind the key must be able to read/download the selected library
+  and manage collections if collection workflows are enabled.
+- Kavita support is ebook-only. Grimmory and BookOrbit remain the library-server
+  choices when the audio side of a mapping also comes from that service.
+- Only EPUB chapters participate; comic/archive and PDF progress models are outside
+  this integration.
+
 #### Calibre-Web Automated (CWA)
 
 CWA is a supported ebook source and optional Kobo-sync progress source. Use it to search/download ebooks from Calibre-Web Automated, and enable Kobo sync when you want stock Kobo readers or KOReader-via-CWA to participate in progress sync.
@@ -491,11 +531,28 @@ Found under **Settings -> System**.
 | Log Level | `LOG_LEVEL` | `INFO` | Application log level. |
 | Data Directory | `DATA_DIR` | `/data` | Database, cache, and working state. |
 | Books Directory | `BOOKS_DIR` | `/books` | Local ebook library path inside the container. |
+| Extra Ebook Directories | `EXTRA_EBOOK_DIRS` | empty | Additional library folders to search, for multi-library setups where some ebooks live outside `BOOKS_DIR`. Comma- or newline-separated container paths. |
 | Audiobooks Directory | `AUDIOBOOKS_DIR` | `/audiobooks` | Optional local audiobook path. |
 | Storyteller Library Directory | `STORYTELLER_LIBRARY_DIR` | `/storyteller_library` | Optional local Storyteller library path for fallback/download helpers. |
 | Storyteller Assets Directory | `STORYTELLER_ASSETS_DIR` | empty | Optional transcript asset root. |
 | Storyteller Upload Chunk Size | `STORYTELLER_UPLOAD_CHUNK_SIZE` | `5242880` | TUS upload chunk size in bytes for direct Storyteller uploads. |
 | Ebook Cache Size | `EBOOK_CACHE_SIZE` | `3` | Parsed-ebook cache size. |
+
+### Local ebook sources are confined to these directories
+
+`BOOKS_DIR`, everything listed in `EXTRA_EBOOK_DIRS`, and the internal EPUB cache
+are the only places BookBridge will read a **Local File** ebook source from. A
+path outside them — including one reached through `..` or a symlink pointing out
+of a library folder — is refused and logged, and directories and non-regular
+files are refused as well.
+
+This is a security boundary, not a convenience filter: it keeps a signed-in
+account from reaching files outside your ebook directories. It matters most on
+multi-user installs.
+
+The practical consequence: **if some of your ebooks live outside `BOOKS_DIR`, add
+those folders to `EXTRA_EBOOK_DIRS`.** Mount them read-only where you can — a
+library BookBridge only reads from does not need write access.
 
 ---
 

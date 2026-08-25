@@ -38,7 +38,11 @@ from src.services.hardcover_annotation_sync import HardcoverAnnotationSync
 from src.services.bookfusion_annotation_sync import BookFusionAnnotationSync
 from src.utils.cache_paths import safe_cache_path
 from src.utils.grimmory_cfi import GrimmoryCFIResolver
-from src.utils.user_config import resolve_setting, _ALLOW_GLOBAL_FALLBACK_KEY
+from src.utils.user_config import (
+    resolve_setting,
+    _ALLOW_GLOBAL_FALLBACK_KEY,
+    global_fallback_allowed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -258,14 +262,16 @@ class AnnotationSyncService:
             self._lock.release()
 
     def _enumerate_users(self) -> list:
-        """(user_id, credential-dict) pairs; admins fall back to global settings."""
+        """(user_id, credential-dict) pairs; only the primary admin falls back to global."""
         users = []
         try:
             for user in self.database_service.list_users() or []:
                 if not getattr(user, "active", 1):
                     continue
                 creds = dict(self.database_service.get_user_credentials(user.id) or {})
-                creds[_ALLOW_GLOBAL_FALLBACK_KEY] = bool(getattr(user, "is_admin", False))
+                creds[_ALLOW_GLOBAL_FALLBACK_KEY] = global_fallback_allowed(
+                    self.database_service, user
+                )
                 users.append((user.id, creds))
         except Exception as e:
             logger.debug("Annotation sync could not enumerate users: %s", e)

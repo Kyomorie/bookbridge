@@ -377,6 +377,35 @@ class TestKOReaderDeviceSyncService(unittest.TestCase):
         self.assertEqual((self.cache_dir / "Jackknife.epub").read_bytes(), b"bookorbit-epub")
         self.service.bookorbit_client.download_book.assert_called_once_with("42")
 
+    def test_manifest_downloads_kavita_source_by_mapped_chapter_id(self):
+        """Natural Kavita filenames still resolve through ebook_source_id."""
+        self.service.bookorbit_client.is_configured.return_value = False
+        self.service.booklore_client.is_configured.return_value = False
+        self.service.abs_client.is_configured.return_value = False
+        self.service.cwa_client.is_configured.return_value = False
+        self.service.kavita_client.is_configured.return_value = True
+        self.service.kavita_client.download_book.return_value = b"kavita-epub"
+
+        self.db.save_book(
+            Book(
+                abs_id="abs-kavita-1",
+                abs_title="The Example",
+                original_ebook_filename="The Example.epub",
+                kosync_doc_id="stale-hash",
+                ebook_source="Kavita",
+                ebook_source_id="73",
+                status="active",
+            )
+        )
+
+        manifest = self.service.build_manifest()
+
+        self.assertEqual(len(manifest["books"]), 1)
+        self.assertEqual(manifest["books"][0]["content_hash"], "hash-The Example")
+        self.assertEqual((self.cache_dir / "The Example.epub").read_bytes(), b"kavita-epub")
+        self.service.kavita_client.download_book.assert_called_once_with("73")
+        self.service.kavita_client.find_book_by_filename.assert_not_called()
+
     def test_manifest_downloads_natural_filename_from_abs_id(self):
         """ABS uploads need not use the legacy ``{item_id}_abs.epub`` filename."""
         self.service.bookorbit_client.is_configured.return_value = False

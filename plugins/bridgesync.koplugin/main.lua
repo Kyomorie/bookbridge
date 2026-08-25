@@ -186,11 +186,12 @@ function BridgeSync:init()
     if annotation_sync == nil then
         self.annotation_sync_enabled = true
     else
-    self.annotation_sync_enabled = annotation_sync
+        self.annotation_sync_enabled = annotation_sync
+    end
+
     local settings_version = tonumber(get_setting("settings_version")) or 0
     if settings_version < SETTINGS_VERSION then
         self:_saveSetting("settings_version", SETTINGS_VERSION)
-    end
     end
     self.current_session = nil
     
@@ -349,7 +350,7 @@ end
 
 function BridgeSync:_appendLog(level, message)
     local line = os.date("%Y-%m-%d %H:%M:%S") .. " [" .. tostring(level or "info") .. "] " .. tostring(message or "") .. "\n"
-    local current_size = tonumber(lfs.attributes(self.log_path, "size")) or 0
+    local current_size = tonumber((lfs.attributes(self.log_path, "size"))) or 0
     if current_size + #line > DEVICE_LOG_MAX_BYTES then
         os.remove(self.log_path .. ".1")
         os.rename(self.log_path, self.log_path .. ".1")
@@ -448,12 +449,30 @@ function BridgeSync:_uploadDeviceLogTail(operation, status)
 end
 
 function BridgeSync:_detectDefaultDownloadDir()
-    if lfs.attributes("/mnt/onboard", "mode") == "directory" then
-        return "/mnt/onboard/Books/BridgeManaged"
-    elseif lfs.attributes("/sdcard", "mode") == "directory" then
-        return "/sdcard/Books/BridgeManaged"
+    -- Known device storage roots, checked in order.
+    local roots = {
+        "/mnt/onboard",         -- Kobo
+        "/mnt/us",              -- Kindle
+        "/mnt/ext1",            -- PocketBook
+        "/storage/emulated/0",  -- Android
+        "/sdcard",              -- Android (legacy symlink)
+    }
+    for _, root in ipairs(roots) do
+        if lfs.attributes(root, "mode") == "directory" then
+            return root .. "/Books/BridgeManaged"
+        end
     end
-    return "/Books/BridgeManaged"
+
+    -- Desktop/emulator builds have none of the above. Prefer KOReader's own
+    -- library folder, then its data dir; never "/Books", which is at the
+    -- filesystem root and unwritable for a normal user.
+    if G_reader_settings and G_reader_settings.readSetting then
+        local home = G_reader_settings:readSetting("home_dir")
+        if type(home) == "string" and lfs.attributes(home, "mode") == "directory" then
+            return self:_normalizePath(home) .. "/BridgeManaged"
+        end
+    end
+    return self:_normalizePath(DataStorage:getDataDir()) .. "/Books/BridgeManaged"
 end
 
 function BridgeSync:_saveSettings()
@@ -690,12 +709,21 @@ function BridgeSync:_showManagedFolderChooser(touchmenu_instance)
 end
 
 function BridgeSync:_runInSubprocess(task)
+    -- Forked child: it must never fork again. The child inherits the running
+    -- coroutine, so a nested call would fork a grandchild and then yield the
+    -- child back into a copy of the parent's UIManager loop, leaving a second
+    -- instance of the app running against the same screen and input devices.
+    if self._in_subprocess then
+        return true, task()
+    end
+
     local co, is_main = coroutine.running()
     if not co or is_main then
         return true, task()
     end
 
     local pid, parent_read_fd = FFIUtil.runInSubProcess(function(_, child_write_fd)
+        self._in_subprocess = true
         if self.sqlite_available then
             -- Forked child: a SQLite handle must never be shared across a
             -- fork, so replace the inherited one with the child's own.
@@ -767,7 +795,10 @@ function BridgeSync:_runInSubprocess(task)
     if ret_values then
         return true, table.unpack(ret_values, 1, ret_values.n or #ret_values)
     end
-    return true
+    -- The child exited without writing a result. Reporting success here hands
+    -- the caller an empty result set, which it renders as its generic failure
+    -- text, so a crashed subprocess reads as a rejected login.
+    return false, "subprocess produced no result"
 end
 
 function BridgeSync:_promptForSetting(title, current_value, hint, setter, is_password, after_save)
@@ -806,7 +837,7 @@ end
 function BridgeSync:_ensureDirectory(path)
     local normalized = tostring(path or "")
     if normalized == "" then
-        return false
+        return false, "no folder is configured"
     end
 
     if lfs.attributes(normalized, "mode") == "directory" then
@@ -820,14 +851,21 @@ function BridgeSync:_ensureDirectory(path)
         else
             partial = partial .. "/" .. segment
         end
-        if lfs.attributes(partial, "mode") ~= "directory" then
-            local ok = lfs.mkdir(partial)
+        local mode = lfs.attributes(partial, "mode")
+        if mode == nil then
+            local ok, mkdir_err = lfs.mkdir(partial)
             if not ok and lfs.attributes(partial, "mode") ~= "directory" then
-                return false
+                return false, partial .. ": " .. tostring(mkdir_err or "mkdir failed")
             end
+        elseif mode ~= "directory" then
+            return false, partial .. " already exists and is not a folder"
         end
     end
-    return lfs.attributes(normalized, "mode") == "directory"
+
+    if lfs.attributes(normalized, "mode") ~= "directory" then
+        return false, normalized .. " could not be created"
+    end
+    return true
 end
 
 function BridgeSync:_isCooldownActive()
@@ -1550,8 +1588,14 @@ function BridgeSync:_isCurrentDocument(path)
 end
 
 function BridgeSync:_runSync()
-    if not self:_ensureDirectory(self.download_dir) then
-        error("Failed to create managed folder")
+    local dir_ok, dir_err = self:_ensureDirectory(self.download_dir)
+    if not dir_ok then
+        -- level 0: no "main.lua:NNN:" prefix, so the user sees the real reason.
+        error(T(
+            _("Cannot create the Managed Folder \"%1\" (%2). Pick a writable folder under Bridge Sync > Managed Folder."),
+            tostring(self.download_dir or ""),
+            tostring(dir_err or "unknown error")
+        ), 0)
     end
 
     local local_revision = tostring(self:_getStateScalar("revision") or "")
@@ -1958,7 +2002,8 @@ function BridgeSync:testConnection()
     end
 
     if ok then
-        self:_showMessage(_("Authentication successful"), 2)
+        local display_msg = (message and message ~= "") and message or _("Authentication successful")
+        self:_showMessage(display_msg, 2)
     else
         self:logWarn(message or "Authentication failed")
         self:_showMessage(message or _("Authentication failed"), 4)

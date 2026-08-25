@@ -1,0 +1,195 @@
+import os
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from flask import Flask
+
+from src.api import kosync_server
+from src.utils.config_loader import ALL_SETTINGS, DEFAULT_CONFIG
+from src.utils.time_utils import utcnow
+
+
+_DOC_HASH = "a" * 32
+_ROOT = Path(__file__).resolve().parents[1]
+
+
+class _FakeDatabase:
+    def __init__(self, *, percentage=0.50, device_id="reader-a"):
+        self.doc = SimpleNamespace(
+            document_hash=_DOC_HASH,
+            linked_abs_id=None,
+            progress="/body/original",
+            percentage=percentage,
+            device="KOReader",
+            device_id=device_id,
+            timestamp=utcnow(),
+            user_id=None,
+            filename=None,
+            source=None,
+            booklore_id=None,
+            mtime=None,
+        )
+        self.saved = []
+        self.user_progress_updates = []
+
+    def get_kosync_document(self, _document_hash):
+        return self.doc
+
+    def get_user_kosync_progress(self, _document_hash, _user_id):
+        return self.doc
+
+    def save_kosync_document(self, document):
+        self.saved.append((float(document.percentage), document.device_id))
+        self.doc = document
+        return document
+
+    def upsert_user_kosync_progress(
+        self, document_hash, percentage, *, progress, device, device_id,
+        timestamp, user_id,
+    ):
+        self.user_progress_updates.append(
+            (document_hash, float(percentage), progress, device, device_id, user_id)
+        )
+
+    def get_book_by_kosync_id(self, _document_hash):
+        return None
+
+
+class TestKoSyncCrossDeviceRewinds:
+    @staticmethod
+    def _put(db, *, percentage, device_id, furthest_wins):
+        app = Flask(__name__)
+        payload = {
+            "document": _DOC_HASH,
+            "progress": f"/body/{device_id}/{percentage}",
+            "percentage": percentage,
+            "device": "KOReader",
+            "device_id": device_id,
+        }
+
+        with app.test_request_context("/syncs/progress", method="PUT", json=payload):
+            with patch.dict(
+                os.environ,
+                {"KOSYNC_FURTHEST_WINS": furthest_wins},
+                clear=False,
+            ), patch.object(
+                kosync_server, "_database_service", db
+            ), patch.object(
+                kosync_server, "_flush_stale_kosync_sessions"
+            ), patch.object(
+                kosync_server, "_record_recent_external_kosync_put"
+            ), patch.object(
+                kosync_server, "_schedule_auto_discovery"
+            ):
+                return kosync_server.kosync_put_progress.__wrapped__()
+
+    @staticmethod
+    def _settings_template_source():
+        return (_ROOT / "templates" / "settings.html").read_text(encoding="utf-8")
+
+    def test_setting_is_managed_and_defaults_to_safe_behavior(self):
+        assert "KOSYNC_FURTHEST_WINS" in ALL_SETTINGS
+        assert DEFAULT_CONFIG["KOSYNC_FURTHEST_WINS"] == "true"
+
+    def test_safe_default_rejects_backward_put_from_different_device(self):
+        db = _FakeDatabase(percentage=0.50, device_id="reader-a")
+
+        _response, status = self._put(
+            db,
+            percentage=0.30,
+            device_id="reader-b",
+            furthest_wins="true",
+        )
+
+        assert status == 200
+        assert float(db.doc.percentage) == 0.50
+        assert db.saved == []
+        assert db.user_progress_updates == []
+
+    def test_safe_default_still_accepts_intentional_rewind_on_same_device(self):
+        db = _FakeDatabase(percentage=0.50, device_id="reader-a")
+
+        _response, status = self._put(
+            db,
+            percentage=0.30,
+            device_id="reader-a",
+            furthest_wins="true",
+        )
+
+        assert status == 200
+        assert float(db.doc.percentage) == 0.30
+        assert db.saved == [(0.30, "reader-a")]
+        assert db.user_progress_updates[0][1] == 0.30
+
+    def test_opt_in_accepts_backward_put_from_different_device(self):
+        db = _FakeDatabase(percentage=0.50, device_id="reader-a")
+
+        _response, status = self._put(
+            db,
+            percentage=0.30,
+            device_id="reader-b",
+            furthest_wins="false",
+        )
+
+        assert status == 200
+        assert float(db.doc.percentage) == 0.30
+        assert db.saved == [(0.30, "reader-b")]
+        assert db.user_progress_updates[0][1] == 0.30
+
+    def test_ui_renders_safe_default_and_explicit_opt_in(self):
+        template_source = self._settings_template_source()
+
+        assert 'name="KOSYNC_FURTHEST_WINS"' in template_source
+        assert 'value="true"' in template_source
+        assert 'value="false"' in template_source
+        assert "get_val('KOSYNC_FURTHEST_WINS'" in template_source
+        assert "out-of-date second" in template_source
+
+    def test_setting_lives_in_the_main_settings_template(self):
+        settings_template = (_ROOT / "templates" / "settings.html").read_text(encoding="utf-8")
+        base_template = (_ROOT / "templates" / "base.html").read_text(encoding="utf-8")
+        partial_path = _ROOT / "templates" / "_kosync_cross_device_rewinds.html"
+
+        assert 'name="KOSYNC_FURTHEST_WINS"' in settings_template
+        assert "KOSYNC_FURTHEST_WINS" not in base_template
+        assert "_kosync_cross_device_rewinds" not in base_template
+        assert not partial_path.exists()
+        assert "kosync_cross_device_rewinds_template" not in settings_template
+
+    def test_checkbox_style_truthy_spellings_keep_the_protection_on(self):
+        truthy_spellings = ["on", "1", "yes", "On", "TRUE"]
+        for value in truthy_spellings:
+            # env_truthy("on"), env_truthy("1"), env_truthy("yes"), etc. all return True.
+            # Previously, == "true" treated these as False and silently disabled the guard.
+            # The failure direction is unsafe: backward cross-device PUT would be accepted.
+            db = _FakeDatabase(percentage=0.50, device_id="reader-a")
+
+            _response, status = self._put(
+                db,
+                percentage=0.30,
+                device_id="reader-b",
+                furthest_wins=value,
+            )
+
+            assert status == 200, f"value={value}"
+            assert float(db.doc.percentage) == 0.50, f"value={value}"
+            assert db.saved == [], f"value={value}"
+            assert db.user_progress_updates == [], f"value={value}"
+
+    def test_falsy_spellings_still_allow_the_backward_move(self):
+        falsy_spellings = ["false", "0", "no", "off"]
+        for value in falsy_spellings:
+            db = _FakeDatabase(percentage=0.50, device_id="reader-a")
+
+            _response, status = self._put(
+                db,
+                percentage=0.30,
+                device_id="reader-b",
+                furthest_wins=value,
+            )
+
+            assert status == 200, f"value={value}"
+            assert float(db.doc.percentage) == 0.30, f"value={value}"
+            assert db.saved == [(0.30, "reader-b")], f"value={value}"
+            assert db.user_progress_updates[0][1] == 0.30, f"value={value}"

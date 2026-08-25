@@ -19,6 +19,7 @@ from datetime import date
 
 import requests
 
+from src.utils.logging_utils import get_persistent_condition_logger
 from src.utils.string_utils import author_match_floor, calculate_similarity, clean_book_title
 from src.utils.user_config import resolve_setting
 
@@ -59,6 +60,95 @@ class HardcoverClient:
         elif not isinstance(me, dict):
             me = None
         return me
+
+    # Persistent-condition keys, one per failure shape. Hardcover produced three
+    # distinct shapes in a single day during its API beta (401 invalid_token after
+    # a key reset, 500 from their own backend, and a Hasura session-variable
+    # error), so keeping them separate means a new shape still surfaces loudly
+    # instead of hiding behind an already-counted one.
+    _CONDITION_KEYS = (
+        "hardcover_api:auth",
+        "hardcover_api:server",
+        "hardcover_api:http",
+        "hardcover_api:graphql",
+    )
+    _MAX_LOGGED_BODY = 300
+
+    def _token_hint(self) -> str:
+        """Actionable next step, tailored to which kind of credential is configured.
+
+        Hardcover replaced long-lived JWTs with `hc_pat_` personal access tokens
+        and reset the old ones without notice during the API beta, so the useful
+        advice differs by token kind.
+        """
+        token = self.token or ""
+        if token.startswith("hc_pat_"):
+            return (
+                "Hardcover rejected this personal access token — confirm it has not "
+                "expired and regenerate it in Hardcover account settings if needed."
+            )
+        if token.count(".") == 2:
+            return (
+                "The configured Hardcover token is a legacy JWT. Hardcover resets "
+                "these without notice during its API beta — generate a new hc_pat_ "
+                "key in Hardcover account settings and save it under "
+                "Account -> Integrations."
+            )
+        return "Check the Hardcover token under Account -> Integrations."
+
+    @classmethod
+    def _short_body(cls, response) -> str:
+        """Response text trimmed for logs.
+
+        Hardcover answers a failed request with a full HTML error page; dumping it
+        buried the useful line. The `❌ HTTP {status}: ` prefix is unchanged so the
+        greppable contract holds.
+        """
+        text = (getattr(response, "text", "") or "").strip()
+        if "<html" in text[:200].lower():
+            title = ""
+            lowered = text.lower()
+            start = lowered.find("<title>")
+            if start != -1:
+                end = lowered.find("</title>", start)
+                if end != -1:
+                    title = text[start + 7:end].strip()
+            text = title or "HTML error page"
+        text = " ".join(text.split())
+        if len(text) > cls._MAX_LOGGED_BODY:
+            text = text[:cls._MAX_LOGGED_BODY] + "…"
+        return text
+
+    def _note_api_failure(self, key: str, message: str, *, response=None) -> None:
+        """Report a Hardcover API failure once, then quietly until it recovers."""
+        suffix = ""
+        if response is not None:
+            request_id = ""
+            try:
+                request_id = response.headers.get("X-Request-Id", "") or ""
+            except Exception:
+                request_id = ""
+            status = getattr(response, "status_code", None)
+            if status is not None and 500 <= int(status) < 600:
+                suffix = (
+                    " — this is an error inside Hardcover, not a configuration "
+                    "problem; retry later"
+                )
+                if request_id:
+                    suffix += f" (Hardcover request id {request_id})"
+            elif status in (401, 403):
+                suffix = f" — {self._token_hint()}"
+        get_persistent_condition_logger().warn(
+            logger, key, f"{message}{suffix}", level=logging.ERROR,
+        )
+
+    def _note_api_success(self) -> None:
+        """Announce recovery for any failure shape that had been firing."""
+        condition_logger = get_persistent_condition_logger()
+        for key in self._CONDITION_KEYS:
+            condition_logger.resolve(
+                logger, key, "✅ Hardcover API reachable again",
+            )
 
     @staticmethod
     def _is_read_only_graphql(query: str) -> bool:
@@ -119,9 +209,14 @@ class HardcoverClient:
                 if response.status_code == 200:
                     data = response.json()
                     if data.get("data"):
+                        self._note_api_success()
                         return data["data"]
                     if data.get("errors"):
-                        logger.error(f"❌ GraphQL errors: {data['errors']}")
+                        self._note_api_failure(
+                            "hardcover_api:graphql",
+                            f"❌ GraphQL errors: {data['errors']}",
+                            response=response,
+                        )
                     return None
 
                 if response.status_code == 429 and is_read_only:
@@ -139,7 +234,38 @@ class HardcoverClient:
                         f"Hardcover read query throttled after {max_attempts} attempts"
                     )
 
-                logger.error(f"❌ HTTP {response.status_code}: {response.text}")
+                # Hardcover's beta API returns transient 5xx in long clusters (measured
+                # 4/20 success with a 12-request failure streak on 2026-08-20), and
+                # their docs mark 503 as safe to retry. Reads are retried; a mutation
+                # is never retried on 5xx because the write may already have applied.
+                if (
+                    500 <= response.status_code < 600
+                    and is_read_only
+                    and attempt < max_attempts
+                ):
+                    delay = self._get_retry_delay(response, attempt)
+                    logger.debug(
+                        "Hardcover returned %s on a read query. Retrying in %.1fs (attempt %d/%d).",
+                        response.status_code,
+                        delay,
+                        attempt,
+                        max_attempts,
+                    )
+                    time.sleep(delay)
+                    continue
+
+                status = response.status_code
+                if status in (401, 403):
+                    key = "hardcover_api:auth"
+                elif 500 <= status < 600:
+                    key = "hardcover_api:server"
+                else:
+                    key = "hardcover_api:http"
+                self._note_api_failure(
+                    key,
+                    f"❌ HTTP {status}: {self._short_body(response)}",
+                    response=response,
+                )
                 return None
         except HardcoverRateLimitError:
             raise
@@ -695,6 +821,11 @@ class HardcoverClient:
                     id
                     status_id
                     edition_id
+                    user_book_reads(order_by: {id: desc}, limit: 1) {
+                        id
+                        started_at
+                        finished_at
+                    }
                 }
             }
         }
@@ -893,21 +1024,11 @@ class HardcoverClient:
         """Get today's date in YYYY-MM-DD format for Hardcover API."""
         return date.today().isoformat()
 
-    def update_progress(
-        self,
-        user_book_id: int,
-        page: int,
-        edition_id: int = None,
-        is_finished: bool = False,
-        current_percentage: float = 0.0,
-        audio_seconds: int = None,
-    ) -> bool:
+    def get_latest_read(self, user_book_id: int) -> Optional[Dict]:
+        """Fetch the most recent user_book_read row for the given user_book_id.
+
+        Returns the read dict with id, started_at, finished_at when present, otherwise None.
         """
-        Update reading progress.
-        Uses current_percentage > 0.02 (2%) to decide when to set 'started_at'.
-        For audiobook editions, pass audio_seconds to use progress_seconds instead of progress_pages.
-        """
-        # First check if there's an existing read
         read_query = """
         query ($userBookId: Int!) {
             user_book_reads(where: { user_book_id: { _eq: $userBookId }}, order_by: {id: desc}, limit: 1) {
@@ -917,12 +1038,66 @@ class HardcoverClient:
             }
         }
         """
+        result = self.query(read_query, {"userBookId": user_book_id})
+        if result and result.get("user_book_reads"):
+            return result["user_book_reads"][0]
+        return None
 
-        read_result = self.query(read_query, {"userBookId": user_book_id})
+    def update_progress(
+        self,
+        user_book_id: int,
+        page: int,
+        edition_id: int = None,
+        is_finished: bool = False,
+        current_percentage: float = 0.0,
+        audio_seconds: int = None,
+        active_read: Optional[Dict] = None,
+        allow_new_read: bool = False,
+    ) -> bool:
+        """
+        Update reading progress.
+        Uses current_percentage > 0.02 (2%) to decide when to set 'started_at'.
+        For audiobook editions, pass audio_seconds to use progress_seconds instead of progress_pages.
+
+        Args:
+            allow_new_read: When True, the caller has confirmed from BookBridge's own
+                cross-cycle progress state that a genuine re-read is underway. Without
+                this flag, a completed read (finished_at set) is left untouched.
+                Default False is the safe direction.
+        """
+        # active_read and get_latest_read both yield a bare read dict; wrap once.
+        latest_read = (
+            active_read
+            if active_read and active_read.get("id")
+            else self.get_latest_read(user_book_id)
+        )
+        read_result = {"user_book_reads": [latest_read] if latest_read else []}
         today = self._get_today_date()
 
         # LOGIC: Only set started date if we are past 2%
         should_start = current_percentage > 0.02
+
+        # Hardcover keeps rereads as separate user_book_read rows. A completed row
+        # is historical data: never rewrite it with a later reading position.
+        if latest_read and latest_read.get("finished_at"):
+            if not allow_new_read:
+                # Persistent-condition log: this fires on every sync cycle for every
+                # finished book, so use the repo's persistent-condition logger to avoid
+                # flooding INFO or hiding the override at DEBUG.
+                get_persistent_condition_logger().warn(
+                    logger,
+                    f"hardcover_preserve_completed_read:{latest_read.get('id')}",
+                    "Hardcover: Preserving completed read %s (finished_at set); no re-read confirmed via allow_new_read flag",
+                    latest_read.get("id"),
+                    level=logging.INFO,
+                )
+                return True
+
+            logger.info(
+                "🔄 Hardcover: Starting a new read instead of overwriting completed read %s",
+                latest_read.get("id"),
+            )
+            read_result = {"user_book_reads": []}
 
         if (
             read_result

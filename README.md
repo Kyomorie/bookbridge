@@ -18,13 +18,13 @@
 
 ## 📖 What is it?
 
-**BookBridge** is a powerful synchronization engine for **Audiobookshelf**, **KOReader**, **Storyteller**, **Grimmory**, **BookOrbit**, **Calibre-Web Automated**, and reading trackers. It keeps supported reading, listening, and annotation state aligned across your devices and web readers.
+**BookBridge** is a powerful synchronization engine for **Audiobookshelf**, **KOReader**, **Storyteller**, **Grimmory**, **BookOrbit**, **Kavita**, **Calibre-Web Automated**, and reading trackers. It keeps supported reading, listening, and annotation state aligned across your devices and web readers.
 
 ## ✨ Key Features
 
-- **Multi-Service Sync**: Syncs supported progress paths across Audiobookshelf, KOReader, Storyteller, Grimmory, BookOrbit, CWA/Kobo sync, and reading trackers.
+- **Multi-Service Sync**: Syncs supported progress paths across Audiobookshelf, KOReader, Storyteller, Grimmory, BookOrbit, Kavita, CWA/Kobo sync, and reading trackers.
 - **Multiple Readers**: Give each person their own sign-in, their own service logins, and their own progress — everyone sees only the books they are reading, even on a shared book.
-- **Flexible Match Flows**: Link ABS, Grimmory, or BookOrbit audiobooks; use CWA as an ebook source; or create ebook-only links when you only want text sync.
+- **Flexible Match Flows**: Link ABS, Grimmory, or BookOrbit audiobooks; use Kavita or CWA as an ebook source; or create ebook-only links when you only want text sync.
 - **Flexible Setup**: You can intentionally turn Audiobookshelf off for ebook-only or maintenance-focused setups.
 - **Dashboard Session Details**: See recent reading or listening session summaries right on the dashboard cards.
 - **Smart Alignment Sources**: Uses Storyteller forced-alignment transcripts when available, then SMIL, then Whisper fallback.
@@ -55,7 +55,7 @@ services:
       - TZ=America/New_York
       - LOG_LEVEL=INFO
       # - KOSYNC_PORT=5758  # Optional: enable split-port mode
-      # Configure ABS, KOSync, Grimmory, BookOrbit, CWA, Storyteller, and other services in the Web UI.
+      # Configure ABS, KOSync, Grimmory, BookOrbit, Kavita, CWA, Storyteller, and other services in the Web UI.
     volumes:
       - ./data:/data
       - /path/to/ebooks:/books
@@ -70,6 +70,17 @@ If you want KOReader to download and manage bridge-provided books for you, an op
 If you use that plugin, Grimmory shelf settings in the bridge can also shape the KOReader collections it creates.
 
 For full installation instructions, checking logs, and advanced configuration, please visit the **[Documentation Site](https://cporcellijr.github.io/bookbridge/)**.
+
+---
+
+## Credits
+
+BookBridge began as a fork of
+[abs-kosync-bridge](https://github.com/J-Lich/abs-kosync-bridge) by
+[@J-Lich](https://github.com/J-Lich) — the original Audiobookshelf ↔ KOReader
+progress bridge this project grew out of. Thanks also to everyone who has
+contributed since; see the
+[contributors](https://github.com/cporcellijr/bookbridge/graphs/contributors).
 
 ---
 

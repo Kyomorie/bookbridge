@@ -112,6 +112,63 @@ class KosyncUserProgress(Base):
                 f"user_id={self.user_id}, pct={self.percentage})>")
 
 
+class KosyncXpathOrderCache(Base):
+    """
+    Persistent cache of already-resolved XPath <-> character-index pairs for one EPUB.
+
+    This table is a pure cache: every row is derivable by re-parsing the EPUB, and
+    nothing here is a source of truth. The cache is used to keep the KoSync GET path
+    from re-parsing the book on every request.
+
+    `file_key` binds a row to one exact EPUB version (path + mtime + size, hashed),
+    so a replaced or edited book misses the cache rather than returning stale indices.
+    """
+    __tablename__ = 'kosync_xpath_order_cache'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key_hash = Column(String(64), nullable=False)
+    document_hash = Column(String(32), nullable=False)
+    filename = Column(String(500), nullable=False)
+    device_xpath = Column(Text, nullable=False)
+    synced_xpath = Column(Text, nullable=False)
+    device_index = Column(Integer, nullable=False)
+    synced_index = Column(Integer, nullable=False)
+    file_key = Column(String(64), nullable=False)
+    updated_at = Column(Float, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('key_hash', name='uq_kosync_xpath_order_cache_key'),
+        Index('ix_kosync_xpath_order_cache_document_hash', 'document_hash'),
+        Index('ix_kosync_xpath_order_cache_updated_at', 'updated_at'),
+    )
+
+    def __init__(
+        self,
+        key_hash: str,
+        document_hash: str,
+        filename: str,
+        device_xpath: str,
+        synced_xpath: str,
+        device_index: int,
+        synced_index: int,
+        file_key: str,
+        updated_at: float,
+    ):
+        self.key_hash = key_hash
+        self.document_hash = document_hash
+        self.filename = filename
+        self.device_xpath = device_xpath
+        self.synced_xpath = synced_xpath
+        self.device_index = device_index
+        self.synced_index = synced_index
+        self.file_key = file_key
+        self.updated_at = updated_at
+
+    def __repr__(self):
+        return (f"<KosyncXpathOrderCache(key_hash='{self.key_hash[:12]}...', "
+                f"doc_hash='{self.document_hash}', file_key='{self.file_key[:12]}...')>")
+
+
 class Book(Base):
     """
     Book model storing book metadata and mapping information.
