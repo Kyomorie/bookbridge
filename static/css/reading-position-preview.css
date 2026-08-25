@@ -70,6 +70,7 @@
     font-size: 11px;
     line-height: 1.55;
     overflow-wrap: anywhere;
+    white-space: pre-line;
 }
 
 .position-preview-marker {

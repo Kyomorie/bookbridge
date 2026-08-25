@@ -14,6 +14,8 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
+from bs4 import BeautifulSoup
+
 logger = logging.getLogger(__name__)
 
 _AUDIO_CLIENTS = {"abs", "bookloreaudio", "bookorbitaudio"}
@@ -159,23 +161,135 @@ def _resolve_precise_or_mapped_position(
     return None, failures
 
 
-def _bounded_excerpt(full_text: str, index: int, context: int) -> tuple[str, str]:
+def _normalized_text(value) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _heading_groups(full_text: str, spine_map, marker_index: int) -> list[tuple[int, int]]:
+    """Return unambiguous heading ranges that can safely become line breaks.
+
+    The canonical ebook text deliberately flattens markup.  Preserve only h1-h6
+    boundaries whose raw spine XHTML flattens to the exact canonical slice and
+    whose heading text occurs exactly once in that slice.  Anything ambiguous is
+    left untouched rather than guessing at document structure.
+    """
+    groups: list[tuple[int, int]] = []
+
+    for spine in spine_map or []:
+        if not isinstance(spine, dict):
+            continue
+        content = spine.get("content")
+        try:
+            start = int(spine.get("start"))
+            end = int(spine.get("end"))
+        except (TypeError, ValueError):
+            continue
+        if not content or start < 0 or end <= start or end > len(full_text):
+            continue
+
+        try:
+            soup = BeautifulSoup(content, "html.parser")
+        except Exception:
+            continue
+
+        spine_text = _normalized_text(soup.get_text(separator=" ", strip=True))
+        if not spine_text or full_text[start:end] != spine_text:
+            continue
+
+        spans: list[tuple[int, int]] = []
+        for heading in soup.find_all(re.compile(r"^h[1-6]$", re.IGNORECASE)):
+            heading_text = _normalized_text(heading.get_text(separator=" ", strip=True))
+            if not heading_text:
+                continue
+
+            matches = [match.start() for match in re.finditer(re.escape(heading_text), spine_text)]
+            if len(matches) != 1:
+                continue
+
+            heading_start = start + matches[0]
+            spans.append((heading_start, heading_start + len(heading_text)))
+
+        if not spans:
+            continue
+
+        spans.sort()
+        group_start, group_end = spans[0]
+        for heading_start, heading_end in spans[1:]:
+            between = full_text[group_end:heading_start]
+            if not between.strip():
+                group_end = heading_end
+                continue
+            if not (group_start <= marker_index <= group_end):
+                groups.append((group_start, group_end))
+            group_start, group_end = heading_start, heading_end
+
+        if not (group_start <= marker_index <= group_end):
+            groups.append((group_start, group_end))
+
+    return groups
+
+
+def _format_excerpt_segment(
+    text: str,
+    *,
+    segment_start: int,
+    heading_groups: Iterable[tuple[int, int]],
+) -> str:
+    segment_end = segment_start + len(text)
+    ranges = [
+        (start - segment_start, end - segment_start)
+        for start, end in heading_groups
+        if segment_start <= start < end <= segment_end
+    ]
+    if not ranges:
+        return re.sub(r"\s+", " ", text)
+
+    parts = []
+    cursor = 0
+    for start, end in sorted(ranges):
+        if start < cursor:
+            continue
+        parts.append(text[cursor:start])
+        parts.append("\n")
+        parts.append(text[start:end])
+        parts.append("\n")
+        cursor = end
+    parts.append(text[cursor:])
+
+    formatted = "".join(parts)
+    formatted = re.sub(r"[^\S\n]+", " ", formatted)
+    formatted = re.sub(r" *\n+ *", "\n", formatted)
+    return formatted
+
+
+def _bounded_excerpt(
+    full_text: str,
+    index: int,
+    context: int,
+    heading_groups: Iterable[tuple[int, int]] = (),
+) -> tuple[str, str]:
     if not full_text:
         return "", ""
     index = max(0, min(int(index), len(full_text)))
     context = max(80, min(int(context), 300))
 
-    before = full_text[max(0, index - context):index]
-    after = full_text[index:min(len(full_text), index + context)]
+    before_start = max(0, index - context)
+    after_end = min(len(full_text), index + context)
+    before = _format_excerpt_segment(
+        full_text[before_start:index],
+        segment_start=before_start,
+        heading_groups=heading_groups,
+    )
+    after = _format_excerpt_segment(
+        full_text[index:after_end],
+        segment_start=index,
+        heading_groups=heading_groups,
+    )
 
-    # The canonical parser already normalizes chapter text substantially, but
-    # collapse remaining line breaks/tabs for a compact dashboard excerpt.  Only
-    # the OUTER edges are trimmed: stripping the marker-facing edges deletes the
-    # space the position sits on, so a boundary renders as "several|notches" and
-    # reads as though the marker landed mid-word.
-    before = re.sub(r"\s+", " ", before).lstrip()
-    after = re.sub(r"\s+", " ", after).rstrip()
-    return before, after
+    # Only the OUTER edges are trimmed: stripping the marker-facing edges deletes
+    # the space the position sits on, so a boundary renders as
+    # "several|notches" and reads as though the marker landed mid-word.
+    return before.lstrip(), after.rstrip()
 
 
 def unavailable_preview(message: str, *, source: str = "BookBridge", percentage=None) -> dict:
@@ -226,7 +340,7 @@ def build_reading_position_preview(
 
     try:
         book_path = ebook_parser.resolve_book_path(filename)
-        full_text, _spine_map = ebook_parser.extract_text_and_map(book_path)
+        full_text, spine_map = ebook_parser.extract_text_and_map(book_path)
     except Exception:
         logger.warning(
             "Reading position preview: could not read ebook text for %s",
@@ -234,6 +348,7 @@ def build_reading_position_preview(
             exc_info=True,
         )
         full_text = ""
+        spine_map = []
 
     if not full_text:
         return unavailable_preview(
@@ -270,7 +385,8 @@ def build_reading_position_preview(
         return unavailable_preview(message, source=source, percentage=percentage)
 
     index = max(0, min(int(resolved.index), len(full_text)))
-    before, after = _bounded_excerpt(full_text, index, context_chars)
+    heading_groups = _heading_groups(full_text, spine_map, index)
+    before, after = _bounded_excerpt(full_text, index, context_chars, heading_groups)
     if not before and not after:
         return unavailable_preview(
             "The saved position resolved, but no surrounding ebook text is available.",
