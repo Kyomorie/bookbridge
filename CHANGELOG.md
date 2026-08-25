@@ -6,6 +6,13 @@ All notable changes to BookBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [7.5.0] - 2026-08-25
+
+Kavita joins as a full ebook source and reading client, your library cards can
+show you the text at your current position, and the dashboard learned to sort by
+when you added a book. This release also contains a **security fix that matters
+for multi-user installs** — see Security below.
+
 ### Added
 
 - **Add Book and Suggestions now show each available edition's language.**
@@ -47,8 +54,21 @@ All notable changes to BookBridge will be documented in this file.
   The match queue survives leaving the page, but nothing outside Add Book said so.
   The tab now carries a count whenever you have books queued, so work in progress
   is visible from anywhere and one click away.
+- **Suggestions names the service each audiobook came from.** A provider badge on
+  every suggestion tells you whether a proposed pair is using Audiobookshelf,
+  Grimmory, or BookOrbit audio before you approve it. Contributed by
+  @Marcelwalter in #407.
 
 ### Changed
+
+- **The Settings page opens immediately again.** It was loading every stored
+  audio-to-ebook alignment map just to count them — on a large library that meant
+  reading well over a gigabyte from disk before the page would render. It now asks
+  the database for the counts instead.
+- **The dashboard no longer re-checks every cover each time you open it.** Covers
+  were served with no cache lifetime, so a browser revalidated all of them on every
+  visit — hundreds of round trips on a large library, all answered "unchanged".
+  They are cached properly now.
 
 - **Storyteller edition creation is now clearly separated from ordinary matching.**
   Add Book and Suggestions show only **Match All** when the current reader has no
@@ -60,13 +80,18 @@ All notable changes to BookBridge will be documented in this file.
 ### Security
 
 - **Forge and Match now confine a local ebook source to your configured library.**
-  Local sources are restricted to `BOOKS_DIR`, any `EXTRA_EBOOK_DIRS`, and the EPUB
-  cache before anything reads, hashes, or uploads them; anything outside those roots
-  is refused and logged. **Multi-user installs should update** — an account you would
-  not trust with the server's files could reach further than intended. Single-user
-  and all-trusted-account installs were not exposed to anything an administrator
-  could not already reach. Reported privately; details will follow once the fix is
-  in a stable release.
+  BookBridge did not fully verify that a selected *Local File* ebook stayed inside
+  your configured ebook directories, so a signed-in account could cause the server
+  to read a file from outside them. Local sources are now restricted to
+  `BOOKS_DIR`, any `EXTRA_EBOOK_DIRS`, and the EPUB cache; anything outside those
+  roots is refused and logged.
+
+  **Who should update:** any install with accounts you would not trust with the
+  server's files — this is the multi-user case, and it is the reason to upgrade
+  promptly. On a single-user install, or one where every account is already trusted,
+  this granted nothing an administrator could not already reach. Affects 7.4.2 and
+  earlier. Found by external security review and reported privately; no exploitation
+  in the wild is known.
 
 ### Fixed
 
@@ -88,6 +113,11 @@ All notable changes to BookBridge will be documented in this file.
   rest — also moved to the top of the card, so the answer to "which copy is this?"
   sits in the same place on every candidate rather than trailing a title whose
   length varies. (#381)
+
+- **A KoSync timing setting you change now takes effect without a restart.** The
+  instant-sync debounce window was read once at startup, so editing it in Settings
+  appeared to save and then changed nothing until the container was restarted.
+  Contributed by @Kyomorie in #404.
 
 ## [7.4.2] - 2026-08-21
 

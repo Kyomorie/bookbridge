@@ -66,7 +66,7 @@ Every service below is **optional** — enable only the ones you actually use. E
 
 - **Multiple readers** with their own sign-in, their own service logins, and their own progress — each person sees only the books they are reading.
 - **Self-service integrations** so each reader can manage their own usernames, passwords, tokens, API keys, and sync toggles from Account -> My Integrations, while admins can still manage them centrally.
-- **Dashboard** for live sync status, reading session details, direct service links, and source badges.
+- **Dashboard** for live sync status, reading session details, direct service links, source badges, sorting by date added, and a **Show position** excerpt of the text where you are currently synced.
 - **Add / Update Book** for ABS, Grimmory, or BookOrbit audio; CWA, Grimmory, BookOrbit, Kavita, ABS, or local ebook sources; Storyteller links; ebook-only flows; and reader document fixes.
 - **Batch Match** for queue-based review and bulk linking.
 - **Library Suggestions** for background scanning, review, and queue building.

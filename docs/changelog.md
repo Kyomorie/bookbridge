@@ -4,6 +4,44 @@ For the full history of changes, please refer to the **[GitHub Releases](https:/
 
 ---
 
+## [7.5.0]
+
+Kavita joins as a full ebook source and reading client, library cards can show you the text at your current position, and the dashboard learned to sort by when you added a book. This release also carries a **security fix that matters for multi-user installs** — see below.
+
+### Security
+
+- **Forge and Match now confine a local ebook source to your configured library.** BookBridge did not fully verify that a selected *Local File* ebook stayed inside your configured ebook directories, so a signed-in account could cause the server to read a file from outside them. Local sources are now restricted to `BOOKS_DIR`, `EXTRA_EBOOK_DIRS`, and the EPUB cache; anything outside those roots is refused and logged. **Upgrade promptly if other people have accounts on your install.** Affects 7.4.2 and earlier. Reported privately by external security review; no exploitation in the wild is known.
+
+### What's New
+
+- **Kavita is a first-class ebook source and reading client.** Search and import Kavita EPUBs, download them to managed KOReader devices, match by KOReader hash, sync progress both ways, manage a collection for shelf-watch and Storyteller workflows, proxy covers, and use Kavita books for tracker metadata. Progress rides Kavita's native KOReader endpoint. Credentials and library/collection choices are per-reader.
+- **See the text at your current position.** *Show position* beside the progress bar opens a short excerpt with a marker where you are synced to, using the exact XPath or CFI when your reader saved one and labelling a percentage-only estimate as approximate. Contributed by [@Kyomorie](https://github.com/Kyomorie) in #397 (#394).
+- **Sort your library by Date Added**, newest or oldest first. A series sorts by its most recently added book.
+- **Searching for a book you have not added yet now leads somewhere** — the library search offers to look for that title in your libraries, carrying your text into Add Book.
+- **The Add Book tab shows how many books are queued.**
+- **Add Book and Suggestions show each edition's language** as a badge when the provider supplies it. Contributed by [@Kyomorie](https://github.com/Kyomorie) in #405.
+- **Suggestions names the service each audiobook came from.** Contributed by [@Marcelwalter](https://github.com/Marcelwalter) in #407.
+
+### Fixed
+
+- **BridgeSync's *Test Connection* tells you when you have pointed it at the wrong server (#403).** It only checked that the address accepted your login, which any KoSync-compatible server does. It now asks the server to identify itself. Plugin updated to **0.6.6**.
+- **The source badge on the Add Book page is visible, and leads the card (#381).** The card no longer locks itself to a square and slice off whatever does not fit.
+- **A KoSync timing setting you change takes effect without a restart.** Contributed by [@Kyomorie](https://github.com/Kyomorie) in #404.
+
+### Changed
+
+- **The Settings page opens immediately again** — it was reading every stored alignment map just to count them.
+- **The dashboard no longer re-checks every cover on each visit.**
+- **Storyteller edition creation is clearly separated from ordinary matching:** **Create Storyteller Edition & Match All** and **Create Storyteller Edition Only**, with only **Match All** shown when the reader has no Storyteller account.
+
+### Operational Notes
+
+- One database migration (a covering index behind the Settings fix); it applies automatically on boot.
+- Kavita is off until configured, and needs a non-expiring auth key per reader from **User Settings -> 3rd Party Clients**.
+- If your ebooks live outside `BOOKS_DIR`, list those folders in `EXTRA_EBOOK_DIRS` — a local file outside your configured roots is now refused rather than silently read.
+
+---
+
 ## [7.4.2]
 
 A hotfix for the BridgeSync KOReader plugin. Every network operation in plugin versions 0.6.1 through 0.6.4 ran itself twice over — it crashed KOReader outright on Kindle, and on Android it made Test Connection, plugin update checks, book sync, stats sync and highlight sync fail no matter how correct your settings were. Nothing on the server changed.

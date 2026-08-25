@@ -531,11 +531,28 @@ Found under **Settings -> System**.
 | Log Level | `LOG_LEVEL` | `INFO` | Application log level. |
 | Data Directory | `DATA_DIR` | `/data` | Database, cache, and working state. |
 | Books Directory | `BOOKS_DIR` | `/books` | Local ebook library path inside the container. |
+| Extra Ebook Directories | `EXTRA_EBOOK_DIRS` | empty | Additional library folders to search, for multi-library setups where some ebooks live outside `BOOKS_DIR`. Comma- or newline-separated container paths. |
 | Audiobooks Directory | `AUDIOBOOKS_DIR` | `/audiobooks` | Optional local audiobook path. |
 | Storyteller Library Directory | `STORYTELLER_LIBRARY_DIR` | `/storyteller_library` | Optional local Storyteller library path for fallback/download helpers. |
 | Storyteller Assets Directory | `STORYTELLER_ASSETS_DIR` | empty | Optional transcript asset root. |
 | Storyteller Upload Chunk Size | `STORYTELLER_UPLOAD_CHUNK_SIZE` | `5242880` | TUS upload chunk size in bytes for direct Storyteller uploads. |
 | Ebook Cache Size | `EBOOK_CACHE_SIZE` | `3` | Parsed-ebook cache size. |
+
+### Local ebook sources are confined to these directories
+
+`BOOKS_DIR`, everything listed in `EXTRA_EBOOK_DIRS`, and the internal EPUB cache
+are the only places BookBridge will read a **Local File** ebook source from. A
+path outside them — including one reached through `..` or a symlink pointing out
+of a library folder — is refused and logged, and directories and non-regular
+files are refused as well.
+
+This is a security boundary, not a convenience filter: it keeps a signed-in
+account from reaching files outside your ebook directories. It matters most on
+multi-user installs.
+
+The practical consequence: **if some of your ebooks live outside `BOOKS_DIR`, add
+those folders to `EXTRA_EBOOK_DIRS`.** Mount them read-only where you can — a
+library BookBridge only reads from does not need write access.
 
 ---
 
