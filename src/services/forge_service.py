@@ -111,6 +111,16 @@ class ForgeService:
                 raw,
             )
             return None
+        # A directory or special file inside a root is still not a stageable source.
+        # A missing path is left to the caller's own exists() check so its
+        # "Local file not found" diagnostic is preserved.
+        if safe_path.exists() and not safe_path.is_file():
+            logger.warning(
+                "%s: refused local source that is not a regular file: %s",
+                context,
+                raw,
+            )
+            return None
         return safe_path
 
     @staticmethod

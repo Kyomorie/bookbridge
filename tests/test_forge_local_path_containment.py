@@ -208,3 +208,69 @@ class TestNonLocalSourcesUnaffected(unittest.TestCase):
                 {"source": "CWA", "path": "https://cwa.example/download/12"}, "Forge"
             )
         )
+
+
+class TestReportedEdgeCases(unittest.TestCase):
+    """The reporter's remaining cases: symlink escape and non-regular files."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.books = self.tmp / "books"
+        self.books.mkdir()
+        self.outside = self.tmp / "outside"
+        self.outside.mkdir()
+        self.secret = self.outside / "database.db"
+        self.secret.write_bytes(b"SECRET")
+        self._env = {k: os.environ.get(k) for k in ("BOOKS_DIR", "DATA_DIR", "EXTRA_EBOOK_DIRS")}
+        os.environ["BOOKS_DIR"] = str(self.books)
+        os.environ["DATA_DIR"] = str(self.tmp / "data")
+        os.environ.pop("EXTRA_EBOOK_DIRS", None)
+        self.service = ForgeService(
+            database_service=MagicMock(), abs_client=MagicMock(),
+            booklore_client=MagicMock(), storyteller_client=MagicMock(),
+            library_service=MagicMock(), ebook_parser=MagicMock(),
+            transcriber=MagicMock(), alignment_service=MagicMock(),
+            bookorbit_client=MagicMock(),
+        )
+
+    def tearDown(self):
+        for key, value in self._env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _make_symlink(self, link, target):
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlinks unavailable in this environment: {exc}")
+
+    def test_symlink_inside_root_pointing_outside_is_rejected(self):
+        link = self.books / "innocent.epub"
+        self._make_symlink(link, self.secret)
+        self.assertIsNone(safe_library_path(str(link)))
+        self.assertIsNone(self.service._local_source_path({"path": str(link)}, "Forge"))
+
+    def test_symlink_inside_root_pointing_inside_is_allowed(self):
+        real = self.books / "real.epub"
+        real.write_bytes(b"EPUB")
+        link = self.books / "alias.epub"
+        self._make_symlink(link, real)
+        self.assertEqual(safe_library_path(str(link)), real.resolve())
+
+    def test_directory_inside_root_is_rejected_as_a_source(self):
+        subdir = self.books / "a_folder"
+        subdir.mkdir()
+        # Contained, but not a stageable file.
+        self.assertIsNotNone(safe_library_path(str(subdir)))
+        self.assertIsNone(self.service._local_source_path({"path": str(subdir)}, "Forge"))
+
+    def test_missing_path_still_reaches_the_callers_not_found_diagnostic(self):
+        """A contained-but-absent path is returned so the existing log line stands."""
+        missing = self.books / "gone.epub"
+        self.assertEqual(
+            self.service._local_source_path({"path": str(missing)}, "Forge"),
+            missing.resolve(),
+        )
