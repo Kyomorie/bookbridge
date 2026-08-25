@@ -6,7 +6,7 @@ name: Python application
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "ci-reading-position-heading-breaks" ]
   pull_request:
     branches: [ "main" ]
 
