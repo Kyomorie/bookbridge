@@ -55,10 +55,20 @@
         document.querySelectorAll('.book-card[data-abs-id]').forEach(createPreviewUi);
     }
 
+    function syncGridPreviewLayout(button) {
+        const grid = button.closest('.book-grid');
+        if (!grid) return;
+        const hasExpandedPreview = Boolean(
+            grid.querySelector('[data-position-preview-toggle][aria-expanded="true"]')
+        );
+        grid.classList.toggle('position-preview-expanded', hasExpandedPreview);
+    }
+
     function setExpanded(button, panel, expanded) {
         button.setAttribute('aria-expanded', expanded ? 'true' : 'false');
         button.textContent = expanded ? 'Hide position' : 'Show position';
         panel.hidden = !expanded;
+        syncGridPreviewLayout(button);
     }
 
     function setLoading(panel) {

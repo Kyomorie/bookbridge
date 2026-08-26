@@ -38,6 +38,17 @@ def test_preview_script_renders_book_text_as_text_only():
     assert "console.error" not in script
 
 
+def test_expanded_preview_only_disables_grid_stretch_while_needed():
+    script = (ROOT / "static" / "js" / "reading-position-preview.js").read_text(encoding="utf-8")
+    css = (ROOT / "static" / "css" / "reading-position-preview.css").read_text(encoding="utf-8")
+
+    assert "button.closest('.book-grid')" in script
+    assert "[data-position-preview-toggle][aria-expanded=\"true\"]" in script
+    assert "grid.classList.toggle('position-preview-expanded', hasExpandedPreview)" in script
+    assert ".book-grid.position-preview-expanded" in css
+    assert "align-items: start" in css
+
+
 def test_preview_css_uses_existing_bookbridge_tokens_and_has_mobile_layout():
     css = (ROOT / "static" / "css" / "reading-position-preview.css").read_text(encoding="utf-8")
 
