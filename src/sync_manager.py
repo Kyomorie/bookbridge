@@ -255,6 +255,32 @@ class SyncManager:
             return current
         return original or current
 
+    def _repair_storyteller_epub(self, filename: str) -> None:
+        """Re-strip a cached ReadAloud artifact that still carries narration audio.
+
+        Installs that matched a book before #414 have a full multi-GB EPUB sitting at
+        the cache path, and ``extract_text_and_map`` loads the whole archive -- which
+        is what OOM-killed the container. The download-time guard cannot reach those:
+        every resolver short-circuits on the file already existing, so the repair has
+        to happen where a fat artifact is *found*, not where one is missing.
+
+        At most one attempt per artifact per cycle; on an already-slim file the check
+        is a zip central-directory read and nothing is rewritten.
+        """
+        client = getattr(self, "storyteller_client", None)
+        if not filename or not client:
+            return
+        if filename in self._storyteller_epub_ensure_attempted:
+            return
+        self._storyteller_epub_ensure_attempted.add(filename)
+        path = self._get_local_epub(filename)
+        if not path:
+            return
+        try:
+            client.strip_cached_audio_in_place(path)
+        except Exception as e:
+            logger.debug(f"Storyteller cached EPUB repair skipped for '{filename}': {e}")
+
     def _get_storyteller_ebook_filename(self, book: Book | None) -> str | None:
         """Preferred EPUB for Storyteller href/fragment operations."""
         if not book:
@@ -262,12 +288,14 @@ class SyncManager:
 
         current = getattr(book, "ebook_filename", None)
         if current and str(current).startswith("storyteller_") and self._get_local_epub(current):
+            self._repair_storyteller_epub(current)
             return current
 
         storyteller_uuid = getattr(book, "storyteller_uuid", None)
         if storyteller_uuid:
             candidate = f"storyteller_{storyteller_uuid}.epub"
             if self._get_local_epub(candidate):
+                self._repair_storyteller_epub(candidate)
                 return candidate
 
             # Materialize a slim (audio-stripped) ReadAloud EPUB so Storyteller
