@@ -334,6 +334,7 @@ class SyncManager:
                         logger.warning(f"⚠️ Completion propagation failed for '{client_name}': mark_finished returned False")
                 else:
                     result = client.update_progress(book, request)
+                    self._record_bridge_write(client_name, abs_id, result)
                     if getattr(result, 'success', False):
                         self._persist_state_snapshot(book, client_name, {'pct': 1.0}, current_time)
                         logger.info(f"🏁 '{abs_id}' '{title_snip}' completion propagated to '{client_name}'")
@@ -406,6 +407,60 @@ class SyncManager:
             return float(os.environ.get("SYNC_ROLLBACK_VETO_SECONDS", "600") or 600)
         except (TypeError, ValueError):
             return 600.0
+
+    @staticmethod
+    def _own_writeback_window_seconds() -> int:
+        """How long a recorded own-write stays usable as evidence that a peer's
+        position is BookBridge's own echo.
+
+        A follower write is only observed on the NEXT cycle, so the tracker's 60s
+        default is far too short at any realistic cadence. Sized from the sync
+        period with slack, and capped at the tracker's own 3600s retention horizon
+        beyond which no marker survives anyway. The percentage match, not this
+        window, is what keeps the exclusion honest: a peer the user actually moved
+        no longer matches the value we wrote."""
+        try:
+            period_mins = float(os.environ.get("SYNC_PERIOD_MINS", "5") or 5)
+        except (TypeError, ValueError):
+            period_mins = 5.0
+        window = period_mins * 120.0 + 60.0
+        return int(max(600.0, min(window, 3600.0)))
+
+    def _peer_position_is_own_writeback(
+        self, abs_id: str, client_name: str, observed_pct: float, margin: float
+    ) -> bool:
+        """Whether a peer's current position is the echo of BookBridge's own write.
+
+        The rollback veto reads a peer's fresh service timestamp as evidence the
+        user is active there. That inference fails for a client BookBridge itself
+        writes to every cycle: the service restamps on write, so the peer we just
+        pushed to always looks newest and vetoes a genuine rewind forever (#413).
+        A peer stops counting as evidence only when a recorded own-write — scoped
+        to this user, or to the unscoped namespace a globally-triggered sync
+        records under — still matches the value the service now reports. A missing,
+        expired, percentage-less, mismatched or wrong-user marker leaves the veto
+        exactly as it was."""
+        try:
+            from src.services.write_tracker import GLOBAL_USER, get_recent_write
+        except ImportError:
+            return False
+
+        window = self._own_writeback_window_seconds()
+        recent = get_recent_write(client_name, abs_id, suppression_window=window)
+        if recent is None:
+            recent = get_recent_write(
+                client_name, abs_id, suppression_window=window, user_id=GLOBAL_USER
+            )
+        if not recent:
+            return False
+
+        written_pct = recent.get('pct')
+        if written_pct is None or observed_pct is None:
+            return False
+        try:
+            return abs(float(written_pct) - float(observed_pct)) <= margin
+        except (TypeError, ValueError):
+            return False
 
     def _build_text_anchors(self, full_text: str, char_offset: int):
         if not full_text:
@@ -2820,6 +2875,16 @@ class SyncManager:
                         continue
                     if (other_pct > candidate_pct + regression_margin
                             and (other_ts - candidate_ts) > veto_tolerance):
+                        if self._peer_position_is_own_writeback(
+                            abs_id, other_name, other_pct, regression_margin
+                        ):
+                            logger.info(
+                                f"🪞 '{abs_id}' '{title_snip}' Rollback veto skipped: "
+                                f"'{other_name}' ({other_pct:.2%}) holds BookBridge's own "
+                                f"write-back, not user movement — it cannot veto "
+                                f"'{client_name}' ({candidate_pct:.2%})"
+                            )
+                            continue
                         logger.info(
                             f"🛑 '{abs_id}' '{title_snip}' Rollback veto: '{client_name}' "
                             f"({candidate_pct:.2%}) is behind '{other_name}' ({other_pct:.2%}) "
@@ -3131,6 +3196,29 @@ class SyncManager:
                 f"'{abs_id}' '{title_snip}' CFI hydration failed: {exc}", exc_info=True
             )
             return None
+
+    def _record_bridge_write(self, client_name: str, abs_id: str, result) -> None:
+        """Record that BookBridge itself produced this client's current position.
+
+        A later cycle reads this client back and sees a freshly stamped position;
+        the marker (client, book, written percentage) is how it tells the echo of
+        our own write from genuine user movement. The percentage comes from the
+        client's own axis via SyncResult.updated_state['pct'], so audio and ebook
+        clients each record a value comparable with what they will report next."""
+        try:
+            if not result or not getattr(result, 'success', False):
+                return
+            updated_state = getattr(result, 'updated_state', None)
+            pct = updated_state.get('pct') if isinstance(updated_state, dict) else None
+            if isinstance(pct, bool) or not isinstance(pct, (int, float)):
+                pct = None
+            from src.services.write_tracker import record_write
+            record_write(client_name, abs_id, pct)
+        except Exception as e:
+            logger.debug(
+                f"Could not record own-write marker for '{client_name}'/'{abs_id}': {e}",
+                exc_info=True,
+            )
 
     def _persist_state_snapshot(self, book, client_name: str, state_current: dict, current_time: float) -> None:
         """Save a single client's current position to the DB without running a
@@ -3840,6 +3928,7 @@ class SyncManager:
                         )
                         result = client.update_progress(book, request)
                         results[client_name] = result
+                        self._record_bridge_write(client_name, abs_id, result)
                     except Exception as e:
                         logger.warning(f"⚠️ Failed to update '{client_name}': {e}", exc_info=True)
                         results[client_name] = SyncResult(None, False)
@@ -4337,6 +4426,7 @@ class SyncManager:
                         continue
                     try:
                         result = client.update_progress(book, request)
+                        self._record_bridge_write(client_name, book.abs_id, result)
                         reset_results[client_name] = {
                             'success': result.success,
                             'message': 'Reset to 0%' if result.success else 'Failed to reset'

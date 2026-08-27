@@ -2654,12 +2654,15 @@
             let refreshPaused = false;
 
             function refreshDashboard() {
-                if (refreshPaused) {
+                // A hidden tab redraws nothing, so skip the round trip entirely.
+                if (refreshPaused || document.hidden) {
                     setTimeout(refreshDashboard, 30000);
                     return;
                 }
 
-                fetch('/api/status')
+                // Compact position feed, not the full dashboard payload: this
+                // handler only redraws progress numbers and the synced line.
+                fetch('/api/status/progress')
                     .then(r => r.json())
                     .then(data => {
                         if (!data || !data.mappings) return;

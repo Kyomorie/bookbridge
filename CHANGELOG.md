@@ -8,6 +8,29 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Rewinding a book sticks.** Move a position backward — the sleep timer ran on past
+  where you actually fell asleep, or you jumped back to re-read a chapter — and within
+  a cycle or two BookBridge would drag it forward again to where it had been. The
+  cause was BookBridge mistaking its own work for yours: every cycle it writes the
+  agreed position to each of your other services, each of those services stamps that
+  write as "just updated", and on the next cycle the service BookBridge had only just
+  written to looked like the most recently used one in your library. That fresher
+  timestamp then blocked your rewind, forever — the gap grew with the clock, so no
+  tolerance setting could ever outrun it. BookBridge now recognises the echo of its
+  own write and refuses to let it overrule you, while a position you genuinely moved
+  still carries full weight. Clearing a book's progress is no longer the only way out.
+  Rewinds already overwritten cannot be recovered — reapply the one you wanted once
+  after upgrading and it will hold. (#413)
+- **An open dashboard no longer keeps a CPU core busy.** The library page refreshes
+  itself every 30 seconds, and that refresh was rebuilding the entire dashboard for
+  every book on it — including the out-of-sync calculation, which reads a whole
+  audiobook's alignment data per book to compare an audio position against an ebook
+  one. On a large library that was hundreds of megabytes read and re-read every half
+  minute, for numbers the refresh does not even redraw; people with the page left open
+  saw a core pegged and their NAS fans spin up on a loop. The refresh now asks only
+  for the figures it actually updates, the out-of-sync calculation is skipped
+  entirely when a book has only one service reporting, its result is remembered until
+  a position actually moves, and a dashboard in a background tab stops polling. (#412)
 - **Opening a position preview no longer stretches the cards beside it.** Expanding
   the preview on one library card grew every other card in the same row to match it.
   The row now keeps its natural heights while a preview is open and returns to

@@ -38,6 +38,7 @@ from src.utils.user_config import global_fallback_allowed as _global_fallback_al
 
 from src.utils.config_loader import ConfigLoader, KNOWN_SETTING_KEYS, env_truthy
 from src.utils.cache_paths import safe_cache_path, safe_library_path, is_plain_basename
+from src.utils.ebook_utils import LRUCache
 from src.utils.logging_utils import memory_log_handler, LOG_PATH
 from src.utils.logging_utils import sanitize_log_data
 from src.utils.logging_utils import get_persistent_condition_logger
@@ -4488,8 +4489,19 @@ def _dashboard_text_axis_pct(client_name, state, mapping):
     return text_fraction * 100.0
 
 
-def _compute_dashboard_sync_warning_pct(mapping, integrations):
-    progress_values = []
+# Drift is computed for every visible book on every dashboard render, and an
+# audio client's conversion loads that book's alignment map — a 10-15MB JSON blob
+# against a 3-entry cache. The result only moves when a position moves, so it is
+# memoized on the exact inputs that produced it (issue #412).
+_DASHBOARD_SYNC_WARNING_CACHE = LRUCache(capacity=512)
+
+
+def _dashboard_sync_warning_candidates(mapping, integrations):
+    """The (client, state) pairs eligible for the drift comparison.
+
+    Split out from the computation so callers can count the candidates — and bail
+    — before paying for any audio-to-text axis conversion."""
+    candidates = []
     states = mapping.get('states', {})
 
     for client_name in _get_dashboard_sync_warning_clients(mapping, integrations):
@@ -4499,6 +4511,42 @@ def _compute_dashboard_sync_warning_pct(mapping, integrations):
         raw = state.get('percentage')
         if raw is None or raw <= 0:
             continue
+        candidates.append((client_name, state))
+
+    return candidates
+
+
+def _dashboard_sync_warning_cache_key(mapping, candidates):
+    """Fingerprint the inputs the drift number is derived from.
+
+    Anything that can change the answer belongs here: the book, the set of
+    candidate clients, each one's reported position, and the duration used as the
+    timestamp fallback. Identical fingerprint, identical result."""
+    return (
+        mapping.get('abs_id'),
+        mapping.get('duration') or 0,
+        tuple(
+            (name, state.get('percentage'), state.get('timestamp'))
+            for name, state in candidates
+        ),
+    )
+
+
+def _compute_dashboard_sync_warning_pct(mapping, integrations):
+    candidates = _dashboard_sync_warning_candidates(mapping, integrations)
+
+    # One reporting client cannot drift from anything. Returning here keeps a
+    # single-integration install off the alignment path entirely.
+    if len(candidates) < 2:
+        return 0.0
+
+    cache_key = _dashboard_sync_warning_cache_key(mapping, candidates)
+    cached = _DASHBOARD_SYNC_WARNING_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    progress_values = []
+    for client_name, state in candidates:
         value = _dashboard_text_axis_pct(client_name, state, mapping)
         if value is None:
             continue
@@ -4507,7 +4555,9 @@ def _compute_dashboard_sync_warning_pct(mapping, integrations):
     if len(progress_values) < 2:
         return 0.0
 
-    return round(max(progress_values) - min(progress_values), 1)
+    warning_pct = round(max(progress_values) - min(progress_values), 1)
+    _DASHBOARD_SYNC_WARNING_CACHE.put(cache_key, warning_pct)
+    return warning_pct
 
 
 def _shelf_watch_clients_for(meta: dict):
@@ -9718,6 +9768,63 @@ def api_status():
     return jsonify({"mappings": mappings})
 
 
+def _build_dashboard_progress_rows(books, all_states):
+    """The per-book fields the dashboard's periodic refresh actually redraws.
+
+    Deliberately derived from Book and State rows alone: no display-metadata
+    resolution, no per-book service lookups, and above all no alignment map —
+    which the full dashboard build loads per book to compute the drift badge
+    (issue #412)."""
+    states_by_book = _group_dashboard_states_by_book(all_states)
+    rows = []
+
+    for book in books or []:
+        abs_id = getattr(book, "abs_id", None)
+        if not abs_id:
+            continue
+
+        states = {}
+        latest_update_time = 0
+        max_progress = 0.0
+        for state in states_by_book.get(abs_id, []):
+            if state.last_updated and state.last_updated > latest_update_time:
+                latest_update_time = state.last_updated
+            pct_val = round(state.percentage * 100, 1) if state.percentage is not None else 0
+            states[state.client_name] = {
+                "timestamp": state.timestamp or 0,
+                "percentage": pct_val,
+            }
+            if state.percentage is not None:
+                max_progress = max(max_progress, pct_val)
+
+        rows.append({
+            "abs_id": abs_id,
+            "unified_progress": min(max_progress, 100.0),
+            "last_sync": _format_dashboard_last_sync(latest_update_time),
+            "last_sync_unix": latest_update_time,
+            "states": states,
+        })
+
+    return rows
+
+
+def api_status_progress():
+    """Compact position feed for the dashboard's periodic refresh.
+
+    The refresh only redraws progress numbers and the 'last synced' line, but
+    /api/status rebuilds the whole dashboard payload for every visible book —
+    including the per-book alignment lookups behind the drift badge, which the
+    refresh never reads. Serving those few fields from the database alone stops a
+    dashboard left open from pegging a core every 30 seconds (issue #412)."""
+    user = current_user()
+    user_id = user.id if user else None
+    books = database_service.get_all_books(user_id=user_id)
+    all_states = database_service.get_all_states(user_id=user_id)
+    books = _dashboard_visible_books_for_user(books, user)
+
+    return jsonify({"mappings": _build_dashboard_progress_rows(books, all_states)})
+
+
 def logs_view():
     """Display logs frontend with filtering capabilities.
 
@@ -11668,6 +11775,9 @@ def create_app(test_container=None):
     if test_container is not None:
         global _BACKGROUND_TASKS_SYNCHRONOUS
         _BACKGROUND_TASKS_SYNCHRONOUS = True
+    # The drift memo is process-scoped and keyed on stored positions; a new app
+    # instance is a new process's worth of state, so it starts empty.
+    _DASHBOARD_SYNC_WARNING_CACHE.clear()
     STATIC_DIR = os.environ.get('STATIC_DIR', '/app/static')
     TEMPLATE_DIR = os.environ.get('TEMPLATE_DIR', '/app/templates')
     app = Flask(__name__, static_folder=STATIC_DIR, static_url_path='/static', template_folder=TEMPLATE_DIR)
@@ -11778,6 +11888,7 @@ def create_app(test_container=None):
     app.add_url_rule('/api/health', 'api_health', api_health)
     app.add_url_rule('/api/restart', 'api_restart', api_restart, methods=['POST'])
     app.add_url_rule('/api/status', 'api_status', api_status)
+    app.add_url_rule('/api/status/progress', 'api_status_progress', api_status_progress)
     app.add_url_rule('/stats', 'stats_view', stats_view)
     app.add_url_rule('/api/stats', 'api_stats', api_stats)
     app.add_url_rule('/api/stats/reading-day', 'api_stats_reading_day', api_stats_reading_day)
