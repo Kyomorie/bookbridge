@@ -8,6 +8,10 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Expanding a series no longer stretches the cards beside it.** The books inside
+  the series can grow to their natural height without making unrelated library cards
+  in the same row grow with them, and the normal grid returns when the series closes.
+
 - **Rewinding a book sticks.** Move a position backward — the sleep timer ran on past
   where you actually fell asleep, or you jumped back to re-read a chapter — and within
   a cycle or two BookBridge would drag it forward again to where it had been. The

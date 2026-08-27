@@ -31,6 +31,21 @@ def _make_mapping(abs_id="test", series_name=None, series_sequence=None,
     }
 
 
+class TestSeriesGroupingLayout(unittest.TestCase):
+
+    def test_expanded_visible_series_does_not_stretch_neighboring_cards(self):
+        source = (Path(__file__).parent.parent / "templates" / "index.html").read_text(
+            encoding="utf-8"
+        )
+        selector = (
+            "body:not(.series-grouping-off) "
+            ".book-grid:has(> .series-group.expanded:not(.hidden))"
+        )
+
+        start = source.index(selector)
+        self.assertIn("align-items: start", source[start:source.index("}", start)])
+
+
 class TestSeriesGrouping(unittest.TestCase):
 
     def setUp(self):

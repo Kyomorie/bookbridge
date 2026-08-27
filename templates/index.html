@@ -1671,6 +1671,10 @@
         /* Series Group */
         .series-group { display: flex; flex-direction: column; }
 
+        body:not(.series-grouping-off) .book-grid:has(> .series-group.expanded:not(.hidden)) {
+            align-items: start;
+        }
+
         .series-header {
             display: flex;
             align-items: center;
