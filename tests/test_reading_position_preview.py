@@ -246,9 +246,13 @@ def test_duplicate_heading_text_is_left_in_plain_flow_when_mapping_is_ambiguous(
 
 
 def test_all_caps_normal_paragraph_is_not_guessed_as_a_heading():
-    text = "Before. THIS IS EMPHASIS NOT A HEADING. After."
+    # A REAL <h1> is present so the boundary mechanism is actually engaged: the
+    # point of this test is that only the marked-up heading breaks, never the
+    # all-caps prose beside it.  Without a real heading in the fixture nothing
+    # here could ever produce a break and the test would pass vacuously.
+    text = "REAL HEADING Before. THIS IS EMPHASIS NOT A HEADING. After."
     html = (
-        "<html><body><p>Before.</p>"
+        "<html><body><h1>REAL HEADING</h1><p>Before.</p>"
         "<p>THIS IS EMPHASIS NOT A HEADING.</p><p>After.</p></body></html>"
     )
     parser = _heading_parser(html, text)
@@ -262,7 +266,8 @@ def test_all_caps_normal_paragraph_is_not_guessed_as_a_heading():
         context_chars=300,
     )
 
-    assert "\n" not in result["before"]
+    assert result["before"].startswith("REAL HEADING\n")
+    assert result["before"].count("\n") == 1
     assert "\n" not in result["after"]
 
 
@@ -299,3 +304,57 @@ def test_missing_spine_markup_keeps_existing_plain_excerpt_behavior():
 
     assert result["before"] == "Before. CHAPTER TITLE "
     assert result["after"] == "After."
+
+
+def test_only_spines_near_the_marker_are_parsed_for_headings(monkeypatch):
+    """Heading detection must not re-parse the whole book for a 300-char window.
+
+    A heading only reaches the excerpt when it falls entirely inside a rendered
+    segment, so parsing distant spines is pure cost: on real library EPUBs the
+    unbounded scan measured 53-138 ms per on-demand preview request.
+    """
+    import src.services.reading_position_preview as module
+
+    texts = []
+    spine_map = []
+    cursor = 0
+    for n in range(12):
+        body = f"Body of chapter {n}. " + "filler sentence here. " * 10
+        chapter_text = f"Chapter {n} {body.strip()}"
+        spine_map.append({
+            "start": cursor,
+            "end": cursor + len(chapter_text),
+            "content": (
+                f"<html><body><h1>Chapter {n}</h1>"
+                f"<p>{body.strip()}</p></body></html>"
+            ),
+        })
+        texts.append(chapter_text)
+        cursor += len(chapter_text) + 1
+
+    full_text = " ".join(texts)
+    parser = FakeParser(text=full_text, spine_map=spine_map)
+    parser.xpath_result = full_text.index("Body of chapter 0") + 5
+
+    real_soup = module.BeautifulSoup
+    parsed = []
+
+    def counting_soup(markup, *args, **kwargs):
+        parsed.append(str(markup))
+        return real_soup(markup, *args, **kwargs)
+
+    monkeypatch.setattr(module, "BeautifulSoup", counting_soup)
+
+    result = build_reading_position_preview(
+        book=_book(),
+        states=[_state(xpath="/body/p[1]/text().0")],
+        last_leader="kosync",
+        ebook_parser=parser,
+        context_chars=300,
+    )
+
+    # The heading still renders, so the window did not simply skip everything.
+    assert result["before"].startswith("Chapter 0\n")
+    # Only the spines overlapping the excerpt window may be parsed.
+    assert len(parsed) <= 2, f"parsed {len(parsed)} of {len(spine_map)} spines"
+    assert not any(f"<h1>Chapter {n}</h1>" in "".join(parsed) for n in range(3, 12))

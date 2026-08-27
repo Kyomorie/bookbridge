@@ -55,14 +55,26 @@
         document.querySelectorAll('.book-card[data-abs-id]').forEach(createPreviewUi);
     }
 
-    function syncGridPreviewLayout(button) {
-        const grid = button.closest('.book-grid');
+    function applyGridPreviewLayout(grid) {
         if (!grid) return;
         const hasExpandedPreview = Boolean(
             grid.querySelector('[data-position-preview-toggle][aria-expanded="true"]')
         );
         grid.classList.toggle('position-preview-expanded', hasExpandedPreview);
     }
+
+    function syncGridPreviewLayout(button) {
+        applyGridPreviewLayout(button.closest('.book-grid'));
+    }
+
+    // Series grouping moves .book-card nodes between grids at runtime, which
+    // otherwise strands `position-preview-expanded` on the grid a card just left
+    // and denies it to the grid the card just joined.
+    function syncAllGridPreviewLayouts() {
+        document.querySelectorAll('.book-grid').forEach(applyGridPreviewLayout);
+    }
+
+    window.bookbridgeSyncPreviewLayout = syncAllGridPreviewLayouts;
 
     function setExpanded(button, panel, expanded) {
         button.setAttribute('aria-expanded', expanded ? 'true' : 'false');

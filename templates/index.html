@@ -2551,6 +2551,9 @@
                 if (sortSelect) sortBooks(sortSelect.value, sortState[sortSelect.value]);
                 if (typeof filterBooks === 'function') filterBooks();
                 updateDashboardSectionVisibility();
+                if (typeof window.bookbridgeSyncPreviewLayout === 'function') {
+                    window.bookbridgeSyncPreviewLayout();
+                }
             }
 
             // --- Event Listeners ---

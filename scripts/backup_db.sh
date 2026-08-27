@@ -25,8 +25,12 @@ fi
 mkdir -p "$BACKUP_DIR"
 
 TIMESTAMP="$(date +"%Y%m%d_%H%M%S")"
-BACKUP_FILE="${BACKUP_DIR}/abs_kosync_${TIMESTAMP}.db"
-KEY_BACKUP_FILE="${BACKUP_DIR}/abs_kosync_${TIMESTAMP}.secret.key"
+# New snapshots carry the BookBridge name.  Snapshots an existing install already
+# took are named abs_kosync_<timestamp>.db; those are still perfectly good backups
+# and restore by exactly the same steps, so they are never renamed or cleaned up
+# here.  A backup directory may legitimately hold both prefixes.
+BACKUP_FILE="${BACKUP_DIR}/bookbridge_${TIMESTAMP}.db"
+KEY_BACKUP_FILE="${BACKUP_DIR}/bookbridge_${TIMESTAMP}.secret.key"
 TMP_BACKUP_FILE="${BACKUP_FILE}.tmp.$$"
 TMP_KEY_BACKUP_FILE="${KEY_BACKUP_FILE}.tmp.$$"
 
@@ -55,6 +59,10 @@ with sqlite3.connect(source_uri, uri=True, timeout=60) as source:
         if result != ("ok",):
             raise RuntimeError(f"SQLite integrity_check failed: {result!r}")
 PY
+
+# The snapshot carries every stored credential in encrypted form, so it gets the
+# same restrictive mode as the key it sits beside rather than the default umask.
+chmod 600 "$TMP_BACKUP_FILE" 2>/dev/null || true
 
 key_message=""
 if [ -n "${BOOKBRIDGE_SECRET_KEY:-}" ]; then

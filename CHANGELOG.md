@@ -8,6 +8,11 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Opening a position preview no longer stretches the cards beside it.** Expanding
+  the preview on one library card grew every other card in the same row to match it.
+  The row now keeps its natural heights while a preview is open and returns to
+  normal once you close the last one.
+  Contributed by [@Kyomorie](https://github.com/Kyomorie) in #411.
 - **Your Kobo no longer reverts the position BookBridge just synced.** A Kobo
   navigates by an internal bookmark, not by a percentage — so when BookBridge could
   only work out *how far* through a book you were and not *where* that was in the
@@ -28,6 +33,24 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **Chapter headings now stand apart in the reading-position preview.** The preview
+  flattened every book into one unbroken run of text, so a chapter or section title
+  read as though it were part of the sentence beside it. Real `<h1>`–`<h6>` headings
+  from the book now get a single line break before and after — no bold text, boxes,
+  or colours, and the position marker is still the only thing highlighted. Where a
+  book's markup is ambiguous the preview is left exactly as it was.
+  Contributed by [@Kyomorie](https://github.com/Kyomorie) in #409.
+- **A Backup & Restore guide, and a backup helper that is safe to run while
+  BookBridge is running.** The bundled helper used to copy `database.db` straight
+  off disk, which can miss data that SQLite is still holding in its write-ahead log.
+  It now takes a proper online snapshot, verifies it before keeping it, and saves
+  the credential key beside it so a restored database can still decrypt your logins.
+  The new guide explains what actually needs backing up — including the completed
+  Whisper transcript cache, so a re-alignment never means re-transcribing an
+  audiobook. New snapshots are named `bookbridge_<timestamp>.db`; snapshots you
+  already have are named `abs_kosync_<timestamp>.db`, and they remain valid and
+  restore exactly the same way — nothing renames or removes them.
+  Contributed by [@Kyomorie](https://github.com/Kyomorie) in #410 (#343).
 - **New CWA setting: "Write Kobo span bookmarks"** (on by default). BookBridge reads
   the KEPUB that Calibre-Web Automated serves your device and writes the matching
   position marker into the Kobo reading state. Turn it off to send percentage only

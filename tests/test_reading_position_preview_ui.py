@@ -58,3 +58,20 @@ def test_preview_css_uses_existing_bookbridge_tokens_and_has_mobile_layout():
     assert ':focus-visible' in css
     assert 'white-space: pre-line' in css
     assert '@media (max-width: 480px)' in css
+
+
+def test_grid_layout_is_resynced_when_series_grouping_moves_cards():
+    """Series grouping relocates cards, so the grid class must be recomputed.
+
+    `setExpanded` only ever fixes up the grid the button currently sits in.  When
+    `applySeriesGrouping` moves an expanded card to another grid, the grid it left
+    keeps `position-preview-expanded` and the grid it joined never gets it.
+    """
+    script = (ROOT / "static" / "js" / "reading-position-preview.js").read_text(encoding="utf-8")
+    index = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+
+    assert "window.bookbridgeSyncPreviewLayout = syncAllGridPreviewLayouts" in script
+    assert "document.querySelectorAll('.book-grid').forEach(applyGridPreviewLayout)" in script
+
+    start = index.index("function applySeriesGrouping")
+    assert "window.bookbridgeSyncPreviewLayout()" in index[start:start + 800]

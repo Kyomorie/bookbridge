@@ -25,19 +25,19 @@ The safest simple backup is a filesystem copy while BookBridge is stopped. This 
 For the bind mount used by the example Compose file:
 
 ```bash
-docker compose stop bookbridge
-tar -czf "bookbridge-data-$(date +%Y%m%d_%H%M%S).tar.gz" -C ./data .
-docker compose start bookbridge
+docker compose stop
+tar -czf "bookbridge-data-$(date +%Y%m%d_%H%M%S).tar.gz" --exclude=./backups -C ./data .
+docker compose start
 ```
 
-If you use a named volume or a different host path, snapshot or archive that volume instead. Store the resulting archive somewhere outside the BookBridge data disk; a second copy inside `/data` does not protect against disk loss.
+`./backups` is excluded because the online snapshots below are written inside `DATA_DIR`; without the exclusion each archive would also carry every previous snapshot. If you use a named volume or a different host path, snapshot or archive that volume instead. Store the resulting archive somewhere outside the BookBridge data disk; a second copy inside `/data` does not protect against disk loss.
 
 ## Online database snapshot
 
-For a quick database snapshot without stopping BookBridge, the image includes a small helper:
+For a quick database snapshot without stopping BookBridge, the image includes a small helper. `exec` needs the service name from your own `docker-compose.yml` — `abs-kosync` in the example Compose file, but yours may differ:
 
 ```bash
-docker compose exec bookbridge /app/scripts/backup_db.sh
+docker compose exec abs-kosync /app/scripts/backup_db.sh
 ```
 
 The helper uses SQLite's online backup API instead of copying the live database file directly, so committed data in either WAL or rollback-journal mode is included consistently. It also runs `PRAGMA integrity_check` on the snapshot before publishing it.
@@ -45,9 +45,11 @@ The helper uses SQLite's online backup API instead of copying the live database 
 By default it writes:
 
 ```text
-/data/backups/abs_kosync_YYYYMMDD_HHMMSS.db
-/data/backups/abs_kosync_YYYYMMDD_HHMMSS.secret.key
+/data/backups/bookbridge_YYYYMMDD_HHMMSS.db
+/data/backups/bookbridge_YYYYMMDD_HHMMSS.secret.key
 ```
+
+Snapshots taken before the BookBridge rename are called `abs_kosync_<timestamp>.db`. They are still valid backups and restore by exactly the same steps below — nothing renames or removes them, so a backup directory may hold both prefixes.
 
 The key file is created only when BookBridge is using the default `DATA_DIR/secret.key`. Explicit `BOOKBRIDGE_SECRET_KEY` and `BOOKBRIDGE_SECRET_KEY_FILE` overrides are deliberately not bundled.
 
@@ -61,11 +63,11 @@ The database contains the computed alignment maps, so an ordinary database resto
 Stop BookBridge before replacing its data. For the example bind mount, restore a full archive into an empty `./data` directory; keeping the old directory alongside it gives you an easy rollback if the restore is wrong.
 
 ```bash
-docker compose stop bookbridge
+docker compose stop
 mv ./data ./data.before-restore
 mkdir ./data
 tar -xzf bookbridge-data-YYYYMMDD_HHMMSS.tar.gz -C ./data
-docker compose start bookbridge
+docker compose start
 ```
 
 If you use an external credential key, restore the same `BOOKBRIDGE_SECRET_KEY` value or `BOOKBRIDGE_SECRET_KEY_FILE` before starting BookBridge.
@@ -73,12 +75,12 @@ If you use an external credential key, restore the same `BOOKBRIDGE_SECRET_KEY` 
 For a database-only snapshot, stop BookBridge, remove stale SQLite sidecars, then restore the database and matching default key:
 
 ```bash
-docker compose stop bookbridge
+docker compose stop
 rm -f ./data/database.db-wal ./data/database.db-shm ./data/database.db-journal
-cp ./bookbridge-db-backups/abs_kosync_YYYYMMDD_HHMMSS.db ./data/database.db
-cp ./bookbridge-db-backups/abs_kosync_YYYYMMDD_HHMMSS.secret.key ./data/secret.key
+cp ./data/backups/bookbridge_YYYYMMDD_HHMMSS.db ./data/database.db
+cp ./data/backups/bookbridge_YYYYMMDD_HHMMSS.secret.key ./data/secret.key
 chmod 600 ./data/secret.key
-docker compose start bookbridge
+docker compose start
 ```
 
 Skip the `secret.key` copy when the snapshot did not contain one because you manage the key externally. Restore into the same BookBridge version when possible; newer versions can migrate an older database forward on startup, while deliberately restoring a newer database into an older BookBridge build is not supported.
