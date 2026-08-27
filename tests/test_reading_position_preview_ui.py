@@ -45,4 +45,5 @@ def test_preview_css_uses_existing_bookbridge_tokens_and_has_mobile_layout():
     assert 'var(--border)' in css
     assert 'var(--accent)' in css
     assert ':focus-visible' in css
+    assert 'white-space: pre-line' in css
     assert '@media (max-width: 480px)' in css
