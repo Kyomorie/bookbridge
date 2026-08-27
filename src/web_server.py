@@ -4078,6 +4078,51 @@ def _normalize_series_key(name: str) -> str:
     return re.sub(r"\s+", " ", (name or "").strip()).casefold()
 
 
+SERIES_PREVIEW_LIMIT = 5
+
+
+def _format_series_sequence(sequence: "float | int | str | None") -> str:
+    """Render a series sequence as a short label ('1', '2.5'); blank when unset."""
+    if sequence is None:
+        return ""
+    try:
+        value = float(sequence)
+    except (TypeError, ValueError):
+        return str(sequence)
+    if value.is_integer():
+        return str(int(value))
+    return ("%.2f" % value).rstrip("0").rstrip(".")
+
+
+def _series_preview_books(children: list, next_index: "int | None",
+                          limit: int = SERIES_PREVIEW_LIMIT) -> "tuple[list, int]":
+    """Pick the child books a collapsed series card previews.
+
+    A series longer than the limit scrolls the window to the next unfinished book,
+    so the preview shows where the reader actually is rather than volumes they
+    finished long ago.
+    """
+    total = len(children)
+    if total > limit and next_index is not None:
+        start = max(0, min(next_index - 1, total - limit))
+    else:
+        start = 0
+    window = children[start:start + limit]
+
+    preview = []
+    for offset, child in enumerate(window):
+        position = start + offset
+        progress = child.get("unified_progress") or 0
+        preview.append({
+            "abs_id": child.get("abs_id"),
+            "label": _format_series_sequence(child.get("series_sequence")) or str(position + 1),
+            "title": child.get("display_title") or "",
+            "progress": progress,
+            "is_next": next_index is not None and position == next_index,
+        })
+    return preview, total - len(window)
+
+
 def _finalize_series_group(group: dict) -> None:
     """Compute aggregate display fields for a series group in-place."""
     from collections import Counter
@@ -4091,7 +4136,12 @@ def _finalize_series_group(group: dict) -> None:
     finished = sum(1 for c in children if (c.get("unified_progress") or 0) >= 100)
     in_progress = sum(1 for c in children if 0 < (c.get("unified_progress") or 0) < 100)
     avg = round(sum((c.get("unified_progress") or 0) for c in children) / total, 1) if total else 0.0
-    next_book = next((c for c in children if (c.get("unified_progress") or 0) < 100), None)
+    next_index = next(
+        (i for i, c in enumerate(children) if (c.get("unified_progress") or 0) < 100),
+        None,
+    )
+    next_book = children[next_index] if next_index is not None else None
+    preview_books, preview_hidden_count = _series_preview_books(children, next_index)
 
     last_sync_unix = 0.0
     for c in children:
@@ -4119,6 +4169,8 @@ def _finalize_series_group(group: dict) -> None:
         "in_progress_count": in_progress,
         "avg_progress": avg,
         "next_book": next_book,
+        "preview_books": preview_books,
+        "preview_hidden_count": preview_hidden_count,
         "last_sync_unix": last_sync_unix,
         "added_at_unix": added_at_unix,
         "stack_cover_urls": [c.get("cover_url") for c in children[:3] if c.get("cover_url")],

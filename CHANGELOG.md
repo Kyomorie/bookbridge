@@ -8,6 +8,14 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **A collapsed series card now lists the books in the series.** Each row shows the
+  volume number, title, and its own progress bar, with the book you are up to
+  highlighted; long series show a five-book window around that book plus a count of
+  the rest. The card is no longer a small placeholder next to full book cards — it
+  is close to their height because it carries real information, not padding. The
+  stacked cover art and the average-progress bar are unchanged, and the whole card
+  still expands to the full book cards on click.
+
 - **Expanding a series no longer stretches the cards beside it.** The books inside
   the series can grow to their natural height without making unrelated library cards
   in the same row grow with them, and the normal grid returns when the series closes.
