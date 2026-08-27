@@ -2032,6 +2032,17 @@ def _is_storyteller_artifact_filename(filename):
     return bool(filename and re.match(r"^storyteller_[0-9a-fA-F-]+\.epub$", filename))
 
 
+def _is_abs_hosted_ebook_filename(filename) -> bool:
+    """True for the synthesized name of an ABS-hosted ebook (`<abs_id>_abs.epub`).
+
+    The `_abs.` marker is the same one `get_kosync_id_for_ebook` reads the ABS item
+    id back out of, so an ebook wearing it lives in ABS, not in a library with
+    shelves.
+    """
+    if not isinstance(filename, str):
+        return False
+    return "_abs." in filename
+
 def _shelve_matched_ebook(shelf_filename, ebook_source=None, ebook_source_id=None):
     """Add a newly matched ebook to the Kobo shelf and clear it from the
     shelf-watch "Up Next" shelf, on whichever library hosts the ebook.
@@ -2048,8 +2059,9 @@ def _shelve_matched_ebook(shelf_filename, ebook_source=None, ebook_source_id=Non
 
     from src.utils.user_config import user_setting
     clients = uc()
-    is_bookorbit = (ebook_source or "").strip().lower() == "bookorbit"
-    is_kavita = (ebook_source or "").strip().lower() == "kavita"
+    source = (ebook_source or "").strip().lower()
+    is_bookorbit = source == "bookorbit"
+    is_kavita = source == "kavita"
     if is_bookorbit:
         client = clients.bookorbit_client
         kobo_shelf = (user_setting("BOOKORBIT_SHELF_NAME") or "Kobo").strip()
@@ -2065,6 +2077,18 @@ def _shelve_matched_ebook(shelf_filename, ebook_source=None, ebook_source_id=Non
         )
         watch_shelf = (os.environ.get("KAVITA_SHELF_WATCH_NAME") or "Up Next").strip()
     else:
+        # Grimmory owns this branch; it is not a catch-all. An ABS- or
+        # BookFusion-hosted ebook has no Grimmory catalog entry, so the shelf call
+        # can only ever warn "Book not found for shelf assignment/removal" — and it
+        # does so every cycle, forever (#4184, #4187). ABS-hosted books are already
+        # shelved by their own add_to_collection call. An unrecorded source stays on
+        # this path: legacy rows and /books-mount installs never set one.
+        if source not in ("", "booklore", "grimmory") or _is_abs_hosted_ebook_filename(shelf_filename):
+            logger.debug(
+                f"Skipping Grimmory shelf ops for '{sanitize_log_data(shelf_filename)}': "
+                f"hosted by {ebook_source or 'ABS'}, not Grimmory"
+            )
+            return
         client = clients.booklore_client
         kobo_shelf = user_setting("BOOKLORE_SHELF_NAME", "Kobo")
         watch_enabled = str(os.environ.get("BOOKLORE_SHELF_WATCH_ENABLED", "false")).strip().lower() in (
