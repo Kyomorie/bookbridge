@@ -2159,8 +2159,9 @@ def _download_storyteller_artifact(storyteller_uuid, abs_title=None, *, original
     When ``STORYTELLER_NO_EPUB_CACHE`` is enabled and an original EPUB can be
     located via ``EbookParser.resolve_book_path``, skip the API download and
     return ``(original_name, original_path)``. Otherwise, download the
-    Storyteller ReadAloud EPUB into the epub cache as before, falling back to
-    a local ``STORYTELLER_LIBRARY_DIR`` copy on failure.
+    Storyteller ReadAloud EPUB into the epub cache as a slim, audio-stripped copy,
+    falling back to a local ``STORYTELLER_LIBRARY_DIR`` copy (also stripped) on
+    failure.
 
     Returns ``(filename, Path)`` on success, ``(None, None)`` on failure.
     """
@@ -2202,7 +2203,7 @@ def _download_storyteller_artifact(storyteller_uuid, abs_title=None, *, original
 
     downloaded = False
     try:
-        downloaded = uc().storyteller_client.download_book(storyteller_uuid, target_path)
+        downloaded = uc().storyteller_client.download_slim_book(storyteller_uuid, target_path)
     except Exception as dl_err:
         logger.warning(f"Storyteller API download failed for '{storyteller_uuid}': {dl_err}", exc_info=True)
 
@@ -2216,7 +2217,15 @@ def _download_storyteller_artifact(storyteller_uuid, abs_title=None, *, original
                 continue
             readaloud = list(child.glob("*readaloud*.epub")) + list(child.glob("*synced*/*.epub"))
             if readaloud and child.name.lower().strip() == abs_title.lower().strip():
-                shutil.copy2(readaloud[0], target_path)
+                try:
+                    uc().storyteller_client._strip_audio_from_epub(readaloud[0], target_path)
+                except Exception as strip_err:
+                    logger.warning(
+                        f"Storyteller local fallback strip failed for '{readaloud[0]}'; "
+                        f"copying verbatim: {strip_err}",
+                        exc_info=True,
+                    )
+                    shutil.copy2(readaloud[0], target_path)
                 logger.warning(f"Storyteller local fallback used: '{readaloud[0]}'")
                 return artifact_filename, target_path
 
