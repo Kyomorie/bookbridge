@@ -31,6 +31,10 @@
     opacity: 0.65;
 }
 
+.book-grid.position-preview-expanded {
+    align-items: start;
+}
+
 .position-preview-panel {
     min-width: 0;
     margin: 0 0 8px;
