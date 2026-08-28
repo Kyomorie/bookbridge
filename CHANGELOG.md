@@ -8,6 +8,13 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Fixed the Settings buttons doing nothing when clicked.** The new series buttons —
+  and every other button on the Settings page — stopped responding. A stray line break
+  inside one of the new confirmation messages made the whole block of page code invalid,
+  so none of it loaded and clicks went nowhere, with no error shown. The buttons work
+  again, and they now show progress while they run: a long re-check disables the button
+  and says what it is doing instead of sitting silent for half a minute.
+
 - **Correcting a series in your library now reaches the dashboard.** Series were only
   ever filled in, never revisited, so a series you fixed or deleted at the source stayed
   on the dashboard forever — a book wrongly filed under an author's name kept that

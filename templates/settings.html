@@ -2385,10 +2385,10 @@
                     <div class="form-group full-width">
                         <label>Series Backfill</label>
                         <div class="cleanup-group">
-                            <button type="button" class="btn btn-primary" onclick="backfillSeriesMetadata()">
+                            <button type="button" class="btn btn-primary" onclick="backfillSeriesMetadata(this)">
                                 Backfill Series Metadata
                             </button>
-                            <button type="button" class="btn btn-secondary" onclick="refreshSeriesMetadata()">
+                            <button type="button" class="btn btn-secondary" onclick="refreshSeriesMetadata(this)">
                                 Re-check All Series
                             </button>
                             <p class="help-text flex-1 m-0">
@@ -3285,17 +3285,19 @@
             }
         }
 
-        async function runSeriesBackfill(refresh) {
+        async function runSeriesBackfill(refresh, button) {
             const label = refresh ? 'Series re-check' : 'Series backfill';
             const question = refresh
-                ? "Re-check every book's series?
-
-This revisits books that already have a series and will remove one the source library no longer reports. Books whose library cannot be reached are left untouched."
-                : "Run series backfill now?
-
-This looks up the series name and number for every book that is missing them, then groups them on the dashboard. It may take a few minutes on a large library.";
+                ? "Re-check every book's series?\n\nThis revisits books that already have a series and will remove one the source library no longer reports. Books whose library cannot be reached are left untouched."
+                : "Run series backfill now?\n\nThis looks up the series name and number for every book that is missing them, then groups them on the dashboard. It may take a few minutes on a large library.";
             if (!confirm(question)) {
                 return;
+            }
+
+            const originalText = button ? button.innerHTML : null;
+            if (button) {
+                button.innerHTML = refresh ? '⌛ Re-checking...' : '⌛ Backfilling...';
+                button.disabled = true;
             }
 
             try {
@@ -3343,15 +3345,20 @@ This looks up the series name and number for every book that is missing them, th
             } catch (err) {
                 console.error(`Error running ${label.toLowerCase()}:`, err);
                 alert(`An error occurred while running the ${label.toLowerCase()}. Check console for details.`);
+            } finally {
+                if (button) {
+                    button.innerHTML = originalText;
+                    button.disabled = false;
+                }
             }
         }
 
-        async function refreshSeriesMetadata() {
-            return runSeriesBackfill(true);
+        async function refreshSeriesMetadata(button) {
+            return runSeriesBackfill(true, button);
         }
 
-        async function backfillSeriesMetadata() {
-            return runSeriesBackfill(false);
+        async function backfillSeriesMetadata(button) {
+            return runSeriesBackfill(false, button);
         }
 
         document.addEventListener('DOMContentLoaded', function () {
