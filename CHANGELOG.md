@@ -6,6 +6,17 @@ All notable changes to BookBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A book could open at the very beginning instead of where you left off.** When a
+  chapter's text sat inside styling tags, or a chapter held no text at all, BookBridge
+  fell back to a made-up position that pointed at a paragraph the chapter did not have.
+  KOReader could not find it, opened at the start of the book, and then reported that
+  near-zero position back as your progress. BookBridge now builds the position from the
+  chapter's real structure, and sends nothing at all when a chapter genuinely has no
+  text to point at — leaving your position alone instead of resetting it. This also
+  covers positions sent to KOReader through BookOrbit, not just direct KOReader sync.
+
 ### Added
 
 - **Moved your audiobooks to BookOrbit? Repoint them instead of re-matching them.**
