@@ -1,0 +1,172 @@
+name: Apply KOSync XPath fallback fix
+
+on:
+  push:
+    branches: [ "fix/kosync-xpath-fallback-7.5" ]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/kosync-xpath-fallback-7.5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pip install -r requirements.txt
+
+      - name: Apply exact source fix
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/utils/ebook_utils.py")
+          text = path.read_text()
+
+          old_safe = '''        suffix = self._first_non_empty_direct_text_suffix(anchor)
+
+          if not suffix:
+              suffix = "/text()"
+
+          xpath_base = self._build_xpath(anchor)
+          return f"/body/DocFragment[{spine_index}]/{xpath_base}{suffix}.0"
+          '''
+
+          new_safe = '''        suffix = self._first_non_empty_direct_text_suffix(anchor)
+          xpath_base = self._build_xpath(anchor)
+
+          if suffix:
+              return f"/body/DocFragment[{spine_index}]/{xpath_base}{suffix}.0"
+
+          # Text may live only inside inline descendants (for example
+          # <p><span>...</span></p>). In that case /text() does not exist directly
+          # under the structural block. Keep the real block anchor instead of
+          # publishing an unresolvable text-node XPath.
+          return f"/body/DocFragment[{spine_index}]/{xpath_base}.0"
+          '''
+
+          old_fallback = '''    def _build_sentence_level_chapter_fallback_xpath(self, html_content, spine_index) -> str:
+              """
+              Build a safe sentence-level XPath anchored to the first readable text node
+              in the chapter. This intentionally targets node starts (.0) instead of
+              character-level offsets.
+              """
+              default_xpath = f"/body/DocFragment[{spine_index}]/body/p[1]/text().0"
+              try:
+                  tree = html.fromstring(html_content)
+              except Exception:
+                  return default_xpath
+
+              sentence_tags = (
+                  "p", "li", "h1", "h2", "h3", "h4", "h5", "h6",
+                  "blockquote", "figcaption", "dd", "dt", "td", "th",
+                  "div", "section", "article", "pre"
+              )
+
+              for tag in sentence_tags:
+                  for element in tree.iter(tag):
+                      suffix = self._first_non_empty_direct_text_suffix(element)
+                      if suffix:
+                          xpath_base = self._build_xpath(element)
+                          return f"/body/DocFragment[{spine_index}]/{xpath_base}{suffix}.0"
+
+              for element in tree.iter():
+                  if self._local_tag_name(element) not in self.CRENGINE_STRUCTURAL_TAGS:
+                      continue
+                  suffix = self._first_non_empty_direct_text_suffix(element)
+                  if suffix:
+                      xpath_base = self._build_xpath(element)
+                      return f"/body/DocFragment[{spine_index}]/{xpath_base}{suffix}.0"
+
+              return default_xpath
+          '''
+
+          new_fallback = '''    def _build_sentence_level_chapter_fallback_xpath(self, html_content, spine_index) -> Optional[str]:
+              """
+              Build a safe sentence-level XPath anchored to a real readable node in the
+              chapter. This intentionally targets node starts (.0) instead of
+              character-level offsets and never invents DOM structure.
+              """
+              try:
+                  tree = html.fromstring(html_content)
+              except Exception:
+                  return None
+
+              sentence_tags = (
+                  "p", "li", "h1", "h2", "h3", "h4", "h5", "h6",
+                  "blockquote", "figcaption", "dd", "dt", "td", "th",
+                  "div", "section", "article", "pre"
+              )
+
+              # Preserve the existing precise text-node path when a structural
+              # element owns readable text directly.
+              for tag in sentence_tags:
+                  for element in tree.iter(tag):
+                      suffix = self._first_non_empty_direct_text_suffix(element)
+                      if suffix:
+                          xpath_base = self._build_xpath(element)
+                          return f"/body/DocFragment[{spine_index}]/{xpath_base}{suffix}.0"
+
+              for element in tree.iter():
+                  if self._local_tag_name(element) not in self.CRENGINE_STRUCTURAL_TAGS:
+                      continue
+                  suffix = self._first_non_empty_direct_text_suffix(element)
+                  if suffix:
+                      xpath_base = self._build_xpath(element)
+                      return f"/body/DocFragment[{spine_index}]/{xpath_base}{suffix}.0"
+
+              # Some EPUBs keep all readable text in inline descendants such as
+              # <span>. There is no direct text() node in that case, but the real
+              # structural block remains a valid and stable node-start anchor.
+              for tag in sentence_tags:
+                  for element in tree.iter(tag):
+                      if self._element_text_length(element) > 0:
+                          xpath_base = self._build_xpath(element)
+                          return f"/body/DocFragment[{spine_index}]/{xpath_base}.0"
+
+              for element in tree.iter():
+                  if self._local_tag_name(element) not in self.CRENGINE_STRUCTURAL_TAGS:
+                      continue
+                  if self._element_text_length(element) > 0:
+                      xpath_base = self._build_xpath(element)
+                      return f"/body/DocFragment[{spine_index}]/{xpath_base}.0"
+
+              # No readable structural anchor exists. Let the caller skip a
+              # positive-progress write rather than publishing a made-up XPath.
+              return None
+          '''
+
+          if text.count(old_safe) != 1:
+              raise SystemExit(f"safe XPath source match count={text.count(old_safe)}; refusing to patch")
+          if text.count(old_fallback) != 1:
+              raise SystemExit(f"chapter fallback source match count={text.count(old_fallback)}; refusing to patch")
+
+          text = text.replace(old_safe, new_safe).replace(old_fallback, new_fallback)
+          path.write_text(text)
+          PY
+
+      - name: Syntax check
+        run: python -m py_compile src/utils/ebook_utils.py tests/test_kosync_chapter_fallback.py
+
+      - name: Targeted regression tests
+        run: pytest -q tests/test_kosync_chapter_fallback.py tests/test_kosync_xpath_safety.py
+
+      - name: Commit validated fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/utils/ebook_utils.py
+          git diff --cached --check
+          git diff --cached
+          git commit -m "Fix KOSync chapter fallback XPath structure"
+          git push origin HEAD:fix/kosync-xpath-fallback-7.5
