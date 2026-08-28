@@ -159,6 +159,39 @@ Plain KOReader/KOSync clients and older Bridge Sync versions continue syncing re
 
 ---
 
+## Sending Books to Readest
+
+BookBridge can copy your books into your own [Readest](https://readest.com) cloud library,
+so they are ready to open in Readest's apps and filed into a group of their own. It is off
+by default and configured per reader under **Account -> My Integrations**.
+
+There are two independent switches — use either or both:
+
+- **Upload matched books to Readest** sends a book at the moment you match it.
+- **Upload books you are currently reading** runs on a timer and sends the books you are
+  part-way through: anything with a reading position above 0% and below the completion
+  threshold. Books already in your Readest library are skipped.
+
+The second switch exists because most libraries are much larger than a Readest account.
+Readest's free plan includes 500 MB, which a few hundred books will not fit — but the
+handful you are actually reading will. **Upload: max books per run** (default 5) caps how
+many go out per sweep, so turning it on cannot flood the account in one go.
+
+What to expect:
+
+- Books upload with their cover and land in the group named by **Group name for uploaded
+  books** (default `BookBridge`).
+- If you move an uploaded book into a different group inside Readest, BookBridge leaves it
+  where you put it.
+- Uploading never overwrites your reading position, reading status, or cover in Readest.
+- Only EPUB files are uploaded.
+- If the account runs out of storage, BookBridge records the quota in the log and stops
+  uploading rather than failing quietly.
+
+This does not send your reading progress to Readest. Readest already syncs progress with
+Audiobookshelf and KOReader directly, so BookBridge stays out of that to avoid two writers
+fighting over the same position.
+
 ## Add / Update Book
 
 **Add / Update Book** is the main manual linking tool.

@@ -148,7 +148,8 @@ BookFusion notes:
 
 #### Readest
 
-Readest can participate in highlight and note relay through Readest cloud sync. It is not a progress sync source.
+Readest can participate in highlight and note relay through Readest cloud sync, and can
+receive copies of your books. It is not a progress sync source.
 
 | Setting | Env Var | Default | Notes |
 | --- | --- | --- | --- |
@@ -158,12 +159,26 @@ Readest can participate in highlight and note relay through Readest cloud sync. 
 | Account Password | `READEST_PASSWORD` | empty | Per-reader. Used to refresh cloud-sync tokens. |
 | Supabase URL | `READEST_SUPABASE_URL` | `https://readest.supabase.co` | Leave as default unless you self-host Readest. |
 | Supabase Anon Key | `READEST_SUPABASE_ANON_KEY` | empty | Optional override for self-hosted Readest. |
+| Upload Matched Books | `READEST_UPLOAD_ON_MATCH` | `false` | Per-reader. Uploads a book to Readest at the moment you match it. |
+| Upload Currently Reading | `READEST_UPLOAD_READING` | `false` | Per-reader. Timed sweep that uploads books you are part-way through. |
+| Group Name | `READEST_GROUP_NAME` | `BookBridge` | Per-reader. The Readest group uploaded books are filed into. |
+| Upload Max Per Run | `READEST_UPLOAD_MAX_PER_RUN` | `5` | Global. Caps uploads per sweep so a first run cannot flood an account. `0` pauses uploading. |
+| Upload Sweep Interval | `READEST_UPLOAD_SWEEP_MINUTES` | `60` | Global. How often to look for newly started books. Shares a daemon with the annotation syncs, so the fastest of those intervals wins. `0` removes it from that schedule. |
 
 Readest notes:
 
 - Enter the Readest email and password under **Account -> My Integrations** for each reader that wants Readest highlights.
 - Tokens are cached and refreshed by the bridge after login.
 - Readest sync depends on the same book identity being available to Readest and the bridge.
+- Uploads are off by default and set per reader. The two upload switches are independent:
+  you can upload on match, on the currently-reading sweep, or both.
+- The sweep only considers books with a reading position above 0% and below
+  `SYNC_COMPLETION_THRESHOLD`, and skips any book already present in that Readest account.
+  This matters because Readest's free plan includes 500 MB, which a full library will not fit.
+- Uploading never overwrites your Readest reading position, reading status, or cover.
+  If you move an uploaded book into a different group inside Readest, the bridge leaves it there.
+- Only EPUB files are uploaded. If the account runs out of storage, the bridge logs the
+  quota and stops uploading rather than failing quietly.
 
 #### Storyteller
 

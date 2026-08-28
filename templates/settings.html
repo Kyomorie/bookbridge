@@ -1316,6 +1316,22 @@
                             value="{{ get_val('READEST_ANNOTATION_SYNC_MINUTES', '15') }}">
                         <div class="help-text">0 disables the sync timer (manual trigger only).</div>
                     </div>
+                    <div class="form-group">
+                        <label>Upload: max books per run</label>
+                        <input type="number" min="0" name="READEST_UPLOAD_MAX_PER_RUN"
+                            value="{{ get_val('READEST_UPLOAD_MAX_PER_RUN', '5') }}">
+                        <div class="help-text">Safety rail for the &quot;upload books you are
+                            currently reading&quot; sweep, so a first run cannot flood a Readest
+                            account. Readest's free plan includes 500&nbsp;MB. 0 pauses uploading.</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Upload: sweep interval (minutes)</label>
+                        <input type="number" min="0" name="READEST_UPLOAD_SWEEP_MINUTES"
+                            value="{{ get_val('READEST_UPLOAD_SWEEP_MINUTES', '60') }}">
+                        <div class="help-text">How often BookBridge looks for newly started books
+                            to upload. Shares a daemon with the annotation syncs, so the fastest of
+                            those intervals wins. 0 removes it from that schedule.</div>
+                    </div>
                     <div class="form-group full-width">
                         <label>Supabase URL (advanced)</label>
                         <input type="text" name="READEST_SUPABASE_URL" value="{{ get_val('READEST_SUPABASE_URL', 'https://readest.supabase.co') }}"

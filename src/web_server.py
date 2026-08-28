@@ -2151,6 +2151,50 @@ def _shelve_saved_ebook(book) -> None:
         getattr(book, 'ebook_source', None),
         getattr(book, 'ebook_source_id', None),
     )
+    _spawn_user_background(_publish_saved_ebook_to_readest, book, label="Readest upload")
+
+
+def _publish_saved_ebook_to_readest(book) -> None:
+    """Upload a saved mapping's original ebook into the user's Readest cloud library.
+
+    Best-effort convenience layered on top of the match-save flow: gated on the
+    per-user `READEST_UPLOAD_ON_MATCH` setting (off by default) and must never
+    affect the caller, so every failure is swallowed here and only logged. Runs
+    off the request thread via `_spawn_user_background`, which re-binds the
+    ambient user id/credentials onto the worker thread — there is no Flask
+    request context here to resolve them from.
+    """
+    if not book:
+        return
+    filename = (
+        getattr(book, 'original_ebook_filename', None)
+        or getattr(book, 'ebook_filename', None)
+    )
+    if not filename or _is_storyteller_artifact_filename(filename):
+        return
+
+    enabled = (user_setting("READEST_UPLOAD_ON_MATCH", "false") or "").strip().lower() in (
+        "true", "1", "yes", "on"
+    )
+    if not enabled:
+        return
+
+    user_id = get_current_user_id()
+    creds = get_current_user_credentials()
+
+    try:
+        from src.api.readest_client import ReadestClient
+        from src.services.readest_upload_service import ReadestUploadService
+
+        client = ReadestClient(credentials=creds, database_service=database_service, user_id=user_id)
+        service = ReadestUploadService(client, container.ebook_parser(), database_service)
+        result = service.publish_book(filename)
+        logger.info(
+            "📚 Readest publish for %s: status=%s message=%s",
+            filename, result.status, result.message,
+        )
+    except Exception as e:
+        logger.error("Readest publish failed for %s: %s", filename, e, exc_info=True)
 
 
 def _download_storyteller_artifact(storyteller_uuid, abs_title=None, *, original_ebook_filename=None):
@@ -12147,6 +12191,18 @@ if __name__ == '__main__':
                 hardcover_interval = int(os.environ.get("HARDCOVER_ANNOTATION_SYNC_MINUTES", "30") or 0)
                 if hardcover_interval > 0:
                     intervals.append(hardcover_interval)
+            except (TypeError, ValueError):
+                pass
+            # The Readest "currently reading" upload sweep rides this same daemon
+            # rather than starting its own thread. Without a contribution here, a
+            # user who enables uploads but no annotation sync would get 0 back
+            # from this function and the daemon would never run a cycle at all.
+            # Since the result is a min(), adding this never slows an existing
+            # schedule down.
+            try:
+                readest_upload_interval = int(os.environ.get("READEST_UPLOAD_SWEEP_MINUTES", "60") or 0)
+                if readest_upload_interval > 0:
+                    intervals.append(readest_upload_interval)
             except (TypeError, ValueError):
                 pass
             return min(intervals) if intervals else 0

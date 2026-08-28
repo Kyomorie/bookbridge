@@ -78,6 +78,24 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **Your books can now upload themselves to Readest, filed into their own group.**
+  Under *Account -> My Integrations* there are two switches, and you can use either or
+  both: **Upload matched books to Readest** sends a book the moment you match it, and
+  **Upload books you are currently reading** runs on a timer and sends the books you are
+  part-way through. Each one lands in your own Readest library, cover and all, in a group
+  named **BookBridge** that you can rename. Both are off by default and set per account,
+  so they only ever touch the Readest account you signed in with.
+
+  The currently-reading switch exists because a library is usually far bigger than a
+  Readest account — the free plan includes 500 MB, which a few hundred books will not fit,
+  while the handful you are actually reading will. A cap (5 by default) limits how many go
+  out per sweep so switching it on cannot flood the account, books already in Readest are
+  skipped, and if you run out of storage BookBridge says so in the log and stops rather
+  than failing quietly. If you move an uploaded book into a different group in Readest,
+  BookBridge leaves it where you put it, and an upload never overwrites your reading
+  position there. EPUB only. This does not sync reading progress to Readest — Readest
+  already does that with Audiobookshelf and KOReader directly.
+
 - **Chapter headings now stand apart in the reading-position preview.** The preview
   flattened every book into one unbroken run of text, so a chapter or section title
   read as though it were part of the sentence beside it. Real `<h1>`–`<h6>` headings
