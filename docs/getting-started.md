@@ -106,7 +106,7 @@ If you want to expose only the KOSync endpoint to the internet:
 
     If you enable Grimmory or BookOrbit, the bridge can use them for ebook matching and audiobook sources. If you enable CWA, the bridge can use it as an ebook source and, when Kobo sync is enabled, as a reading-progress participant.
 
-    Forge uploads directly to Storyteller over the API, so a Storyteller library mount is not required for normal Forge imports.
+    Storyteller editions upload directly to Storyteller over the API, so a Storyteller library mount is not required for normal imports.
 
     If you mount Storyteller assets at `/storyteller/assets`, set **Storyteller Assets Path** in Settings to `/storyteller`.
     The assets path can be configured entirely in the UI; `STORYTELLER_ASSETS_DIR` is optional.
