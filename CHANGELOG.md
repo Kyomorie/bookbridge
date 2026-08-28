@@ -8,6 +8,16 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **BookOrbit ebook progress no longer lands on the audiobook file.** For a BookOrbit
+  book that has both an ebook and an audiobook, BookBridge read your position from the
+  ebook but saved it onto the audiobook file. The ebook's own progress never moved, so
+  BookOrbit looked permanently far behind every other service, its reader reopened at a
+  stale position, and the audiobook's progress was overwritten with ebook percentages.
+  BookBridge now chooses the file by format for both reading and writing, so ebook
+  progress goes to the ebook and audio progress to the audiobook. Books that have both
+  formats also now show up correctly in both the ebook matching pool and the audiobook
+  picker, instead of only one of the two.
+
 - **Fixed the Settings buttons doing nothing when clicked.** The new series buttons —
   and every other button on the Settings page — stopped responding. A stray line break
   inside one of the new confirmation messages made the whole block of page code invalid,

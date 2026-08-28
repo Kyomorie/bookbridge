@@ -172,7 +172,7 @@ def test_update_audiobook_progress_resolves_file_id_when_missing(client):
 def test_update_ebook_progress_uses_primary_file(client):
     captured = {}
     with patch.object(client, '_make_request', side_effect=lambda m, e, p=None: captured.update(endpoint=e, payload=p) or _Resp(status_code=204)):
-        ok = client.update_ebook_progress({"id": 3, "primaryFileId": 12, "title": "X"}, 0.5)
+        ok = client.update_ebook_progress({"id": 3, "ebookFileId": 12, "title": "X"}, 0.5)
     assert ok is True
     assert captured["endpoint"] == "/api/v1/books/files/12/progress"
     assert captured["payload"]["percentage"] == pytest.approx(50.0)
@@ -182,7 +182,7 @@ def test_update_ebook_progress_includes_koreader_progress_when_perfect_ko_xpath_
     captured = {}
     locator = LocatorResult(percentage=0.5, cfi="epubcfi(/6/4)", perfect_ko_xpath="/body/DocFragment[12]/body/p[7]/text().0")
     with patch.object(client, '_make_request', side_effect=lambda m, e, p=None: captured.update(endpoint=e, payload=p) or _Resp(status_code=204)):
-        ok = client.update_ebook_progress({"id": 3, "primaryFileId": 12, "title": "X"}, 0.5, locator)
+        ok = client.update_ebook_progress({"id": 3, "ebookFileId": 12, "title": "X"}, 0.5, locator)
     assert ok is True
     assert "koreaderProgress" in captured["payload"]
     assert captured["payload"]["koreaderProgress"] == "/body/DocFragment[12]/body/p[7]/text().0"
@@ -193,7 +193,7 @@ def test_update_ebook_progress_omits_koreader_progress_when_perfect_ko_xpath_non
     captured = {}
     locator = LocatorResult(percentage=0.5, cfi="epubcfi(/6/4)", perfect_ko_xpath=None)
     with patch.object(client, '_make_request', side_effect=lambda m, e, p=None: captured.update(endpoint=e, payload=p) or _Resp(status_code=204)):
-        ok = client.update_ebook_progress({"id": 3, "primaryFileId": 12, "title": "X"}, 0.5, locator)
+        ok = client.update_ebook_progress({"id": 3, "ebookFileId": 12, "title": "X"}, 0.5, locator)
     assert ok is True
     assert "koreaderProgress" not in captured["payload"]
 
@@ -204,7 +204,7 @@ def test_update_ebook_progress_reports_http_error_status(client, caplog):
 
     with patch.object(client, '_make_request', return_value=failed):
         ok = client.update_ebook_progress(
-            {"id": 3, "primaryFileId": 12, "title": "X"}, 0.5
+            {"id": 3, "ebookFileId": 12, "title": "X"}, 0.5
         )
 
     assert ok is False

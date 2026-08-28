@@ -43,6 +43,8 @@ _TOKEN_MAX_AGE = 840
 _LOGIN_RETRY_COOLDOWN = 60
 _EBOOK_FORMATS = {"epub", "kepub", "pdf", "cbz", "cbr", "cb7", "mobi", "azw3", "azw", "fb2"}
 _AUDIO_FORMATS = {"m4b", "mp3", "m4a", "opus", "ogg", "flac", "aax", "aac"}
+# Which cached light-info id a kind-specific lookup may fall back to.
+_KIND_FILE_ID_KEYS = {"ebook": "ebookFileId", "audiobook": "audioFileId"}
 _MAX_FILENAME_QUERIES = 6
 
 
@@ -235,29 +237,61 @@ class BookOrbitClient:
             return "ebook"
         return None
 
+    @staticmethod
+    def _info_offers_kind(info: dict, kind: str) -> bool:
+        """Whether a cached light-info entry offers `kind` ('ebook'|'audiobook').
+
+        A book holding both an EPUB and an M4B is both kinds, so it lists each
+        one in `kinds`; the single `kind` scalar only names the preferred one.
+        Entries built without `kinds` fall back to that scalar.
+        """
+        if not isinstance(info, dict):
+            return False
+        kinds = info.get("kinds")
+        if isinstance(kinds, (list, tuple, set)):
+            return kind in kinds
+        return info.get("kind") == kind
+
     def _build_light_info(self, book: dict) -> Optional[dict]:
-        """Build a lightweight cache entry from a `/books/query` list row."""
+        """Build a lightweight cache entry from a `/books/query` list row.
+
+        File ids are recorded per kind. BookOrbit has no `'primary'` file role
+        (`book_files.role` is constrained to content|cover|metadata|supplement)
+        and expresses "primary" book-wide via `books.primary_file_id`, which is
+        format-agnostic - on a book holding both an EPUB and an M4B it can name
+        the audiobook. A format-agnostic id must never satisfy a kind-specific
+        lookup, so the ebook and audio ids are kept apart here (#417).
+        """
         book_id = book.get("id")
         if book_id is None:
             return None
-        files = book.get("files") or []
-        primary = None
-        for f in files:
-            if isinstance(f, dict) and f.get("role") == "primary":
-                primary = f
-                break
-        if primary is None:
-            # Fall back to the first audio/ebook file by format priority.
-            for f in files:
-                if isinstance(f, dict) and (f.get("format") or "").lower() in (_EBOOK_FORMATS | _AUDIO_FORMATS):
-                    primary = f
-                    break
+        ebook_file = None
+        audio_file = None
+        for f in book.get("files") or []:
+            if not isinstance(f, dict):
+                continue
+            fmt = (f.get("format") or "").lower()
+            if ebook_file is None and fmt in _EBOOK_FORMATS:
+                ebook_file = f
+            if audio_file is None and fmt in _AUDIO_FORMATS:
+                audio_file = f
+        kinds = []
+        if ebook_file is not None:
+            kinds.append("ebook")
+        if audio_file is not None:
+            kinds.append("audiobook")
+        primary = ebook_file if ebook_file is not None else audio_file
         primary_format = (primary or {}).get("format")
         return {
             "id": book_id,
             "title": (book.get("title") or "").strip(),
             "authors": self._format_authors(book.get("authors")),
             "language": str(book.get("language") or "").strip(),
+            "ebookFileId": (ebook_file or {}).get("id"),
+            "ebookFormat": ((ebook_file or {}).get("format") or "").lower(),
+            "audioFileId": (audio_file or {}).get("id"),
+            "audioFormat": ((audio_file or {}).get("format") or "").lower(),
+            "kinds": kinds,
             "primaryFileId": (primary or {}).get("id"),
             "primaryFormat": (primary_format or "").lower(),
             "kind": self._classify_format(primary_format),
@@ -445,7 +479,7 @@ class BookOrbitClient:
                  "language": info.get("language") or "",
                  "duration_seconds": None, "num_files": None}
                 for info in self.get_all_books()
-                if info.get("kind") == "audiobook"
+                if self._info_offers_kind(info, "audiobook")
             ]
 
         out = []
@@ -491,7 +525,7 @@ class BookOrbitClient:
         elsewhere (local /books index for the pool, or by id at apply time)."""
         out = []
         for info in self.get_all_books():
-            if info.get("kind") != "ebook":
+            if not self._info_offers_kind(info, "ebook"):
                 continue
             out.append({
                 "id": info.get("id"),
@@ -715,7 +749,7 @@ class BookOrbitClient:
         with self._cache_lock:
             items = list(self._book_cache.values())
         if ebook_only:
-            items = [i for i in items if i.get("kind") == "ebook"]
+            items = [i for i in items if self._info_offers_kind(i, "ebook")]
         if not items:
             return None
 
@@ -746,11 +780,19 @@ class BookOrbitClient:
             return None
 
     def _resolve_primary_file_id(self, book_id, kind: str) -> Optional[int]:
+        """Resolve the file id `kind` ('ebook'|'audiobook') should act on.
+
+        The cache fallback used when the detail call fails is kind-specific: the
+        format-agnostic `primaryFileId` can name the wrong format's file, and
+        returning it here misrouted ebook writes onto the audiobook (#417).
+        None means "unknown" - callers refuse the write rather than guess.
+        """
         detail = self.get_book_detail(book_id)
         if not detail:
             with self._cache_lock:
                 info = self._book_cache.get(book_id)
-            return (info or {}).get("primaryFileId")
+            cache_key = _KIND_FILE_ID_KEYS.get(kind)
+            return (info or {}).get(cache_key or "primaryFileId")
         pf = self._primary_file(detail, kind=kind)
         return (pf or {}).get("id")
 
@@ -797,12 +839,18 @@ class BookOrbitClient:
         if not entries:
             return dict(baseline)
 
-        if len(entries) == 1:
+        ebook_file_id = self._resolve_primary_file_id(book_id, "ebook")
+        if ebook_file_id is not None:
+            chosen = next((e for e in entries if e.get("fileId") == ebook_file_id), None)
+            if chosen is None:
+                # The ebook file has no progress row of its own. Standing another
+                # file's row in for it is how an audiobook row came back as ebook
+                # progress (#417); an unstarted ebook is the 0.0 baseline.
+                return dict(baseline)
+        elif len(entries) == 1:
             chosen = entries[0]
         else:
-            primary_file_id = self._resolve_primary_file_id(book_id, "ebook")
-            chosen = next((e for e in entries if e.get("fileId") == primary_file_id), None) \
-                or max(entries, key=lambda e: e.get("percentage") or 0)
+            chosen = max(entries, key=lambda e: e.get("percentage") or 0)
 
         raw_pct = chosen.get("percentage")
         pct = self._to_pct_fraction(raw_pct) if raw_pct is not None else 0.0
@@ -825,7 +873,20 @@ class BookOrbitClient:
         position; without it BookOrbit derives a chapter-root xpointer from the CFI.
         """
         book_id = book_info.get("id")
-        file_id = book_info.get("primaryFileId") or self._resolve_primary_file_id(book_id, "ebook")
+        file_id = book_info.get("ebookFileId")
+        if file_id is None:
+            cached_id = book_info.get("primaryFileId")
+            cached_format = (book_info.get("primaryFormat") or "").lower()
+            if cached_id is not None and cached_format in _EBOOK_FORMATS:
+                file_id = cached_id
+            else:
+                if cached_id is not None:
+                    logger.info(
+                        "BookOrbit: ignoring cached primary file %s (format=%s) for book %s "
+                        "- it is not an ebook file; resolving the ebook file instead",
+                        cached_id, cached_format or "unknown", book_id,
+                    )
+                file_id = self._resolve_primary_file_id(book_id, "ebook")
         if file_id is None:
             logger.error("BookOrbit: cannot update ebook — no primary file id for book %s", book_id)
             return False
