@@ -242,6 +242,36 @@ class AudioRepointService:
     # Apply / undo
     # ------------------------------------------------------------------
 
+    def _link_audio_id_for_claimants(self, abs_id: str, target_id: str) -> None:
+        """Point each claimant's per-user BookOrbit link at the new audiobook.
+
+        These books already carry a ``UserBookOrbitLink`` from their EBOOK
+        mapping, with ``audio_id`` unset. ``resolve_bookorbit_audio_id`` returns
+        as soon as it finds a link, so an existing ebook-only link makes it
+        answer None and ``BookOrbitAudioSyncClient.supports_book`` reject the
+        book — the shared ``Book.audio_source_id`` fallback is never reached.
+        Updating the link is therefore part of the repoint, not an extra.
+        """
+        try:
+            claimants = self.database_service.get_book_user_ids(abs_id) or []
+        except Exception as e:
+            logger.warning(
+                f"⚠️ Audio repoint: could not resolve claimants for '{abs_id}': {e}",
+                exc_info=True,
+            )
+            return
+        for user_id in claimants:
+            try:
+                self.database_service.set_user_bookorbit_link(
+                    user_id, abs_id, audio_id=str(target_id)
+                )
+            except Exception as e:
+                logger.warning(
+                    f"⚠️ Audio repoint: could not set BookOrbit audio link for user "
+                    f"{user_id} on '{abs_id}': {e}",
+                    exc_info=True,
+                )
+
     def apply(self, selections: list[dict]) -> dict[str, Any]:
         """Repoint the given books. Each selection is ``{'abs_id', 'target_id'}``.
 
@@ -285,6 +315,7 @@ class AudioRepointService:
                     fields["audio_provider_file_id"] = str(info.get("primary_file_id"))
 
             self.database_service.update_book_fields(abs_id, **fields)
+            self._link_audio_id_for_claimants(abs_id, target_id)
             updated += 1
             logger.info(
                 "🔁 Audio repoint: '%s' '%s' ABS → BookOrbit book %s (progress, alignment and links kept)",

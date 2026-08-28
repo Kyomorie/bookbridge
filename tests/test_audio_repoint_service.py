@@ -44,12 +44,22 @@ class _FakeDb:
     def __init__(self, books):
         self._books = {b.abs_id: b for b in books}
         self.updates = []
+        self.links = []
+        self.claimants = {}
 
     def get_all_books(self):
         return list(self._books.values())
 
     def get_book(self, abs_id):
         return self._books.get(abs_id)
+
+    def get_book_user_ids(self, abs_id):
+        return list(self.claimants.get(abs_id, [1]))
+
+    def set_user_bookorbit_link(self, user_id, abs_id, ebook_id=None, audio_id=None,
+                                title=None, author=None):
+        self.links.append({"user_id": user_id, "abs_id": abs_id, "audio_id": audio_id})
+        return self.links[-1]
 
     def update_book_fields(self, abs_id, **fields):
         self.updates.append((abs_id, fields))
@@ -187,6 +197,30 @@ class TestApply(unittest.TestCase):
 
         self.assertEqual(result["updated"], 0)
         self.assertEqual(len(result["skipped"]), 2)
+
+    def test_apply_points_each_claimants_bookorbit_link_at_the_audiobook(self):
+        """These books already carry an ebook-only UserBookOrbitLink. Because
+        resolve_bookorbit_audio_id returns as soon as it finds a link, leaving
+        audio_id unset makes supports_book reject the book and no audio syncs —
+        the shared Book.audio_source_id fallback is never reached."""
+        db = _FakeDb([_book()])
+        db.claimants[ABS_ID] = [1, 2]
+        svc = AudioRepointService(db, _client([_catalog_entry(5568, "Three Days in April")], {5568: 34016.0}))
+
+        svc.apply([{"abs_id": ABS_ID, "target_id": 5568}])
+
+        self.assertEqual(
+            sorted((l["user_id"], l["audio_id"]) for l in db.links),
+            [(1, "5568"), (2, "5568")],
+        )
+
+    def test_apply_writes_no_link_when_nothing_was_repointed(self):
+        db = _FakeDb([_book(audio_source="BookOrbit")])
+        svc = AudioRepointService(db, _client([], {}))
+
+        svc.apply([{"abs_id": ABS_ID, "target_id": 5568}])
+
+        self.assertEqual(db.links, [])
 
 
 class TestUndo(unittest.TestCase):
