@@ -8,6 +8,18 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Your reading position no longer jumps backwards while you sit on a page.** If you
+  read forward and then stopped for a few minutes, the book could jump back roughly a
+  page. BookBridge had written your position out to your other apps, and on a later
+  check it read one of those copies back and treated it as though you had moved there -
+  so its own echo outranked where you actually were. Because an audiobook timeline and
+  an ebook percentage measure the same spot with different rulers, the two numbers never
+  quite agreed, and BookBridge kept trying to reconcile a difference that was never a
+  disagreement, nudging you backwards each time. BookBridge now recognises its own
+  write-back and refuses to treat it as your movement, and it compares positions on a
+  common ruler before deciding anything is out of sync. When nothing has actually moved,
+  it now leaves your position alone instead of writing.
+
 - **BookOrbit ebook progress no longer lands on the audiobook file.** For a BookOrbit
   book that has both an ebook and an audiobook, BookBridge read your position from the
   ebook but saved it onto the audiobook file. The ebook's own progress never moved, so

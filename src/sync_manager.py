@@ -2839,6 +2839,9 @@ class SyncManager:
         # "Most recent change wins" - if only one client changed, it becomes the leader
         # Use hybrid time/percentage logic to filter out phantom API noise
         normalized_positions = self._normalize_for_cross_format_comparison(book, config)
+        # Clients whose current position is still the echo of BookBridge's own write.
+        # Populated by Guard 3 below; empty when the freshness guards are disabled.
+        echo_clients: set[str] = set()
         primary_audio_client = self._get_primary_audio_client_name(book)
         clients_with_delta = {k: v for k, v in vals.items() if self._has_significant_delta(k, config, book)}
 
@@ -2921,6 +2924,54 @@ class SyncManager:
                         )
                         clients_with_delta.pop(client_name, None)
                         break
+
+            # Guard 3 - own write-back provenance: BookBridge writes the leader's
+            # position to every follower each cycle, so a follower we just wrote to
+            # reports our own echo back. That echo is not evidence the user moved, so
+            # it may neither be the reason a sync runs nor the source it runs from
+            # (#416). The rollback veto already consults this provenance; leader
+            # selection did not, and in the same cycle would let the very value it had
+            # just dismissed as our write-back go on to lead. Same-value match only:
+            # a peer the user actually moved no longer matches what we wrote.
+            echo_margin = getattr(self, "sync_delta_between_clients", 0.005)
+            for client_name, observed_pct in vals.items():
+                if self._peer_position_is_own_writeback(
+                    abs_id, client_name, observed_pct, echo_margin
+                ):
+                    echo_clients.add(client_name)
+            for client_name in sorted(echo_clients):
+                if client_name in clients_with_delta:
+                    logger.info(
+                        f"🪞 '{abs_id}' '{title_snip}' Ignoring '{client_name}' delta "
+                        f"({vals[client_name]:.2%}): it holds BookBridge's own write-back, "
+                        f"not user movement"
+                    )
+                    clients_with_delta.pop(client_name, None)
+
+            # Guard 4 - cross-format scale artifact: an audio timeline and a book-level
+            # text percentage express the SAME physical position in different
+            # denominators, so their raw percentage spread is permanently non-zero.
+            # That standing spread reads as a discrepancy and keeps re-triggering
+            # resolution on a book nobody is reading, which is what round-tripped a
+            # text position through the audio timeline and rewound the reader (#416).
+            # When nothing has genuinely moved and every candidate lands on the same
+            # point of the normalized timeline, there is no disagreement to resolve.
+            if not clients_with_delta and normalized_positions and len(normalized_positions) > 1:
+                candidate_ts = [
+                    ts for name, ts in normalized_positions.items()
+                    if name in vals and ts is not None
+                ]
+                if len(candidate_ts) > 1:
+                    spread = max(candidate_ts) - min(candidate_ts)
+                    deadband = getattr(self, "cross_format_deadband_seconds", 2.0)
+                    if spread <= deadband:
+                        logger.info(
+                            f"🪞 '{abs_id}' '{title_snip}' No leader: no client moved and all "
+                            f"positions agree within {spread:.1f}s on the normalized timeline "
+                            f"(deadband {deadband:.1f}s) - the raw percentage spread is a "
+                            f"cross-format scale artifact, not a discrepancy"
+                        )
+                        return None, None
 
         leader = None
         leader_pct = None
@@ -3017,6 +3068,30 @@ class SyncManager:
             # Multiple clients changed or this is a discrepancy resolution
             # Use "furthest wins" logic among changed clients (or all if none changed)
             candidates = vals if single_delta_low_conf else (clients_with_delta if clients_with_delta else vals)
+
+            # Furthest-wins reaches for every client when nothing moved, which is
+            # exactly when our own write-back is the furthest value in the system.
+            # Drop echoes from the running; if that leaves nobody, nothing in the
+            # system has moved since our last write and there is nothing to sync -
+            # writing anyway is the rewind (#416).
+            if echo_clients:
+                genuine_candidates = {
+                    name: pct for name, pct in candidates.items() if name not in echo_clients
+                }
+                if genuine_candidates:
+                    if len(genuine_candidates) != len(candidates):
+                        excluded = sorted(set(candidates) - set(genuine_candidates))
+                        logger.info(
+                            f"🪞 '{abs_id}' '{title_snip}' Excluding own write-back "
+                            f"candidate(s) {excluded} from leader selection"
+                        )
+                    candidates = genuine_candidates
+                else:
+                    logger.info(
+                        f"🪞 '{abs_id}' '{title_snip}' No leader: every candidate holds "
+                        f"BookBridge's own write-back, not user movement - nothing to sync"
+                    )
+                    return None, None
             
             # For cross-format sync (audiobook vs ebook), use normalized timestamps
             if normalized_positions and len(normalized_positions) > 1:
