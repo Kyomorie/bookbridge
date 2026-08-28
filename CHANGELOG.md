@@ -8,6 +8,18 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Correcting a series in your library now reaches the dashboard.** Series were only
+  ever filled in, never revisited, so a series you fixed or deleted at the source stayed
+  on the dashboard forever — a book wrongly filed under an author's name kept that
+  "series" no matter what you changed in Audiobookshelf. A new **Re-check All Series**
+  button in Settings → Advanced Options revisits every book, applies corrections, and
+  removes a series the source no longer reports. It only ever removes one when the
+  library actually answers, so a service that is offline or not configured leaves your
+  existing series untouched rather than wiping them. It also refuses to trade a volume
+  number it already knows for an unknown one, so a book cannot lose its place in its own
+  series. The original **Backfill Series Metadata** button is unchanged and still only
+  fills in what is missing.
+
 - **Ebook-only books now show their real covers.** A book with no audiobook — one
   matched straight from BookOrbit or Grimmory — displayed a blank gradient tile
   everywhere on the dashboard, and a collapsed series made entirely of them showed one

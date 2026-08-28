@@ -23,6 +23,8 @@ os.environ.setdefault('DATA_DIR', 'test_data')
 os.environ.setdefault('BOOKS_DIR', 'test_data')
 
 from src.utils.series_metadata import (
+    SeriesResolution,
+    resolve_series_details,
     extract_series_from_abs_metadata,
     extract_series_from_library_detail,
     extract_series_from_title,
@@ -178,6 +180,144 @@ class TestResolveSeriesForBook(unittest.TestCase):
         client.is_configured.return_value = False
         self.assertEqual(resolve_series_for_book(book, bookorbit_client=client), (None, None))
         client.get_book_detail.assert_not_called()
+
+
+class TestServiceAnsweredReporting(unittest.TestCase):
+    """A refresh may only retire a series when the owning service actually spoke.
+
+    Reported: a bogus "Stephen King" series was deleted in ABS and the dashboard
+    kept showing it, because every writer of series_name is fill-only.
+    """
+
+    def _abs_book(self):
+        return SimpleNamespace(
+            abs_id="56126442-75fd-462e-83ae-66d743880f41",
+            abs_title="Rose Madder", audio_source="ABS",
+            audio_source_id="56126442-75fd-462e-83ae-66d743880f41",
+            ebook_source=None, ebook_source_id=None,
+        )
+
+    def test_abs_answering_with_no_series_is_authoritative(self):
+        """ABS returning an empty series list is a real answer, not silence."""
+        abs_client = MagicMock()
+        abs_client.is_configured.return_value = True
+        abs_client.get_item_details.return_value = {
+            "media": {"metadata": {"series": [], "seriesName": ""}}
+        }
+
+        result = resolve_series_details(self._abs_book(), abs_client=abs_client)
+        self.assertIsNone(result.name)
+        self.assertTrue(result.service_answered)
+
+    def test_lookup_failure_is_not_an_answer(self):
+        abs_client = MagicMock()
+        abs_client.is_configured.return_value = True
+        abs_client.get_item_details.side_effect = RuntimeError("ABS down")
+
+        result = resolve_series_details(self._abs_book(), abs_client=abs_client)
+        self.assertIsNone(result.name)
+        self.assertFalse(result.service_answered)
+
+    def test_unconfigured_client_is_not_an_answer(self):
+        abs_client = MagicMock()
+        abs_client.is_configured.return_value = False
+
+        result = resolve_series_details(self._abs_book(), abs_client=abs_client)
+        self.assertFalse(result.service_answered)
+
+    def test_missing_item_is_not_an_answer(self):
+        abs_client = MagicMock()
+        abs_client.is_configured.return_value = True
+        abs_client.get_item_details.return_value = None
+
+        result = resolve_series_details(self._abs_book(), abs_client=abs_client)
+        self.assertFalse(result.service_answered)
+
+    def test_resolution_reports_which_source_won(self):
+        client = _bookorbit_client({"seriesName": "Lawless Haven", "seriesIndex": 2})
+        book = SimpleNamespace(
+            abs_id="ebook-1", abs_title="Lawless Haven 2", audio_source=None,
+            audio_source_id=None, ebook_source="BookOrbit", ebook_source_id="5103",
+        )
+        result = resolve_series_details(book, bookorbit_client=client)
+        self.assertEqual(result.source, "bookorbit")
+
+    def test_force_refresh_bypasses_the_hour_long_detail_cache(self):
+        """BookOrbit caches book detail for an hour; a re-check must see edits."""
+        client = _bookorbit_client({"seriesName": "Lawless Haven", "seriesIndex": 2})
+        book = SimpleNamespace(
+            abs_id="ebook-1", abs_title="Lawless Haven 2", audio_source=None,
+            audio_source_id=None, ebook_source="BookOrbit", ebook_source_id="5103",
+        )
+
+        resolve_series_details(book, bookorbit_client=client, force_refresh=True)
+        client.get_book_detail.assert_called_once_with("5103", force=True)
+
+    def test_default_lookup_uses_the_cache(self):
+        client = _bookorbit_client({"seriesName": "Lawless Haven", "seriesIndex": 2})
+        book = SimpleNamespace(
+            abs_id="ebook-1", abs_title="Lawless Haven 2", audio_source=None,
+            audio_source_id=None, ebook_source="BookOrbit", ebook_source_id="5103",
+        )
+
+        resolve_series_details(book, bookorbit_client=client)
+        client.get_book_detail.assert_called_once_with("5103")
+
+
+class TestSeriesRefreshAction(unittest.TestCase):
+    """The decision that can destroy data, isolated so it can be tested directly."""
+
+    def setUp(self):
+        from src.web_server import _series_refresh_action
+        self.decide = _series_refresh_action
+
+    def test_deleted_series_is_cleared_when_the_service_answered(self):
+        resolution = SeriesResolution(None, None, None, service_answered=True)
+        self.assertEqual(self.decide("Stephen King", None, resolution), "clear")
+
+    def test_stored_series_survives_an_unreachable_service(self):
+        """The safety rule: silence must never be read as deletion."""
+        resolution = SeriesResolution(None, None, None, service_answered=False)
+        self.assertEqual(self.decide("Stephen King", None, resolution), "keep")
+
+    def test_matching_resolution_is_unchanged(self):
+        resolution = SeriesResolution("Lawless Haven", 2.0, "bookorbit", True)
+        self.assertEqual(self.decide("Lawless Haven", 2.0, resolution), "unchanged")
+
+    def test_integer_and_float_sequences_compare_equal(self):
+        resolution = SeriesResolution("Lawless Haven", 2.0, "bookorbit", True)
+        self.assertEqual(self.decide("Lawless Haven", 2, resolution), "unchanged")
+
+    def test_a_known_volume_number_is_not_traded_for_an_unknown_one(self):
+        """Found live: BookOrbit reports "Black Swan Event" with no index, so a
+        refresh blanked book 1's #1 and sorted it to the end of its own series."""
+        resolution = SeriesResolution("Black Swan Event", None, "bookorbit", True)
+        self.assertEqual(self.decide("Black Swan Event", 1.0, resolution), "unchanged")
+
+    def test_a_newly_known_number_is_still_applied(self):
+        resolution = SeriesResolution("Black Swan Event", 1.0, "bookorbit", True)
+        self.assertEqual(self.decide("Black Swan Event", None, resolution), "update")
+
+    def test_a_dropped_number_under_a_different_name_still_updates(self):
+        resolution = SeriesResolution("Real Series", None, "abs", True)
+        self.assertEqual(self.decide("Wrong Series", 3.0, resolution), "update")
+
+    def test_corrected_name_is_an_update(self):
+        resolution = SeriesResolution("A Mage's Cultivation", 1.0, "abs", True)
+        self.assertEqual(self.decide("Stephen King", None, resolution), "update")
+
+    def test_changed_sequence_alone_is_an_update(self):
+        resolution = SeriesResolution("Lawless Haven", 3.0, "bookorbit", True)
+        self.assertEqual(self.decide("Lawless Haven", 2.0, resolution), "update")
+
+    def test_empty_row_with_no_resolution_is_none(self):
+        resolution = SeriesResolution(None, None, None, service_answered=True)
+        self.assertEqual(self.decide(None, None, resolution), "none")
+        self.assertEqual(self.decide("", None, resolution), "none")
+
+    def test_fill_of_an_empty_row_is_an_update(self):
+        resolution = SeriesResolution("Dragon Flight Academy", 1.0, "bookorbit", True)
+        self.assertEqual(self.decide(None, None, resolution), "update")
 
 
 class TestEbookOnlyMappingPersistsSeries(unittest.TestCase):

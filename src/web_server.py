@@ -58,6 +58,7 @@ from src.utils.series_metadata import (
     extract_series_from_abs_metadata as _series_from_abs_metadata,
     extract_series_from_library_detail as _series_from_library_detail,
     extract_series_from_title as _series_from_title,
+    resolve_series_details,
     resolve_series_for_book,
 )
 
@@ -10336,6 +10337,43 @@ def _extract_series_from_title(title: str) -> tuple:
     return _series_from_title(title)
 
 
+def _series_seq_equal(stored: "float | int | str | None", resolved: "float | None") -> bool:
+    """True when a stored series sequence already matches a freshly resolved one."""
+    if stored is None and resolved is None:
+        return True
+    if stored is None or resolved is None:
+        return False
+    try:
+        return abs(float(stored) - float(resolved)) < 1e-9
+    except (TypeError, ValueError):
+        return False
+
+
+def _series_refresh_action(stored_name: "str | None", stored_seq: "float | int | str | None",
+                           resolution) -> str:
+    """Decide what a resolved series means for a stored row.
+
+    Returns ``update``, ``unchanged``, ``clear``, ``keep`` or ``none``.
+    ``clear`` is only ever returned when a service that owns the book actually
+    answered — silence from an offline or unconfigured library must leave the
+    stored series alone rather than read as "the series was deleted".
+    """
+    had_series = bool((stored_name or "").strip())
+    if resolution.name:
+        if had_series and resolution.name == stored_name:
+            if _series_seq_equal(stored_seq, resolution.sequence):
+                return "unchanged"
+            # Never trade a known volume number for an unknown one. Some
+            # libraries carry the series name but no index, and dropping the
+            # stored number would sort that book to the end of its own series.
+            if resolution.sequence is None and stored_seq is not None:
+                return "unchanged"
+        return "update"
+    if had_series:
+        return "clear" if resolution.service_answered else "keep"
+    return "none"
+
+
 def _series_backfill_clients() -> dict:
     """Return the clients the series backfill resolves against, keyed by kwarg name."""
     return {
@@ -10348,7 +10386,12 @@ def _series_backfill_clients() -> dict:
 
 @admin_required
 def api_series_backfill():
-    """Backfill series_name/series_sequence for all books that lack it.
+    """Backfill series_name/series_sequence, optionally re-resolving known rows.
+
+    Default (fill) mode only touches books with no series. Refresh mode
+    (``{"refresh": true}``) re-resolves every book and clears a series the
+    owning service no longer reports — but only when that service actually
+    answered, so an outage or an unconfigured client never wipes good data.
 
     Resolves each row against the service that owns its metadata — ABS for ABS
     audio, the ebook library (BookOrbit/Grimmory/Kavita) for ebook-only rows —
@@ -10361,6 +10404,11 @@ def api_series_backfill():
     start = _time.time()
     db = container.database_service()
 
+    payload = request.get_json(silent=True) or {}
+    refresh = bool(payload.get("refresh")) or (
+        str(request.args.get("refresh", "")).strip().lower() in ("1", "true", "on", "yes")
+    )
+
     clients = _series_backfill_clients()
 
     def _usable(client) -> bool:
@@ -10372,21 +10420,27 @@ def api_series_backfill():
     if not any(_usable(c) for c in clients.values()):
         return jsonify({"error": "No library service is configured"}), 400
 
+    columns = (
+        "SELECT abs_id, abs_title, audio_source, audio_source_id, "
+        "ebook_source, ebook_source_id, series_name, series_sequence FROM books"
+    )
+    query = columns if refresh else (
+        columns + " WHERE series_name IS NULL OR series_name = ''"
+    )
+
     # Collect all rows that need updating — read-only pass
     with db.get_session() as session:
-        rows = session.execute(
-            _sa.text(
-                "SELECT abs_id, abs_title, audio_source, audio_source_id, "
-                "ebook_source, ebook_source_id FROM books "
-                "WHERE series_name IS NULL OR series_name = ''"
-            )
-        ).fetchall()
+        rows = session.execute(_sa.text(query)).fetchall()
 
     updates = []   # list of (abs_id, series_name, series_sequence)
+    clears = []    # abs_ids whose owning service says the series is gone
     unresolved = 0
+    unchanged = 0
+    kept_no_answer = 0
     failed = 0
 
-    for abs_id, abs_title, audio_source, audio_source_id, ebook_source, ebook_source_id in rows:
+    for (abs_id, abs_title, audio_source, audio_source_id,
+         ebook_source, ebook_source_id, stored_name, stored_seq) in rows:
         book_row = SimpleNamespace(
             abs_id=abs_id,
             abs_title=abs_title,
@@ -10396,7 +10450,7 @@ def api_series_backfill():
             ebook_source_id=ebook_source_id,
         )
         try:
-            sname, sseq = resolve_series_for_book(book_row, **clients)
+            resolution = resolve_series_details(book_row, force_refresh=refresh, **clients)
         except Exception as e:
             logger.warning(
                 f"Series backfill lookup failed for '{sanitize_log_data(abs_title)}': {e}",
@@ -10405,30 +10459,55 @@ def api_series_backfill():
             failed += 1
             continue
 
-        if sname:
-            updates.append((abs_id, sname, sseq))
-            logger.debug(f"Series backfill queued: '{sname}' #{sseq} → '{sanitize_log_data(abs_title)}'")
+        action = _series_refresh_action(stored_name, stored_seq, resolution)
+        if action == "update":
+            updates.append((abs_id, resolution.name, resolution.sequence))
+            logger.debug(
+                f"Series backfill queued: '{resolution.name}' #{resolution.sequence} "
+                f"→ '{sanitize_log_data(abs_title)}' (via {resolution.source})"
+            )
+        elif action == "unchanged":
+            unchanged += 1
+        elif action == "clear":
+            clears.append(abs_id)
+            logger.info(
+                f"📚 Series cleared for '{sanitize_log_data(abs_title)}': source no longer "
+                f"reports a series (was '{sanitize_log_data(stored_name)}')"
+            )
+        elif action == "keep":
+            kept_no_answer += 1
         else:
             unresolved += 1
 
     # Write pass — single transaction, plain SQL
-    if updates:
+    if updates or clears:
         with db.get_session() as session:
             for abs_id, sname, sseq in updates:
                 session.execute(
                     _sa.text("UPDATE books SET series_name = :sname, series_sequence = :sseq WHERE abs_id = :abs_id"),
                     {"sname": sname, "sseq": sseq, "abs_id": abs_id},
                 )
+            for abs_id in clears:
+                session.execute(
+                    _sa.text("UPDATE books SET series_name = NULL, series_sequence = NULL WHERE abs_id = :abs_id"),
+                    {"abs_id": abs_id},
+                )
 
     duration = round(_time.time() - start, 1)
     logger.info(
-        f"Series backfill complete: updated={len(updates)} unresolved={unresolved} "
-        f"failed={failed} duration={duration}s"
+        f"Series backfill complete (mode={'refresh' if refresh else 'fill'}): "
+        f"updated={len(updates)} cleared={len(clears)} unchanged={unchanged} "
+        f"unresolved={unresolved} kept_no_answer={kept_no_answer} failed={failed} "
+        f"duration={duration}s"
     )
     return jsonify({
+        "mode": "refresh" if refresh else "fill",
         "scanned": len(rows),
         "updated": len(updates),
+        "cleared": len(clears),
+        "unchanged": unchanged,
         "unresolved": unresolved,
+        "kept_no_answer": kept_no_answer,
         "failed": failed,
         "duration_seconds": duration,
         "sample_updates": [{"abs_id": a, "series": s, "seq": q} for a, s, q in updates[:10]],

@@ -7,11 +7,25 @@ mapping creation, so every writer of ``books.series_name`` /
 
 import logging
 import re
-from typing import Any, Optional, Tuple
+from typing import Any, NamedTuple, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 SeriesTuple = Tuple[Optional[str], Optional[float]]
+
+
+class SeriesResolution(NamedTuple):
+    """Outcome of a series lookup.
+
+    ``service_answered`` records whether a service that owns this book actually
+    responded. Only then is "no series" authoritative — a lookup that failed or
+    had no configured client must never be read as "the series was removed".
+    """
+
+    name: Optional[str]
+    sequence: Optional[float]
+    source: Optional[str]
+    service_answered: bool
 
 _LIBRARY_SEQUENCE_KEYS = ("seriesIndex", "seriesNumber", "seriesSequence")
 
@@ -149,36 +163,43 @@ def _client_for_source(source_name: Any, clients: dict) -> Optional[Any]:
     return client
 
 
-def _library_detail(source_name: Any, client: Any, source_id: Any) -> Optional[dict]:
+def _library_detail(source_name: Any, client: Any, source_id: Any,
+                    force: bool = False) -> Optional[dict]:
     """Fetch the library record that actually carries the series fields.
 
     BookOrbit's cached light record omits ``seriesName``/``seriesIndex`` and is
     keyed by integer id, so a string ``ebook_source_id`` resolves to nothing
-    there; only the detail fetch carries series metadata.
+    there; only the detail fetch carries series metadata. Its detail cache holds
+    for an hour, so *force* bypasses it when a caller needs to see an edit the
+    user just made at the source.
     """
     if client is None or source_id is None or source_id == "":
         return None
     if str(source_name).strip().lower() == "bookorbit":
+        if force:
+            return client.get_book_detail(source_id, force=True)
         return client.get_book_detail(source_id)
     return client.get_book_by_id(source_id)
 
 
-def resolve_series_for_book(
+def resolve_series_details(
     book: Any,
     *,
     abs_client: Any = None,
     bookorbit_client: Any = None,
     booklore_client: Any = None,
     kavita_client: Any = None,
-) -> SeriesTuple:
-    """Return (series_name, series_sequence) for *book* from the best source available.
+    force_refresh: bool = False,
+) -> SeriesResolution:
+    """Resolve *book*'s series, reporting which source answered.
 
     Tries ABS, then the audio library, then the ebook library, then a title
-    heuristic, returning the first source that yields a name. *book* is
+    heuristic, stopping at the first source that yields a name. *book* is
     duck-typed on ``abs_id``/``abs_title``/``audio_source``/``audio_source_id``/
-    ``ebook_source``/``ebook_source_id``, so ORM rows and lightweight
-    namespaces both work. Remote lookup failures are logged and skipped, never
-    raised.
+    ``ebook_source``/``ebook_source_id``, so ORM rows and lightweight namespaces
+    both work. Remote lookup failures are logged and skipped, never raised, and
+    leave ``service_answered`` False so callers can tell "this book has no
+    series" apart from "nobody could tell us".
     """
     abs_id = getattr(book, "abs_id", None)
     abs_title = getattr(book, "abs_title", None)
@@ -192,14 +213,16 @@ def resolve_series_for_book(
         "booklore_client": booklore_client,
         "kavita_client": kavita_client,
     }
+    answered = False
 
     if audio_source == "ABS" and abs_id and abs_client is not None and abs_client.is_configured():
         try:
             item_details = abs_client.get_item_details(abs_id)
             if item_details:
+                answered = True
                 name, sequence = extract_series_from_abs_item(item_details)
                 if name:
-                    return name, sequence
+                    return SeriesResolution(name, sequence, "abs", True)
         except Exception as e:
             logger.warning(
                 f"Series resolve: ABS lookup failed for abs_id={abs_id}: {e}",
@@ -216,11 +239,12 @@ def resolve_series_for_book(
         if client is None:
             continue
         try:
-            detail = _library_detail(source, client, source_id)
+            detail = _library_detail(source, client, source_id, force=force_refresh)
             if detail:
+                answered = True
                 name, sequence = extract_series_from_library_detail(detail)
                 if name:
-                    return name, sequence
+                    return SeriesResolution(name, sequence, str(source).strip().lower(), True)
         except Exception as e:
             logger.warning(
                 f"Series resolve: {source} {label} lookup failed for source_id={source_id}: {e}",
@@ -230,6 +254,27 @@ def resolve_series_for_book(
     if abs_title:
         name, sequence = extract_series_from_title(abs_title)
         if name:
-            return name, sequence
+            return SeriesResolution(name, sequence, "title", answered)
 
-    return None, None
+    return SeriesResolution(None, None, None, answered)
+
+
+def resolve_series_for_book(
+    book: Any,
+    *,
+    abs_client: Any = None,
+    bookorbit_client: Any = None,
+    booklore_client: Any = None,
+    kavita_client: Any = None,
+    force_refresh: bool = False,
+) -> SeriesTuple:
+    """Return (series_name, series_sequence) for *book* from the best source available."""
+    resolution = resolve_series_details(
+        book,
+        abs_client=abs_client,
+        bookorbit_client=bookorbit_client,
+        booklore_client=booklore_client,
+        kavita_client=kavita_client,
+        force_refresh=force_refresh,
+    )
+    return resolution.name, resolution.sequence

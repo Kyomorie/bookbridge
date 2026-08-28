@@ -2388,11 +2388,19 @@
                             <button type="button" class="btn btn-primary" onclick="backfillSeriesMetadata()">
                                 Backfill Series Metadata
                             </button>
+                            <button type="button" class="btn btn-secondary" onclick="refreshSeriesMetadata()">
+                                Re-check All Series
+                            </button>
                             <p class="help-text flex-1 m-0">
                                 Look up the series name and number for every book that is missing them, asking the
                                 service that owns each book (Audiobookshelf for audio, BookOrbit / Grimmory / Kavita
                                 for ebook-only books). Books in the same series then collapse into one card on the
                                 dashboard. Safe to re-run; books that already have a series are left alone.
+                                <br><br>
+                                <strong>Re-check All Series</strong> also revisits books that already have one, so a
+                                series you corrected or deleted in the source library is picked up here — including
+                                removing a series that no longer exists. A book is only cleared when its library
+                                actually answers, so an offline or unconfigured service never wipes what you have.
                             </p>
                         </div>
                     </div>
@@ -3277,10 +3285,16 @@
             }
         }
 
-        async function backfillSeriesMetadata() {
-            if (!confirm("Run series backfill now?
+        async function runSeriesBackfill(refresh) {
+            const label = refresh ? 'Series re-check' : 'Series backfill';
+            const question = refresh
+                ? "Re-check every book's series?
 
-This looks up the series name and number for every book that is missing them, then groups them on the dashboard. It may take a few minutes on a large library.")) {
+This revisits books that already have a series and will remove one the source library no longer reports. Books whose library cannot be reached are left untouched."
+                : "Run series backfill now?
+
+This looks up the series name and number for every book that is missing them, then groups them on the dashboard. It may take a few minutes on a large library.";
+            if (!confirm(question)) {
                 return;
             }
 
@@ -3289,35 +3303,55 @@ This looks up the series name and number for every book that is missing them, th
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
-                    }
+                    },
+                    body: JSON.stringify({ refresh: !!refresh })
                 });
 
                 const data = await response.json();
                 if (!response.ok || data.success === false) {
-                    alert(`Series backfill failed: ${data.error || 'Unknown error'}`);
+                    alert(`${label} failed: ${data.error || 'Unknown error'}`);
                     return;
                 }
 
-                alert(
-                    `Series backfill complete.
+                let summary =
+                    `${label} complete.
 ` +
                     `Scanned: ${data.scanned}
 ` +
                     `Updated: ${data.updated}
+`;
+                if (refresh) {
+                    summary +=
+                        `Series removed: ${data.cleared}
 ` +
+                        `Already correct: ${data.unchanged}
+` +
+                        `Kept (library unreachable): ${data.kept_no_answer}
+`;
+                }
+                summary +=
                     `No series found: ${data.unresolved}
 ` +
                     `Failed: ${data.failed}
 ` +
-                    `Duration: ${data.duration_seconds}s`
-                );
-                if (data.updated > 0) {
+                    `Duration: ${data.duration_seconds}s`;
+                alert(summary);
+
+                if (data.updated > 0 || data.cleared > 0) {
                     location.reload();
                 }
             } catch (err) {
-                console.error('Error running series backfill:', err);
-                alert('An error occurred while running series backfill. Check console for details.');
+                console.error(`Error running ${label.toLowerCase()}:`, err);
+                alert(`An error occurred while running the ${label.toLowerCase()}. Check console for details.`);
             }
+        }
+
+        async function refreshSeriesMetadata() {
+            return runSeriesBackfill(true);
+        }
+
+        async function backfillSeriesMetadata() {
+            return runSeriesBackfill(false);
         }
 
         document.addEventListener('DOMContentLoaded', function () {
