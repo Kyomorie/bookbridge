@@ -1,0 +1,2988 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="The ultimate bridge for cross-platform reading and listening synchronization.">
+      
+      
+        <meta name="author" content="cporcellijr">
+      
+      
+        <link rel="canonical" href="https://cporcellijr.github.io/bookbridge/changelog/">
+      
+      
+        <link rel="prev" href="../troubleshooting/">
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/icon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Changelog - BookBridge</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#changelog" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="BookBridge" class="md-header__button md-logo" aria-label="BookBridge" data-md-component="logo">
+      
+  <img src="../assets/icon.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            BookBridge
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Changelog
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/cporcellijr/bookbridge" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    cporcellijr/bookbridge
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../getting-started/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting Started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../user-guide/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  User Guide
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../configuration/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Configuration
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../troubleshooting/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Troubleshooting
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Changelog
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="BookBridge" class="md-nav__button md-logo" aria-label="BookBridge" data-md-component="logo">
+      
+  <img src="../assets/icon.png" alt="logo">
+
+    </a>
+    BookBridge
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/cporcellijr/bookbridge" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    cporcellijr/bookbridge
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../user-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#750" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.5.0]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.5.0]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#security" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Security
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#whats-new" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#changed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#operational-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operational Notes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#742" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.4.2]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.4.2]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fixed_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#operational-notes_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operational Notes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#741" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.4.1]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.4.1]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#upgrade-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upgrade Notes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#740" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.4.0]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.4.0]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#upgrade-notes_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upgrade Notes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#734" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.3.4]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#733" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.3.3]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.3.3]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#732" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.3.2]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.3.2]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#maintenance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Maintenance
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#731" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.3.1]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.3.1]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#security_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Security
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#730" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.3.0]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.3.0]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-changed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#720" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.2.0]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.2.0]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-changed_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#710" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.1.0]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.1.0]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-changed_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#700" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.0.0]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.0.0]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-changed_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_9" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#security_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Security
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#680" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [6.8.0]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[6.8.0]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_9" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-changed_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_10" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#670-2026-05-11" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [6.7.0] - 2026-05-11
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[6.7.0] - 2026-05-11">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_10" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_11" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#660-2026-05-01" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [6.6.0] - 2026-05-01
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[6.6.0] - 2026-05-01">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_11" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#650-2026-4-12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [6.5.0] 2026-4-12
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[6.5.0] 2026-4-12">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-changed_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_13" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#640-2026-04-04" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [6.4.0] - 2026-04-04
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[6.4.0] - 2026-04-04">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#changed_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_14" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#633-2026-03-08" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [6.3.3] - 2026-03-08
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[6.3.3] - 2026-03-08">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#changed_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_15" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#630-2026-02-18" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [6.3.0] - 2026-02-18
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[6.3.0] - 2026-02-18">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#features" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🚀 Features
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🐛 Fixes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#maintenance_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🧹 Maintenance
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#750" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.5.0]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.5.0]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#security" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Security
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#whats-new" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#changed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#operational-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operational Notes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#742" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.4.2]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.4.2]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fixed_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#operational-notes_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operational Notes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#741" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.4.1]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.4.1]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#upgrade-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upgrade Notes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#740" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.4.0]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.4.0]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#upgrade-notes_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upgrade Notes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#734" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.3.4]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#733" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.3.3]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.3.3]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#732" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.3.2]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.3.2]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#maintenance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Maintenance
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#731" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.3.1]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.3.1]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#security_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Security
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#730" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.3.0]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.3.0]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-changed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#720" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.2.0]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.2.0]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-changed_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#710" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.1.0]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.1.0]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-changed_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#700" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [7.0.0]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[7.0.0]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-changed_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_9" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#security_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Security
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#680" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [6.8.0]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[6.8.0]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_9" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-changed_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_10" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#670-2026-05-11" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [6.7.0] - 2026-05-11
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[6.7.0] - 2026-05-11">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_10" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_11" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#660-2026-05-01" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [6.6.0] - 2026-05-01
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[6.6.0] - 2026-05-01">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_11" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#650-2026-4-12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [6.5.0] 2026-4-12
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[6.5.0] 2026-4-12">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#whats-new_12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's New
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-changed_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_13" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#640-2026-04-04" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [6.4.0] - 2026-04-04
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[6.4.0] - 2026-04-04">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#changed_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_14" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#633-2026-03-08" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [6.3.3] - 2026-03-08
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[6.3.3] - 2026-03-08">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#changed_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_15" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#630-2026-02-18" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [6.3.0] - 2026-02-18
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[6.3.0] - 2026-02-18">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#features" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🚀 Features
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🐛 Fixes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#maintenance_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🧹 Maintenance
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="changelog">Changelog</h1>
+<p>For the full history of changes, please refer to the <strong><a href="https://github.com/cporcellijr/bookbridge/releases">GitHub Releases</a></strong> page.</p>
+<hr />
+<h2 id="750">[7.5.0]</h2>
+<p>Kavita joins as a full ebook source and reading client, library cards can show you the text at your current position, and the dashboard learned to sort by when you added a book. This release also carries a <strong>security fix that matters for multi-user installs</strong> — see below.</p>
+<h3 id="security">Security</h3>
+<ul>
+<li><strong>Forge and Match now confine a local ebook source to your configured library.</strong> BookBridge did not fully verify that a selected <em>Local File</em> ebook stayed inside your configured ebook directories, so a signed-in account could cause the server to read a file from outside them. Local sources are now restricted to <code>BOOKS_DIR</code>, <code>EXTRA_EBOOK_DIRS</code>, and the EPUB cache; anything outside those roots is refused and logged. <strong>Upgrade promptly if other people have accounts on your install.</strong> Affects 7.4.2 and earlier. Reported privately by external security review; no exploitation in the wild is known.</li>
+</ul>
+<h3 id="whats-new">What's New</h3>
+<ul>
+<li><strong>Kavita is a first-class ebook source and reading client.</strong> Search and import Kavita EPUBs, download them to managed KOReader devices, match by KOReader hash, sync progress both ways, manage a collection for shelf-watch and Storyteller workflows, proxy covers, and use Kavita books for tracker metadata. Progress rides Kavita's native KOReader endpoint. Credentials and library/collection choices are per-reader.</li>
+<li><strong>See the text at your current position.</strong> <em>Show position</em> beside the progress bar opens a short excerpt with a marker where you are synced to, using the exact XPath or CFI when your reader saved one and labelling a percentage-only estimate as approximate. Contributed by <a href="https://github.com/Kyomorie">@Kyomorie</a> in #397 (#394).</li>
+<li><strong>Sort your library by Date Added</strong>, newest or oldest first. A series sorts by its most recently added book.</li>
+<li><strong>Searching for a book you have not added yet now leads somewhere</strong> — the library search offers to look for that title in your libraries, carrying your text into Add Book.</li>
+<li><strong>The Add Book tab shows how many books are queued.</strong></li>
+<li><strong>Add Book and Suggestions show each edition's language</strong> as a badge when the provider supplies it. Contributed by <a href="https://github.com/Kyomorie">@Kyomorie</a> in #405.</li>
+<li><strong>Suggestions names the service each audiobook came from.</strong> Contributed by <a href="https://github.com/Marcelwalter">@Marcelwalter</a> in #407.</li>
+</ul>
+<h3 id="fixed">Fixed</h3>
+<ul>
+<li><strong>BridgeSync's <em>Test Connection</em> tells you when you have pointed it at the wrong server (#403).</strong> It only checked that the address accepted your login, which any KoSync-compatible server does. It now asks the server to identify itself. Plugin updated to <strong>0.6.6</strong>.</li>
+<li><strong>The source badge on the Add Book page is visible, and leads the card (#381).</strong> The card no longer locks itself to a square and slice off whatever does not fit.</li>
+<li><strong>A KoSync timing setting you change takes effect without a restart.</strong> Contributed by <a href="https://github.com/Kyomorie">@Kyomorie</a> in #404.</li>
+</ul>
+<h3 id="changed">Changed</h3>
+<ul>
+<li><strong>The Settings page opens immediately again</strong> — it was reading every stored alignment map just to count them.</li>
+<li><strong>The dashboard no longer re-checks every cover on each visit.</strong></li>
+<li><strong>Storyteller edition creation is clearly separated from ordinary matching:</strong> <strong>Create Storyteller Edition &amp; Match All</strong> and <strong>Create Storyteller Edition Only</strong>, with only <strong>Match All</strong> shown when the reader has no Storyteller account.</li>
+</ul>
+<h3 id="operational-notes">Operational Notes</h3>
+<ul>
+<li>One database migration (a covering index behind the Settings fix); it applies automatically on boot.</li>
+<li>Kavita is off until configured, and needs a non-expiring auth key per reader from <strong>User Settings -&gt; 3rd Party Clients</strong>.</li>
+<li>If your ebooks live outside <code>BOOKS_DIR</code>, list those folders in <code>EXTRA_EBOOK_DIRS</code> — a local file outside your configured roots is now refused rather than silently read.</li>
+</ul>
+<hr />
+<h2 id="742">[7.4.2]</h2>
+<p>A hotfix for the BridgeSync KOReader plugin. Every network operation in plugin versions 0.6.1 through 0.6.4 ran itself twice over — it crashed KOReader outright on Kindle, and on Android it made Test Connection, plugin update checks, book sync, stats sync and highlight sync fail no matter how correct your settings were. Nothing on the server changed.</p>
+<h3 id="fixed_1">Fixed</h3>
+<ul>
+<li><strong>BridgeSync no longer crashes your Kindle on Test Connection, and authentication works again (#370, #401).</strong> Since 0.6.1 the plugin ran every non-download request inside a second background process nested inside the first, leaving two copies of KOReader on the same screen and input devices. Plugin updated to <strong>0.6.5</strong>.</li>
+<li><strong>A background operation that crashes no longer reports itself as a rejected login.</strong> A crash that returned no result was read as success-with-nothing-in-it, so it reached you as a wrong username and password.</li>
+</ul>
+<h3 id="operational-notes_1">Operational Notes</h3>
+<ul>
+<li><strong>Re-download the plugin by hand — it cannot update itself out of this.</strong> "Check for Plugin Update" is one of the broken operations, so no device on 0.6.1–0.6.4 can pull the fix through the plugin. Download the zip from your BookBridge account page, unzip it into <code>koreader/plugins/</code> over the existing <code>bridgesync.koplugin</code> folder, and restart KOReader on every device.</li>
+</ul>
+<hr />
+<h2 id="741">[7.4.1]</h2>
+<p>A maintenance release for 7.4.0. The headline is <strong>the BridgeSync plugin starts on a fresh install again</strong> — 0.6.3 crashed before it ever ran on any device without an existing BridgeSync log file, which meant every new KOReader setup. It also stops Hardcover losing the read you already finished, keeps a stock Kobo from dragging CWA progress back, and adds five opt-in settings.</p>
+<h3 id="whats-new_1">What's New</h3>
+<ul>
+<li><strong>Share an existing library with the people who already have accounts.</strong> Settings → Users gains a <strong>Share library with all users</strong> button that hands the whole catalog to every active user at once, instead of <em>Shared Library</em> only applying to accounts created afterwards. Visibility only. (#384)</li>
+<li><strong>Change an existing account between user and admin.</strong> Settings → Users gains a <em>Make admin</em> / <em>Make user</em> button, instead of delete-and-recreate being the only way to widen access. A promoted admin keeps using their own service accounts — admins no longer inherit the global service credentials, which belong to the primary admin. (#385)</li>
+<li><strong>Propagate Completion.</strong> Finishing a book on one service can mark it finished everywhere, since raw percentages never agree at the end of a book. Off by default, under Settings → Sync. Contributed by <a href="https://github.com/benjitobz">@benjitobz</a>. (#374)</li>
+<li><strong>Auto-match suggestions.</strong> High-confidence candidates link themselves as a scan finds them. Off by default; loose title matches and same-folder candidates are never linked automatically. Contributed by <a href="https://github.com/benjitobz">@benjitobz</a>. (#375)</li>
+<li><strong>Cross-device rewind policy.</strong> The protection that ignores a lower percentage from a second device is now a setting, still on by default. Contributed by <a href="https://github.com/Kyomorie">@Kyomorie</a>. (#391)</li>
+<li><strong>Compare text positions when percentages disagree</strong>, for when a reader and BookBridge measure the same EPUB on slightly different scales. Off by default. Contributed by <a href="https://github.com/Kyomorie">@Kyomorie</a>. (#380)</li>
+</ul>
+<h3 id="fixed_2">Fixed</h3>
+<ul>
+<li><strong>BridgeSync 0.6.4 starts on a fresh install (#370)</strong>, with better managed-folder detection and error reporting. Fixed by <a href="https://github.com/theryanmc">@theryanmc</a>. (#373, #377)</li>
+<li><strong>Re-reading a book no longer overwrites the read you already finished (#390)</strong>, and a stale reader at a low percentage no longer invents one. Contributed by <a href="https://github.com/Kyomorie">@Kyomorie</a>. (#398)</li>
+<li><strong>Saving settings no longer writes junk rows into your configuration</strong> — the handler stored every posted form field, including the CSRF token each form carries. Only registered settings are saved now.</li>
+<li><strong>A broken Hardcover connection is reported once, clearly, with the next step</strong>, and transient failures are retried.</li>
+<li><strong>Startup checks the admin's own credentials</strong>, not the abandoned global copies left by the multi-user upgrade, so a rotated token no longer reports as broken.</li>
+<li><strong>Positions at the very start of a chapter no longer drift forward (#276)</strong>. Contributed by <a href="https://github.com/Kyomorie">@Kyomorie</a>. (#382)</li>
+<li><strong>CWA progress no longer snaps back when a stock Kobo opens the book (#364)</strong>, and <strong>Audiobookshelf lookups ask for the expanded record</strong> so audio files and chapters are present — contributed by <a href="https://github.com/TheSingularis">@TheSingularis</a>. (#371)</li>
+<li><strong>Mark Complete works on titles containing an apostrophe</strong>, the source badge stays visible on long Add Book titles (#381), and tracker cooldowns fire when their timer expires.</li>
+<li><strong>KOReader position comparisons survive a restart</strong>, now that XPath ordering is persisted and prewarmed. Contributed by <a href="https://github.com/Kyomorie">@Kyomorie</a>. (#389)</li>
+</ul>
+<h3 id="upgrade-notes">Upgrade Notes</h3>
+<p>Restart to apply the database migration (automatic on container start) and re-download the BridgeSync plugin on each KOReader device — 0.6.3 cannot update itself. Every new setting defaults to current behavior. If you run a <strong>second admin account</strong> with blank Integrations, fill them in: admins no longer inherit the primary admin's service logins, so that account's services are skipped until it has its own.</p>
+<hr />
+<h2 id="740">[7.4.0]</h2>
+<p>The headline is <strong>positions you can trust again</strong>: an audiobook transcribed from a partial download used to align happily against the part it received, and a position saved by the Audiobookshelf mobile app couldn't be read at all. Both are fixed, along with the cases where a book got stuck at 100% and every reset came straight back. KOReader device sync is also usable immediately after a restart — the first sync on a 400-book library went from about ten minutes to effectively instant — and a book's link to your reader now survives editing its metadata.</p>
+<h3 id="whats-new_2">What's New</h3>
+<ul>
+<li><strong>Shared Library.</strong> One opt-in setting makes every book anyone matches visible to every user, and gives a new account the whole library at once. Progress, KOSync documents and stats stay strictly per-user. (#361)</li>
+<li><strong>Book links survive editing a book.</strong> Editing metadata rewrites the file and changes the fingerprint KOReader syncs by, which used to break the link until you repaired it by hand. BookBridge now re-checks and re-links your books on a schedule (on by default, every 6 hours), and copies already on a device keep working.</li>
+<li><strong>A book your reader opens can be identified against a BookOrbit library</strong>, not just local files and Grimmory, with a search limit so one lookup can't turn into a mass download.</li>
+<li><strong>Public URL per integration.</strong> Audiobookshelf, Grimmory, BookOrbit and CWA each get an optional public address, so the server URL can stay on an internal Docker hostname while every link sends your browser somewhere it can reach. Contributed by <a href="https://github.com/benjitobz">@benjitobz</a>. (#366, #349)</li>
+<li><strong>Reverse proxy auto-login.</strong> If Authelia, Authentik, Cloudflare Access or similar already authenticated you, BookBridge can accept that instead of showing a second login form. Off by default, existing accounts only, restricted to proxy addresses you list. Contributed by <a href="https://github.com/benjitobz">@benjitobz</a>. (#366)</li>
+<li><strong>Choose the position format written to Audiobookshelf</strong> — CFI (default, readable everywhere), Readium locator (exact in third-party readers such as Audiobooth), or Auto to match whatever your reader last wrote.</li>
+<li><strong>BridgeSync plugin 0.6.3</strong>: faster highlight sync, network work off KOReader's UI thread, resumable library sweeps, verified downloads and self-updates, and a <strong>Max Downloads per Sync</strong> cap for large bulk matches.</li>
+</ul>
+<h3 id="fixed_3">Fixed</h3>
+<ul>
+<li><strong>Audiobook positions no longer drift when only part of the audio arrived (#362).</strong> Downloads are size-verified, coverage is checked before transcription starts (new <strong>Minimum Transcript Coverage</strong>, default 85%), and a cached bad transcript is re-checked instead of replayed forever. Books already aligned from short audio should be re-aligned.</li>
+<li><strong>Progress percentages for audio sources read too high (#362)</strong>; books correct themselves as they sync.</li>
+<li><strong>Audiobookshelf mobile reading positions work in both directions (#359)</strong>, and resolve to the exact spot in the book instead of a whole-book percentage.</li>
+<li><strong>A book can no longer be wrongly marked finished everywhere (#358)</strong> by a bad alignment resolving a mid-audiobook position to the end of the ebook.</li>
+<li><strong>Deleting a mapping clears its KOReader progress (#358)</strong>, so a book stuck at 100% no longer comes back at 100% after a delete and re-match.</li>
+<li><strong>Re-adding a book someone else already matched finishes immediately (#360)</strong> instead of re-running transcription and alignment.</li>
+<li><strong>BridgeSync connects to numeric IPv4 server addresses (#367)</strong>, and a failed book download is retried on the next sync.</li>
+<li><strong>Books that live only behind a library API no longer go stale</strong>, and a failed refresh can't damage the copy you already had.</li>
+<li><strong>Multi-user installs are properly isolated</strong>, and a missing Audiobookshelf item is flagged on the dashboard instead of retrying silently forever.</li>
+<li>A batch of integration edge cases and log-noise fixes, plus diagnostics that are more private and carry the stack detail needed to act on them.</li>
+</ul>
+<h3 id="upgrade-notes_1">Upgrade Notes</h3>
+<p>Run the database migration (automatic on container start) and re-download the BridgeSync plugin on each KOReader device. Books aligned from incomplete audio need a re-forge, and books already stuck at 100% need one manual pass: unlink and delete the document under <em>Settings → KOSync Documents</em>, then re-match.</p>
+<hr />
+<h2 id="734">[7.3.4]</h2>
+<p>A single-fix release: <strong>local transcription works again on the standard image.</strong> Since 7.3.0, the automatic GPU check before local Whisper transcription crashed with <code>No module named 'nvidia'</code> on CPU-only installs, so every transcription failed before it began and books never finished syncing. Missing CUDA libraries now simply mean "use the CPU." Affected books were parked for retry, so they pick themselves back up after updating — no manual steps. The <code>-cuda</code> image, external transcription servers, and Deepgram were unaffected. Reported by <a href="https://github.com/ibrodebill">@ibrodebill</a>. (#355)</p>
+<hr />
+<h2 id="733">[7.3.3]</h2>
+<p>The headline is <strong>audiobook covers load again, and your Audiobookshelf token stays on the server</strong>: if Audiobookshelf is only reachable from the server, every cover came up blank and the address and token went to the browser with it. This release also adds external GPU transcription against any OpenAI-compatible server, stops an Audiobookshelf ebook library from burying real audiobook suggestions, and repairs matching for libraries BookBridge reaches only over the network.</p>
+<h3 id="whats-new_3">What's New</h3>
+<ul>
+<li><strong>Transcription can run on a GPU elsewhere on your network — and not only whisper.cpp.</strong> The Whisper.cpp provider now works against any OpenAI-compatible transcription endpoint, such as speaches, NVIDIA parakeet, or a proxy like llama-swap, with a 🔗 <strong>Test</strong> button to confirm the server before you save. <strong>Split Uploads</strong> restores sync accuracy on servers that return one merged segment per request, and <strong>Send Original Audio</strong> hands the original mp3/m4b straight to servers that chunk it themselves, saving minutes of conversion per book. Contributed by <a href="https://github.com/chelming">@chelming</a>. (#330)</li>
+<li><strong>Audio Split Length is adjustable from Settings</strong>, so a smaller GPU can get through long books without running out of memory. Contributed by <a href="https://github.com/chelming">@chelming</a>.</li>
+<li><strong>Books that share a title are easier to tell apart when you add them.</strong> Both sides of the Add / Update Book picker now show a small edition line — the subtitle your library has, or the series position ("Warlock #2") — so three identical cards are no longer guesswork.</li>
+</ul>
+<h3 id="fixed_4">Fixed</h3>
+<ul>
+<li><strong>Audiobook covers load when Audiobookshelf is only reachable from the server, and your API token is no longer sent to the browser.</strong> Covers now always go through BookBridge's own cover routes, so no library address or token leaves the server, and existing books fix themselves on the next page load. (#353)</li>
+<li><strong>Ebooks in an Audiobookshelf library are no longer offered as audiobooks to match</strong>, which had buried real suggestions under thousands of bogus 100% self-matches. (#351)</li>
+<li><strong>Books matched from a library BookBridge reaches only over the network now actually download.</strong> The exact book you picked is fetched by id instead of being searched for again by filename, and affected books retry on their own. (#352)</li>
+<li><strong>"Add all exact" on the Suggestions page no longer silently does nothing</strong> after a restart or on a long-open tab; scan results are restored from the on-disk cache, and a suggestion that genuinely can't be queued now says so.</li>
+<li><strong>Manual bug reports include the recent logs needed to investigate them</strong>, even when no warning was buffered at that moment.</li>
+<li><strong>Raising the log level actually produces the extra detail</strong>, and a failed transcription against an external server now reports the server's own error. Contributed by <a href="https://github.com/chelming">@chelming</a>.</li>
+<li><strong>Two KOReader devices building a manifest for the same ebook at once no longer collide</strong>, and diagnostics no longer exhaust their warning-template limit on short book IDs, filenames, or XPath fragments.</li>
+</ul>
+<hr />
+<h2 id="732">[7.3.2]</h2>
+<p>The headline is <strong>BookBridge leaves your disks alone when nothing is happening</strong>: a background task was re-reading every book in your library once a minute, forever, which kept drives from ever spinning down. This release also makes shelving and book matching reliable across users, restores Grimmory shelf creation, reconnects instant sync behind HTTPS reverse proxies, and adds a dashboard indicator showing which app last moved each book.</p>
+<h3 id="whats-new_4">What's New</h3>
+<ul>
+<li><strong>See which app last moved a book.</strong> In Progress cards on the dashboard now mark the service that most recently updated your position — Audiobookshelf if you last listened in the ABS app, KoSync if you last read on your e-reader — so it's easy to tell which side drove the latest progress. (#333)</li>
+</ul>
+<h3 id="fixed_5">Fixed</h3>
+<ul>
+<li><strong>Your book files are no longer read constantly when nothing is happening.</strong> The list used for the optional KOReader managed-folder sync was rebuilt every minute, re-hashing your whole library even on installs that never use the feature. It is now built only when a KOReader device asks for it, and each book's hash is remembered until the file itself changes. (#342)</li>
+<li><strong>Shelving and matching are reliable and private per user.</strong> Add Book and Suggestions share one background processor, queued work is stamped to the reader who created it, a failed shelf move can no longer leave a book on neither shelf, and BookOrbit recognizes your configured shelf name regardless of capitalization.</li>
+<li><strong>BookBridge can create Grimmory shelves again.</strong> Shelving to a shelf that didn't exist yet silently did nothing on newer Grimmory builds; your configured Kobo and Up Next shelves are now created on first use.</li>
+<li><strong>Audiobookshelf instant sync works behind HTTPS reverse proxies.</strong> Affected installs fell back to scheduled polling; instant sync resumes after updating and restarting.</li>
+<li><strong>Two e-readers opening the same new book at once no longer fails</strong>, and KOReader managed-folder sync can recover Audiobookshelf ebooks with ordinary filenames.</li>
+<li><strong>Positions in ebooks containing HTML comments now resolve</strong> instead of dropping that book from the cycle. (#341)</li>
+<li><strong>An expired StoryGraph login is reported once, clearly</strong>, instead of failing silently for every book on every cycle — and syncing resumes as soon as you save fresh credentials.</li>
+<li><strong>Book editions with apostrophes can now be selected from multi-result matching searches.</strong> (#339)</li>
+<li><strong>A round of log-noise fixes</strong>, so what's left in your log is worth reading.</li>
+</ul>
+<h3 id="maintenance">Maintenance</h3>
+<ul>
+<li>The legacy match, batch-match, and forge screens — long since replaced by Add / Update Book — were removed, along with a batch of unused code and dependencies. Their links now go straight to Add / Update Book, and the Shelfmark link opens the tool directly. No feature was lost.</li>
+</ul>
+<hr />
+<h2 id="731">[7.3.1]</h2>
+<p>The headline is <strong>your stored credentials are now encrypted</strong>: every password, API token, sync key, and session cookie BookBridge keeps for you is encrypted before it touches the database, alongside fixes for KOReader sync, Calibre-Web Automated relays, and background transcription.</p>
+<h3 id="security_1">Security</h3>
+<ul>
+<li><strong>Stored credentials are now encrypted at rest.</strong> Everything you give BookBridge — your own service accounts and every reader's — used to sit in <code>database.db</code> as the exact text you typed, so anyone with a copy of that file or a backup could read every account the bridge touches. Those values are now encrypted, and decrypted only in memory at the moment a credential is actually used.</li>
+</ul>
+<p>Upgrading handles itself: on first boot BookBridge creates an encryption key at <code>DATA_DIR/secret.key</code> and encrypts anything it finds still in the clear. Nothing to re-enter, no migration to run. Usernames, server URLs, library IDs, and on/off toggles stay readable so your install remains easy to inspect and support.</p>
+<p><strong>Back up <code>secret.key</code> alongside your database.</strong> Both live in your <code>/data</code> volume, so a whole-volume backup already covers it — but if you back up only the <code>.db</code> file, add the key to that routine. A database restored without its key leaves those credentials unreadable and asks you to re-enter them. For the same reason, rolling back to an older BookBridge after upgrading means restoring a pre-upgrade backup or re-entering your credentials.</p>
+<p>If you would rather keep the key outside the data volume, set <code>BOOKBRIDGE_SECRET_KEY</code> to a long random string. See <a href="../configuration/#credential-encryption">Configuration</a>.</p>
+<h3 id="fixed_6">Fixed</h3>
+<ul>
+<li><strong>The primary admin can reset Grimmory to all libraries.</strong> Clear the optional
+  Grimmory Library ID and save once to remove an old master restriction instead of
+  inheriting it again. The optional Audiobookshelf Library ID resets the same way.
+  (#337)</li>
+<li><strong>KOReader sync recovers when two readers share the same book file.</strong> A book already claimed by another reader no longer leaves you stuck — BookBridge verifies your own copy in the background, creates your claim, and lets the next sync through. (#335)</li>
+<li><strong>Calibre-Web Automated's built-in KOSync endpoint now works as a relay.</strong> Pick <strong>HTTP Basic (Calibre-Web Automated)</strong> in your KOReader / KoSync integration; classic KOSync authentication stays the default. (#334)</li>
+<li><strong>Background transcription retries stay bounded</strong>, and a silent (all-empty) transcription result is retried instead of being cached and reused as a success.</li>
+<li><strong>A round of reliability fixes</strong>: empty KOReader progress is handled cleanly, blank Grimmory shelf names fall back to <code>Kobo</code>, slow-but-successful state fetches are kept, and expected missing Grimmory progress no longer fills your log with warnings.</li>
+<li><strong>Log and status text renders correctly</strong>, replacing garbled characters across scan status, Grimmory, Hardcover, database, and ebook-resolution messages.</li>
+</ul>
+<hr />
+<h2 id="730">[7.3.0]</h2>
+<p>The headline is <strong>a redesigned interface, opt-in diagnostics, and GPU-accelerated transcription</strong>: BookBridge gets a consistent new look built around a top navigation bar, an optional way to help improve the project by sharing anonymized diagnostics, and CUDA container images for faster Whisper transcription — alongside a round of sync-reliability fixes.</p>
+<h3 id="whats-new_5">What's New</h3>
+<ul>
+<li>
+<p><strong>A redesigned interface.</strong> Every page now shares one design system and a compact top navigation bar, with Logs promoted to its own tab. The dashboard, settings, account, matching, suggestions, and forge pages were restyled onto a common look, and the navigation collapses to a swipeable strip on phones.</p>
+</li>
+<li>
+<p><strong>Opt-in anonymous diagnostics.</strong> You can choose to share a small daily diagnostic report — deduplicated warning lines from your sync logs with book titles, file paths, and URLs replaced by anonymous tokens, never your library contents or credentials — to help improve BookBridge. Admins are asked once, the choice lives under Settings → Diagnostics, and you can also send a one-off bug report with an optional note. Nothing is ever collected or sent unless you opt in.</p>
+</li>
+<li>
+<p><strong>CUDA container images for GPU transcription.</strong> BookBridge now publishes <code>-cuda</code> image tags (such as <code>latest-cuda</code> and <code>dev-cuda</code>) for amd64 hosts with an NVIDIA GPU. The image bundles the required CUDA libraries, and automatic Whisper device selection verifies both those libraries and a passed-through GPU before choosing CUDA. Contributed by @ykpdang.</p>
+</li>
+<li>
+<p><strong>BookFusion polling can wait for your position to settle.</strong> An optional setting holds BookFusion sync while you are actively reading and runs it once your position stops moving between polls.</p>
+</li>
+</ul>
+<h3 id="what-changed">What Changed</h3>
+<ul>
+<li><strong>Dashboard service cards and library shortcuts use official artwork.</strong> Service cards and the top library shortcuts now show BookOrbit, Shelfmark, KOReader, BookFusion, and Hardcover logos, and the shared navigation links to your own configured audiobook and ebook libraries.</li>
+</ul>
+<h3 id="fixed_7">Fixed</h3>
+<ul>
+<li><strong>Audiobookshelf audiobook progress now reaches your ebooks reliably</strong>, including unopened ebooks and separately catalogued ebook items. (#322)</li>
+<li><strong>KOReader sync no longer aborts strict e-readers</strong> on books that aren't in your library yet — unknown documents now return 404 instead of 502. (#332)</li>
+<li><strong>Upgraded BookOrbit matches keep each reader's own library identity</strong> after the 7.2.0 ownership migration. (#318)</li>
+<li><strong>BookBridge warns at boot when an admin's saved credentials have drifted from the shared engine copies</strong>, catching "connection test passes but sync fails" setups before they confuse you. (#328)</li>
+<li><strong>Unavailable or deleted linked books no longer create false warnings</strong> or roll another service back to the start, and stale BookFusion links recover after a confirmed 404.</li>
+</ul>
+<hr />
+<h2 id="720">[7.2.0]</h2>
+<p>The headline is <strong>reader-owned integrations and BookFusion support</strong>: BookBridge now gives each reader a self-service place for their own service accounts, adds BookFusion progress and highlight sync, and expands list/collection bridges without changing the already-released 7.1.0 annotation foundation.</p>
+<p>Highlight and note sync still requires the <strong>BridgeSync KOReader plugin from 7.1.0 or newer</strong>. Older BridgeSync builds and plain KOSync clients continue syncing reading position, but they do not have annotation exchange, sweep, close-capture, or managed collection support.</p>
+<h3 id="whats-new_6">What's New</h3>
+<ul>
+<li>
+<p><strong>BookFusion progress and highlight sync.</strong> Readers can link their own BookFusion account, sync reading progress by percentage, and relay BookFusion highlights through the annotation hub. Uploading books to BookFusion is intentionally not part of this release.</p>
+</li>
+<li>
+<p><strong>Readers can manage their own integrations.</strong> Account -&gt; My Integrations lets each signed-in reader save their own service usernames, passwords, tokens, API keys, and per-user sync toggles. Admins can still manage those same fields for any reader from Settings -&gt; Users.</p>
+</li>
+<li>
+<p><strong>Readest and Hardcover annotation spokes.</strong> Readest cloud highlights and Hardcover annotations can participate in the annotation hub using each reader's own account configuration.</p>
+</li>
+<li>
+<p><strong>BridgeSync collections can come from Grimmory or Hardcover.</strong> KOReader collection manifests can use either Grimmory shelves or Hardcover lists as the source, configured per reader.</p>
+</li>
+<li>
+<p><strong>Grimmory shelves can create Hardcover lists.</strong> Readers can optionally mirror Grimmory shelf membership into Hardcover lists.</p>
+</li>
+</ul>
+<h3 id="what-changed_1">What Changed</h3>
+<ul>
+<li>
+<p><strong>Integration settings follow the reader.</strong> User-owned credentials live with the reader, either in Account -&gt; My Integrations or in the admin-managed user integrations page. Global Settings keep shared engine behavior such as server URLs, poll intervals, and daemon-level options.</p>
+</li>
+<li>
+<p><strong>KOReader collection settings now live with each reader.</strong> The collection source selector now lives per reader under KOReader Collections, making Hardcover-list collections discoverable even when Grimmory is disabled.</p>
+</li>
+<li>
+<p><strong>The Integrations pages are easier to scan.</strong> Service groups now use Settings-style enable toggles in the header, and disabled groups collapse their account fields until that reader turns the integration on.</p>
+</li>
+</ul>
+<hr />
+<h2 id="710">[7.1.0]</h2>
+<p>The headline is <strong>a fuller reading-state bridge</strong>: BookBridge now syncs highlights, notes, richer progress metadata, and BookOrbit audiobook activity alongside ordinary reading positions.</p>
+<p>Highlight and note sync requires the <strong>BridgeSync KOReader plugin from this release or newer</strong>. Older BridgeSync builds and plain KOSync clients continue syncing reading position, but they do not have the annotation exchange, sweep, or close-capture support.</p>
+<h3 id="whats-new_7">What's New</h3>
+<ul>
+<li>
+<p><strong>Highlights and notes sync across devices and web readers.</strong> KOReader annotations can move between devices and the Grimmory and BookOrbit web readers through the updated BridgeSync plugin. The bridge keeps them scoped to the right reader, carries deletions as well as additions, and uses stable identity keys so matching highlights do not overwrite each other accidentally.</p>
+</li>
+<li>
+<p><strong>BridgeSync has annotation controls.</strong> The latest KOReader plugin now includes explicit highlight sync and sweep actions, captures new annotations when a book closes, and has safer plugin update handling.</p>
+</li>
+<li>
+<p><strong>Every reader can download the KOReader plugin.</strong> The BridgeSync plugin download appears on each user's Account page, so regular readers do not need admin Settings access to install or update it.</p>
+</li>
+<li>
+<p><strong>BookOrbit audiobooks now sync.</strong> BookOrbit can now be the audiobook source in a mapping, with progress read from and written back to the correct track position.</p>
+</li>
+<li>
+<p><strong>ABS ebooks participate in combined entries.</strong> Audiobookshelf ebook progress is included even when the same mapped book also has audiobook progress.</p>
+</li>
+<li>
+<p><strong>Smarter progress arbitration.</strong> BookBridge stores service-native update timestamps and locator metadata, then uses them to suppress stale states and prevent obvious rollback leaders.</p>
+</li>
+<li>
+<p><strong>KOSync document linking from Add / Update Book.</strong> Readers can review recent unlinked KOSync documents, link the right hash to one of their books, copy hashes, unlink, or delete stale entries from the same place they already match and repair book links.</p>
+</li>
+</ul>
+<h3 id="what-changed_2">What Changed</h3>
+<ul>
+<li>
+<p><strong>Annotation sync is account-aware.</strong> BookOrbit ownership checks and Grimmory note handling were tightened so web-reader annotations round-trip to the right reader.</p>
+</li>
+<li>
+<p><strong>Storyteller compatibility is sturdier.</strong> BookBridge supports the newer Storyteller v2 API shape and notices real locator changes even when the visible percentage has not moved.</p>
+</li>
+<li>
+<p><strong>Alignment reuse is faster.</strong> Large alignment maps are cached between repeat lookups during a sync cycle, then refreshed when the map is rebuilt.</p>
+</li>
+<li>
+<p><strong>Add / Update Book clears after queueing.</strong> The search box empties after you add a book to the queue.</p>
+</li>
+<li>
+<p><strong>Integration settings are more consistent.</strong> Grimmory highlight sync now points users to each reader's Integrations page, where the per-user credentials live, and the admin view has clearer KOReader and BookOrbit setup notes.</p>
+</li>
+</ul>
+<h3 id="fixed_8">Fixed</h3>
+<ul>
+<li><strong>Audiobookshelf listeners recover automatically</strong> after a dropped Socket.IO connection.</li>
+<li><strong>Same-folder suggestions are stricter</strong> for split-root library layouts and duplicate-looking source paths.</li>
+<li><strong>Connection tests live with per-reader credentials</strong> instead of on the general settings page.</li>
+<li><strong>BridgeSync self-updates are more reliable</strong> across plugin zip layouts.</li>
+</ul>
+<hr />
+<h2 id="700">[7.0.0]</h2>
+<p>The headline change is <strong>user accounts</strong>: the bridge now supports more than one reader, each with their own sign-in, their own progress, and their own view of the library. This is a bigger release than usual, so if you are upgrading from an earlier version, please read the short upgrade note below.</p>
+<h3 id="whats-new_8">What's New</h3>
+<ul>
+<li>
+<p><strong>Multiple readers.</strong> You can now create separate accounts for different people — for example, everyone in a household. Each person signs in to their own dashboard, sees only the books they are reading, and keeps their own progress, even when two people are reading the same book.</p>
+</li>
+<li>
+<p><strong>Separate logins for each reader.</strong> The main account gives each reader their own Audiobookshelf, KOSync, Grimmory or BookOrbit, Storyteller, and tracker logins, so everyone syncs against their own accounts and their own shelves. The shared engine settings — how often it syncs, library scans, and shelf watching — still live in one place for the main account to manage.</p>
+</li>
+<li>
+<p><strong>A proper sign-in screen.</strong> The dashboard is now protected by a login. The first person to open it sets up the main account, and that account can add more readers from a new Users area in Settings.</p>
+</li>
+<li>
+<p><strong>A streamlined Add Book screen.</strong> Searching your libraries, queueing up several books at once, and matching or forging the whole queue now happen in one place.</p>
+</li>
+<li>
+<p><strong>Same-folder matching.</strong> When an audiobook and an ebook live in the same library folder, the Suggestions page now flags them as a likely pair before any fuzzy or AI scoring — and treats them as an exact match only when the titles also agree, so two unrelated books sharing a folder aren't matched by mistake.</p>
+</li>
+<li>
+<p><strong>Review suggestions in bulk.</strong> Tick several suggestions and add them to the queue at once, or add every exact (100%) match in one click with <strong>Add all exact</strong>. Adding to the queue no longer reloads the page, so you keep your place in a long list — and you can run <strong>Forge &amp; Match All</strong> right from the Suggestions page.</p>
+</li>
+<li>
+<p><strong>Hardcover and StoryGraph, independently.</strong> You can now enable both trackers at the same time, each with its own toggle, instead of having to choose one or the other.</p>
+</li>
+<li>
+<p><strong>Install the KOReader plugin from Settings.</strong> Download the BridgeSync plugin straight from the KOSync settings section — no need to fetch it from GitHub Releases.</p>
+</li>
+</ul>
+<h3 id="what-changed_3">What Changed</h3>
+<ul>
+<li>
+<p><strong>Upgrading from an earlier version.</strong> After you update and restart, open the dashboard once. Because there are no accounts yet, you will be asked to create your main login — just pick a username and password. As soon as you do, your existing library, your matches, and every service login you had already entered are moved onto that account automatically, so there is nothing to set up again. Your KOReader devices keep syncing exactly as before. From there you can add accounts for other readers whenever you like.</p>
+</li>
+<li>
+<p><strong>The project is now called BookBridge.</strong> This is a name and branding change only — your settings, mappings, KOReader devices, and the way syncing works are all unaffected.</p>
+</li>
+<li>
+<p><strong>Matching returns to the dashboard right away.</strong> Single and batch matches now hand the slower work (tracker lookups, forging) to the background, so the screen comes back immediately and books appear as each one finishes.</p>
+</li>
+</ul>
+<h3 id="fixed_9">Fixed</h3>
+<ul>
+<li>
+<p><strong>CWA progress appears sooner.</strong> Books synced through Calibre-Web-Automated's Kobo sync now show their CWA row on the dashboard right away, instead of only after the first position comes in.</p>
+</li>
+<li>
+<p><strong>More accurate Hardcover/StoryGraph matching.</strong> Auto-matching now prefers the book's own ISBN, no longer grabs a wrong book that merely shares a title, and works for ebook-only books.</p>
+</li>
+<li>
+<p><strong>Forge &amp; Match survives a restart.</strong> If the bridge restarts while a Forge &amp; Match is still processing, it now picks the job back up and finishes it instead of leaving the book stuck.</p>
+</li>
+<li>
+<p><strong>Storyteller forged books are no longer hidden.</strong> Storyteller collections the bridge creates are now public, so the books it adds show up as expected.</p>
+</li>
+<li>
+<p><strong>KOReader syncs reliably on wake.</strong> The BridgeSync plugin now syncs dependably when a device wakes from sleep.</p>
+</li>
+<li>
+<p><strong>Manual and forged KOReader links stay put.</strong> Hash links you set by hand, or that come from forging, now persist across syncs.</p>
+</li>
+<li>
+<p><strong>Large Grimmory libraries scan fully.</strong> Library scans now page through big Grimmory libraries (with configurable timeouts) instead of stopping short.</p>
+</li>
+</ul>
+<h3 id="security_2">Security</h3>
+<ul>
+<li><strong>Hardened the web app for logins.</strong> Session-based actions are now protected against cross-site request forgery, and the KOSync login endpoints no longer reveal the sync key.</li>
+</ul>
+<hr />
+<h2 id="680">[6.8.0]</h2>
+<p>The headline additions are BookOrbit support and an optional local-LLM assistant (Ollama), alongside a batch of sync fixes.</p>
+<h3 id="whats-new_9">What's New</h3>
+<ul>
+<li>
+<p><strong>BookOrbit support.</strong> BookOrbit can be used as an ebook source, an audiobook source, or both when you create a mapping. It also supports an optional "Up Next" collection watch that auto-matches books you drop onto a shelf. See <a href="../configuration/#bookorbit">Configuration → BookOrbit</a>. If you are moving over from Grimmory, a migration script re-points your existing links without rematching.</p>
+</li>
+<li>
+<p><strong>Optional local LLM (Ollama).</strong> If you run a local Ollama server, the bridge can use it to make smarter match suggestions and to rescue audio↔text alignments that plain text matching misses. Everything is off until you turn it on, and every feature falls back to the normal behavior if Ollama is unreachable, so it never blocks a sync. See <a href="../configuration/#ollama-local-llm-optional">Configuration → Ollama</a>.</p>
+</li>
+<li>
+<p><strong>Link Storyteller from any dashboard card.</strong> The "Link" action that ebook-only mappings already had now appears on books with an audio↔ebook match too, so you can attach a Storyteller title to almost any book without rematching it.</p>
+</li>
+<li>
+<p><strong>Combined KOReader reading stats across devices.</strong> If you read the same book on more than one KOReader device, the stats page now adds up the time and pages across them instead of showing each device separately.</p>
+</li>
+<li>
+<p><strong>Expanded stats page.</strong> The stats page has more reading-activity views.</p>
+</li>
+</ul>
+<h3 id="what-changed_4">What Changed</h3>
+<ul>
+<li><strong>Storyteller-led syncs now count as listening time in Audiobookshelf.</strong> When a sync is driven by Storyteller read-along progress, that time is credited back to ABS as listening, so your audiobook stats stay accurate.</li>
+</ul>
+<h3 id="fixed_10">Fixed</h3>
+<ul>
+<li><strong>Database safety on network and virtual filesystems.</strong> On filesystems where SQLite's WAL mode is unreliable (9p, some NFS setups, certain VM shares), the bridge now uses a safer journal mode so the database does not get into a bad state.</li>
+<li><strong>Storyteller read-along no longer snaps back</strong> in books that use media-overlay (SMIL) fragment IDs for navigation.</li>
+<li><strong>Fewer false rollbacks from KOReader.</strong> Stale or out-of-order KoSync updates are better guarded against, so a delayed write can't quietly push your position backward.</li>
+<li><strong>Dashboard "out of sync" warnings</strong> are more accurate for audiobook-vs-ebook comparisons.</li>
+</ul>
+<hr />
+<h2 id="670-2026-05-11">[6.7.0] - 2026-05-11</h2>
+<h3 id="whats-new_10">What's New</h3>
+<ul>
+<li><strong>Ratings on dashboard cards.</strong> Each book shows StoryGraph and Goodreads ratings as small badges under the cover. They are filled in automatically when a book is linked, and a one-time backfill adds them to books you linked earlier.</li>
+<li><strong>Sort by rating.</strong> A new <strong>Rating</strong> option in the dashboard sort dropdown orders books by their average rating; books without ratings sort to the bottom.</li>
+<li><strong>Series grouping.</strong> Books in the same series can be grouped into a single stacked card with combined progress instead of one card each.</li>
+<li><strong>StoryGraph audiobook editions.</strong> The StoryGraph edition picker now recognizes audiobook formats and shows their duration, so audiobook listeners can pick the right edition.</li>
+<li><strong>Authoritative ABS matching via Calibre.</strong> If you use the Audiobookshelf calibre plugin, the bridge can read its identifier from Calibre and treat already-mapped books as a sure thing during scans, skipping fuzzy guessing.</li>
+<li><strong>Bridge Sync can upload your reading stats.</strong> A new "Auto-Sync Reading Stats" option in the KOReader plugin uploads your page stats automatically, with a cooldown so it stays quiet.</li>
+<li><strong>Forge tuning for Storyteller ReadAloud.</strong> New options to skip the ReadAloud EPUB cache and to tune how long the bridge waits for in-flight Storyteller jobs to recover after a restart.</li>
+</ul>
+<h3 id="fixed_11">Fixed</h3>
+<ul>
+<li><strong>KOReader sync was silently dropping to a less accurate percent-only mode</strong> for many EPUBs with inline formatting. Those positions now resolve correctly, restoring the normal anti-rollback protections.</li>
+</ul>
+<hr />
+<h2 id="660-2026-05-01">[6.6.0] - 2026-05-01</h2>
+<h3 id="whats-new_11">What's New</h3>
+<ul>
+<li><strong>StoryGraph integration.</strong> StoryGraph joins Hardcover as a reading tracker, with linking, a matching modal, edition picking, and automatic matching.</li>
+<li><strong>Either-or tracker mode.</strong> Each book can be tracked on Hardcover <em>or</em> StoryGraph, one at a time, instead of choosing a single tracker for everything.</li>
+<li><strong>Calmer KoSync writes.</strong> A new debounce setting groups bursts of KOReader updates together, so rapid page-turns no longer kick off a sync for every single write.</li>
+</ul>
+<h3 id="fixed_12">Fixed</h3>
+<ul>
+<li><strong>A slow service no longer stalls the whole sync cycle.</strong> One unresponsive client used to hold everything up until it timed out; the sync cycle now keeps moving.</li>
+<li><strong>Steadier StoryGraph and KOReader handling</strong> for edition lookups, renumbered EPUB fragments, and ebook-only matches that previously could lose their link after a rematch.</li>
+</ul>
+<hr />
+<h2 id="650-2026-4-12">[6.5.0] 2026-4-12</h2>
+<h3 id="whats-new_12">What's New</h3>
+<ul>
+<li>
+<p><strong>Add CWA reading progress sync via Kobo sync protocol.</strong>
+Enables bidirectional reading progress sync between the bridge and
+Calibre-Web Automated using CWA's Kobo sync endpoints. This allows
+stock Kobo e-readers (and KOReader via CWA) to participate in the
+sync loop alongside Audiobookshelf, Storyteller, and other clients.
+(Thank @dfendr)</p>
+</li>
+<li>
+<p><strong>KOReader plugin can now update itself.</strong> A new "Check for Plugin Update" option appears in the Bridge Sync plugin menu (after Test Connection). It checks whether a newer version of the plugin is available on your bridge server, and if so, offers to download and install it directly from KOReader — no more downloading a ZIP from GitHub and copying it manually.</p>
+</li>
+<li>
+<p><strong>KOReader stats now shows all your reading activity, not just linked books.</strong> The stats page previously only listed books that were linked in BookBridge. It now shows every book KOReader has recorded, whether linked or not. Books that are not linked appear with an "Unlinked" marker so they are easy to tell apart.</p>
+</li>
+</ul>
+<h3 id="what-changed_5">What Changed</h3>
+<ul>
+<li><strong>Storyteller sync no longer rejects books when the transcript file count doesn't match.</strong> If the number of Storyteller transcript files differs from the number of ABS chapters, the bridge previously rejected the book entirely. It now uses whatever transcript files are available and derives timing from them instead. This unblocks sync for books with partial Storyteller transcripts or different chunking than ABS expected.</li>
+</ul>
+<h3 id="fixed_13">Fixed</h3>
+<ul>
+<li>
+<p><strong>Progress was being silently reset to the cover in Scrivener-style EPUBs.</strong> EPUBs produced by Scrivener — and other tools that wrap every paragraph's text in a <code>&lt;span&gt;</code> element — caused the bridge to generate a position reference KOReader could not resolve. KOReader would fall back to position 0 (the cover page) and write that back, erasing saved progress on every sync. The bridge now generates the correct reference for these EPUBs.</p>
+</li>
+<li>
+<p><strong>Storyteller sync placed you at the wrong position in some books.</strong> Fixed a case where Storyteller could not find the right location in books that use fragment IDs for navigation. Sync positions are now accurate for these books. (Thanks @Sirozha1337)</p>
+</li>
+<li>
+<p><strong>Storyteller auth could fail mid-session when tokens expired.</strong> Improved token lifetime management so the bridge no longer hits authentication errors during long Storyteller sync sessions. (Thanks @Sirozha1337)</p>
+</li>
+</ul>
+<hr />
+<h2 id="640-2026-04-04">[6.4.0] - 2026-04-04</h2>
+<h3 id="added">Added</h3>
+<ul>
+<li>Added an optional <strong>Bridge Sync</strong> KOReader plugin for pulling bridge-managed books into a device folder.</li>
+<li>Added <strong>Find IDs</strong> helpers for Audiobookshelf and Grimmory library ID settings, with dropdown pickers after lookup.</li>
+<li>Added an intentional <strong>ABS disabled</strong> mode for ebook-only or maintenance-focused deployments.</li>
+<li>Added Grimmory shelf and magic shelf support for <strong>Bridge Sync</strong> plugin collection syncing.</li>
+<li>Added a Grimmory shelf picker in Settings to make Bridge Sync collection setup easier.</li>
+</ul>
+<h3 id="changed_1">Changed</h3>
+<ul>
+<li>The <strong>Whisper Model</strong> setting now accepts custom values instead of only a fixed preset list.</li>
+<li>Forge now uploads EPUB and audio inputs directly to Storyteller through the REST/TUS API instead of depending on a watched library hand-off.</li>
+<li>Added documentation for <code>STORYTELLER_UPLOAD_CHUNK_SIZE</code> so direct-upload chunk size can be tuned when needed.</li>
+<li>Grimmory compatibility and session handling were expanded so newer Grimmory installs behave more reliably as both ebook and audiobook sources.</li>
+<li>Settings now test the values currently in the form and show a restart page after saving.</li>
+<li>Dashboard cards now show reading session details.</li>
+<li>Match, Batch Match, Suggestions, and Forge now show clearer working feedback when you start an action.</li>
+<li>Built-in KOSync testing in Settings now works with the values currently in the form.</li>
+</ul>
+<h3 id="fixed_14">Fixed</h3>
+<ul>
+<li>Fixed Grimmory session writes so reading and listening sessions stay in the format Grimmory expects.</li>
+<li>Fixed Storyteller direct-upload metadata formatting so Forge no longer fails with <code>400 Invalid upload-metadata</code> on Storyteller <code>web-v2.9.3</code>.</li>
+<li>Fixed Storyteller direct-upload metadata and readiness issues that could break Forge imports.</li>
+<li>Fixed deadband rollback behavior so tiny audiobook-vs-ebook gaps still avoid leader flapping without pushing older ABS progress back onto newer high-confidence ebook locators.</li>
+<li>Fixed Grimmory progress, cache, and download edge cases that could break matching or syncing.</li>
+<li>Fixed several sync stability issues around finished-book suggestions, KOReader locators, and replayed instant-sync events.</li>
+<li>Fixed Grimmory session reporting so reading and listening sessions are recorded more reliably.</li>
+<li>Fixed dashboard sync warnings so old inactive states do not create misleading out-of-sync messages.</li>
+<li>Fixed the built-in KOSync Test button so it no longer requires saving first.</li>
+</ul>
+<hr />
+<h2 id="633-2026-03-08">[6.3.3] - 2026-03-08</h2>
+<h3 id="added_1">Added</h3>
+<ul>
+<li>Added a dedicated <strong>Library Suggestions</strong> workspace with background scans, cached repeat scans, and a <strong>Full Refresh</strong> option.</li>
+<li>Added <strong>Grimmory audiobook</strong> support across Match, Batch Match, Suggestions, Forge, and the dashboard.</li>
+<li>Added more flexible linking flows, including ebook-only links, Storyteller-only links, and a <strong>Refresh Grimmory Cache</strong> action in Settings.</li>
+</ul>
+<h3 id="changed_2">Changed</h3>
+<ul>
+<li>Match and dashboard views now show clearer source badges and audio-source details.</li>
+<li>Storyteller transcript ingest now accepts more real-world layouts while staying the preferred timing source when available.</li>
+</ul>
+<h3 id="fixed_15">Fixed</h3>
+<ul>
+<li>Fixed cross-format drift cases that could cause bounce-backs or bad resets.</li>
+<li>Fixed ebook-only links getting stuck in processing.</li>
+<li>Fixed edge cases where Storyteller-only links or stale Grimmory data could break matching or syncing.</li>
+</ul>
+<hr />
+<h2 id="630-2026-02-18">[6.3.0] - 2026-02-18</h2>
+<h3 id="features">🚀 Features</h3>
+<ul>
+<li><strong>Tri-Link Architecture</strong>: Maintain a three-way link between ABS audiobook, KOReader ebook, and Storyteller entries.</li>
+<li><strong>Auto-Forge Pipeline</strong>: Automated downloading, staging, and upload to Storyteller for processing. Triggered from the Matcher — automatically creates the sync mapping after Storyteller finishes.</li>
+<li><strong>Hardcover.app Audiobook Support</strong>: Link specific editions and sync listening progress (in seconds).</li>
+<li><strong>Grimmory &amp; CWA (OPDS) Integration</strong>: Fetch ebooks from Grimmory and OPDS sources.</li>
+<li><strong>Split-Port Security Mode</strong>: Run sync and admin UI on separate ports.</li>
+<li><strong>New Transcription Providers</strong>: Support for Whisper.cpp Server, Deepgram API, and CUDA GPU acceleration.</li>
+<li><strong>Progress Suggestions</strong>: Smart auto-discovery and suggestions for potential matches.</li>
+<li><strong>Telegram Notifications</strong>: Send log alerts to a Telegram chat at a configurable severity level.</li>
+<li><strong>UI Redesign</strong>: Horizontal dashboard cards, overhauled match pages, and responsive settings UI.</li>
+</ul>
+<h3 id="fixes">🐛 Fixes</h3>
+<ul>
+<li>Fixed KOReader sync crashes (XPath double <code>body</code> tag issue).</li>
+<li>Fixed KOSync hash overwrites by Storyteller artifacts.</li>
+<li>Fixed race conditions in Storyteller ingestion.</li>
+<li>Fixed special characters in filenames breaking glob searches.</li>
+<li>Fixed KOSync client headers, legacy exception types, and sync position payloads.</li>
+</ul>
+<h3 id="maintenance_1">🧹 Maintenance</h3>
+<ul>
+<li><strong>Logging Standardization</strong>: Consistent emoji prefixes and log levels across the entire codebase.</li>
+<li><strong>Unified DB Architecture</strong>: Transitioned to SQLAlchemy for alignments, transcripts, and settings.</li>
+<li><strong>Alembic Migrations</strong>: Improved migration tracking and safety checks.</li>
+<li><strong>Storyteller API</strong>: Removed direct DB access in favor of strictly API-based communication.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

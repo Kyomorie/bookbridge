@@ -1,0 +1,1227 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="The ultimate bridge for cross-platform reading and listening synchronization.">
+      
+      
+        <meta name="author" content="cporcellijr">
+      
+      
+        <link rel="canonical" href="https://cporcellijr.github.io/bookbridge/getting-started/">
+      
+      
+        <link rel="prev" href="..">
+      
+      
+        <link rel="next" href="../user-guide/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/icon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Getting Started - BookBridge</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#getting-started" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="BookBridge" class="md-header__button md-logo" aria-label="BookBridge" data-md-component="logo">
+      
+  <img src="../assets/icon.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            BookBridge
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Getting Started
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/cporcellijr/bookbridge" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    cporcellijr/bookbridge
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting Started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../user-guide/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  User Guide
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../configuration/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Configuration
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../troubleshooting/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Troubleshooting
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../changelog/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Changelog
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="BookBridge" class="md-nav__button md-logo" aria-label="BookBridge" data-md-component="logo">
+      
+  <img src="../assets/icon.png" alt="logo">
+
+    </a>
+    BookBridge
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/cporcellijr/bookbridge" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    cporcellijr/bookbridge
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#goal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Goal
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prerequisites
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-1-gather-your-abs-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 1: Gather your ABS details
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 1: Gather your ABS details">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#audiobookshelf-api-token" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audiobookshelf API token
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#abs-library-id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ABS library ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#optional-service-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Optional service credentials
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-2-prepare-a-working-directory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 2: Prepare a working directory
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-3-create-docker-composeyml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 3: Create docker-compose.yml
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 3: Create docker-compose.yml">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#split-port-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Split-port mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-4-start-the-service" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 4: Start the service
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-5-create-your-account-and-finish-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 5: Create your account and finish configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-6-create-your-first-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 6: Create your first mapping
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 6: Create your first mapping">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#suggestions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Suggestions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#add-update-book" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Add / Update Book
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#optional-connect-a-koreader-device" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Optional: Connect a KOReader device
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../user-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#goal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Goal
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prerequisites
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-1-gather-your-abs-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 1: Gather your ABS details
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 1: Gather your ABS details">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#audiobookshelf-api-token" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audiobookshelf API token
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#abs-library-id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ABS library ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#optional-service-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Optional service credentials
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-2-prepare-a-working-directory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 2: Prepare a working directory
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-3-create-docker-composeyml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 3: Create docker-compose.yml
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 3: Create docker-compose.yml">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#split-port-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Split-port mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-4-start-the-service" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 4: Start the service
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-5-create-your-account-and-finish-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 5: Create your account and finish configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-6-create-your-first-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 6: Create your first mapping
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 6: Create your first mapping">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#suggestions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Suggestions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#add-update-book" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Add / Update Book
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#optional-connect-a-koreader-device" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Optional: Connect a KOReader device
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="getting-started">Getting Started</h1>
+<h2 id="goal">Goal</h2>
+<p>Get your library syncing in about 10 minutes.</p>
+<hr />
+<h2 id="prerequisites">Prerequisites</h2>
+<p>All you actually need:</p>
+<ul>
+<li>Docker and Docker Compose</li>
+<li>An ebook folder on the Docker host (mounted as <code>/books</code>)</li>
+<li>At least two places you read or listen that you want kept in sync</li>
+</ul>
+<p>Common starting points:</p>
+<ul>
+<li><strong>Audiobookshelf + KOReader</strong> — the classic audiobook ↔ ebook pairing</li>
+<li><strong>Ebook-only</strong> — KOReader, BookFusion, Grimmory, BookOrbit, or CWA in any combination, with Audiobookshelf intentionally disabled</li>
+</ul>
+<p>Everything else — Storyteller, Hardcover, StoryGraph, Readest, Telegram, AI assist — is optional and can be added later from the Settings UI.</p>
+<div class="admonition note">
+<p class="admonition-title">Storyteller is optional</p>
+<p>You do <strong>not</strong> need Storyteller for audio ↔ ebook sync. The bridge aligns audio and text itself using built-in Whisper transcription (or the EPUB's SMIL data). Add Storyteller only if you actually use the Storyteller read-along app.</p>
+</div>
+<hr />
+<h2 id="step-1-gather-your-abs-details">Step 1: Gather your ABS details</h2>
+<p>Setting up ebook-only? Skip this step — you will enter <code>disabled</code> for Audiobookshelf later.</p>
+<h3 id="audiobookshelf-api-token">Audiobookshelf API token</h3>
+<ol>
+<li>Log into Audiobookshelf.</li>
+<li>Go to <strong>Settings -&gt; Users -&gt; Your user</strong>.</li>
+<li>Click <strong>Generate API Token</strong>.</li>
+<li>Copy the token.</li>
+</ol>
+<h3 id="abs-library-id">ABS library ID</h3>
+<p>If you want searches scoped to one ABS library:</p>
+<ol>
+<li>Open the audiobook library in Audiobookshelf.</li>
+<li>Look at the URL.</li>
+<li>Copy the part after <code>/library/</code>.</li>
+</ol>
+<h3 id="optional-service-credentials">Optional service credentials</h3>
+<p>If you plan to use them, also keep these handy:</p>
+<ul>
+<li>KOSync URL, username, and password</li>
+<li>BookFusion account access, if you want BookFusion progress or highlight sync</li>
+<li>Grimmory and/or BookOrbit URL, username, and password</li>
+<li>CWA URL, username/password, and Kobo sync token if you use Calibre-Web Automated</li>
+<li>Storyteller URL, username, and password</li>
+</ul>
+<hr />
+<h2 id="step-2-prepare-a-working-directory">Step 2: Prepare a working directory</h2>
+<div class="highlight"><pre><span></span><code>mkdir<span class="w"> </span>~/bookbridge
+<span class="nb">cd</span><span class="w"> </span>~/bookbridge
+mkdir<span class="w"> </span>data
+</code></pre></div>
+<hr />
+<h2 id="step-3-create-docker-composeyml">Step 3: Create <code>docker-compose.yml</code></h2>
+<div class="highlight"><span class="filename">docker-compose.yml</span><pre><span></span><code><span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">abs-kosync</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">container_name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bookbridge</span>
+<span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/cporcellijr/bookbridge:latest</span>
+<span class="w">    </span><span class="nt">restart</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">unless-stopped</span>
+<span class="w">    </span><span class="nt">ports</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"8080:5757"</span>
+<span class="w">      </span><span class="c1"># - "5758:5758"  # Optional: expose the sync-only port when using KOSYNC_PORT=5758</span>
+<span class="w">    </span><span class="nt">environment</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">TZ=America/New_York</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">LOG_LEVEL=INFO</span>
+<span class="w">      </span><span class="c1"># - KOSYNC_PORT=5758  # Optional: enable split-port mode</span>
+<span class="w">      </span><span class="c1"># Configure ABS, KOSync, BookFusion, Grimmory, BookOrbit, CWA, Storyteller, and other services in the Web UI.</span>
+<span class="w">    </span><span class="nt">volumes</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">./data:/data</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/path/to/ebooks:/books</span>
+<span class="w">      </span><span class="c1"># - /path/to/other/library:/calibre_library:ro         # Optional: a second ebook library (also set EXTRA_EBOOK_DIRS)</span>
+<span class="w">      </span><span class="c1"># - /path/to/storyteller/library:/storyteller_library  # Optional: local Storyteller fallback/download access</span>
+<span class="w">      </span><span class="c1"># - /path/to/storyteller/assets:/storyteller/assets    # Optional: Storyteller transcript ingest</span>
+</code></pre></div>
+<h3 id="split-port-mode">Split-port mode</h3>
+<p>By default, port <code>8080</code> exposes the full web UI and API.</p>
+<p>If you want to expose only the KOSync endpoint to the internet:</p>
+<ol>
+<li>Uncomment <code>KOSYNC_PORT=5758</code>.</li>
+<li>Uncomment the <code>5758:5758</code> port mapping.</li>
+<li>Keep <code>8080</code> private to your LAN or reverse proxy.</li>
+</ol>
+<div class="admonition tip">
+<p class="admonition-title">Optional Integrations</p>
+<p>It is usually easiest to start with the minimal compose file above and finish configuration in the Web UI.</p>
+<p>If you enable Grimmory or BookOrbit, the bridge can use them for ebook matching and audiobook sources. If you enable CWA, the bridge can use it as an ebook source and, when Kobo sync is enabled, as a reading-progress participant.</p>
+<p>Forge uploads directly to Storyteller over the API, so a Storyteller library mount is not required for normal Forge imports.</p>
+<p>If you mount Storyteller assets at <code>/storyteller/assets</code>, set <strong>Storyteller Assets Path</strong> in Settings to <code>/storyteller</code>.
+The assets path can be configured entirely in the UI; <code>STORYTELLER_ASSETS_DIR</code> is optional.</p>
+</div>
+<hr />
+<h2 id="step-4-start-the-service">Step 4: Start the service</h2>
+<div class="highlight"><pre><span></span><code>docker<span class="w"> </span>compose<span class="w"> </span>up<span class="w"> </span>-d
+</code></pre></div>
+<p>Check the logs:</p>
+<div class="highlight"><pre><span></span><code>docker<span class="w"> </span>compose<span class="w"> </span>logs<span class="w"> </span>-f
+</code></pre></div>
+<hr />
+<h2 id="step-5-create-your-account-and-finish-configuration">Step 5: Create your account and finish configuration</h2>
+<p>Settings are split by scope: <strong>server-wide connections</strong> (URLs, engine behavior) live in
+<strong>Settings → Integrations</strong>, while <strong>your personal logins</strong> (tokens, usernames, passwords)
+live in <strong>My Account → My Integrations</strong>. Both pages show the same service cards, with the
+same names, in the same order.</p>
+<ol>
+<li>Open <code>http://localhost:8080</code>. The first time you open it, you will be asked to create your account — choose a username and password. This becomes your main (admin) account.</li>
+<li>Open <strong>Settings → Integrations</strong>.</li>
+<li>On the <strong>Audiobookshelf</strong> card, enter your <strong>Server URL</strong> — or <code>disabled</code> for an ebook-only install.</li>
+<li>Enable any optional services you use and enter their server URLs: Grimmory, BookOrbit, CWA, BookFusion, Storyteller, Readest, Hardcover, StoryGraph.</li>
+<li>Click <strong>Save Settings</strong> and wait for the app to come back.</li>
+<li>Open <strong>Account → My Integrations</strong> and enter your personal logins: your ABS API token and Library ID, KoSync username/password, and any other service accounts. Use the <strong>Test</strong> button on a card to check a login before saving.</li>
+<li>If you mounted Storyteller assets, set <strong>Storyteller Assets Path</strong> to <code>/storyteller</code> under <strong>Settings → System</strong>.</li>
+</ol>
+<div class="admonition tip">
+<p class="admonition-title">Sharing with more than one reader?</p>
+<p>Your main account can add other people from <strong>Settings -&gt; Users</strong>. Each reader signs in to their own dashboard, opens <strong>Account -&gt; My Integrations</strong>, enters their own service logins, and only sees the books they are reading - so everyone keeps their own progress, even on the same book. Admins can also fill those integrations for a reader from <strong>Settings -&gt; Users -&gt; Integrations</strong>.</p>
+</div>
+<hr />
+<h2 id="step-6-create-your-first-mapping">Step 6: Create your first mapping</h2>
+<p>You can start in either of these ways:</p>
+<h3 id="suggestions">Suggestions</h3>
+<ol>
+<li>Open <strong>Suggestions</strong>.</li>
+<li>Click <strong>Scan Library</strong>.</li>
+<li>Review the likely pairs.</li>
+<li>Add the good ones to the queue.</li>
+<li>Click <strong>Process All</strong>.</li>
+</ol>
+<p>If your audiobook and ebook services point at the same mounted <code>/books</code> tree,
+sibling audio and ebook files in the same title folder appear as high-confidence
+same-folder matches.</p>
+<h3 id="add-update-book">Add / Update Book</h3>
+<ol>
+<li>Open <strong>Add / Update Book</strong>.</li>
+<li>Pick an ABS, Grimmory, or BookOrbit audiobook, or leave audio on <strong>None / Skip</strong> for an ebook-only link.</li>
+<li>Optionally pick a Storyteller title (skip this unless you use the Storyteller app).</li>
+<li>Pick the standard ebook.</li>
+<li>Click <strong>Create Mapping</strong>.</li>
+</ol>
+<p>That is enough to get syncing started. The normal background cycle runs every 5 minutes by default, and instant sync can react faster when supported by the source.</p>
+<hr />
+<h2 id="optional-connect-a-koreader-device">Optional: Connect a KOReader device</h2>
+<p>Open <strong>My Account → Connect a KOReader device</strong> for a two-step card:</p>
+<ol>
+<li><strong>Point KOReader at the bridge.</strong> Copy the sync-server address shown on the card into
+   KOReader's <strong>Tools → Progress sync → Custom sync server</strong>, then sign in on the device with
+   the KoSync username/password from My Integrations. The suggestion keeps the public HTTPS
+   origin when you use a reverse proxy, or uses the configured KoSync port for direct LAN
+   access. If you opened BookBridge through localhost, replace that host with the server's LAN
+   hostname or IP address before copying. This alone gives you progress sync.</li>
+<li><strong>Install the Bridge Sync plugin</strong> (download on the same card). The plugin delivers books
+   from the bridge byte-for-byte — so KOReader progress auto-links with no manual matching —
+   and adds reading-stats sync plus highlight and note sync. Unzip it into
+   <code>koreader/plugins/</code>, restart KOReader, then open <strong>Tools -&gt; Bridge Sync</strong> to set the same
+   server URL and KoSync login.</li>
+</ol>
+<p>Plain KOReader/KOSync progress sync works without the plugin; highlights, notes, sweep, and
+close-capture need the Bridge Sync plugin from the current release or newer. With the plugin
+installed, each reader's integrations can also turn Grimmory shelves or Hardcover lists into
+KOReader collections for synced books.</p>
+<p>This is optional. The bridge works without it.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
