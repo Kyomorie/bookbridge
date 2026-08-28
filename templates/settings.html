@@ -2505,6 +2505,29 @@
                     </div>
 
                     <div class="form-group full-width">
+                        <label>Audiobook Source</label>
+                        <div class="cleanup-group">
+                            <button type="button" class="btn btn-primary" onclick="planAudioRepoint(this)">
+                                Move Audiobooks to BookOrbit
+                            </button>
+                            <button type="button" class="btn btn-secondary" onclick="undoAudioRepoint(this)">
+                                Undo
+                            </button>
+                            <p class="help-text flex-1 m-0">
+                                Moved your audiobooks from Audiobookshelf into BookOrbit? This repoints every
+                                matched book at its BookOrbit audiobook <strong>without re-matching anything</strong> —
+                                your reading progress, alignment, highlights and KOReader links all stay attached.
+                                <br><br>
+                                A book only moves automatically when the BookOrbit copy has the same running time.
+                                That is not just a matching check: your alignment was built against the old audio, so
+                                an identical duration is what proves it still fits. Anything ambiguous is listed for
+                                you to decide, and books not in BookOrbit stay on Audiobookshelf.
+                            </p>
+                        </div>
+                        <div id="audio_repoint_results" class="section-body collapsed" style="margin-top: 12px;"></div>
+                    </div>
+
+                    <div class="form-group full-width">
                         <label>Series Backfill</label>
                         <div class="cleanup-group">
                             <button type="button" class="btn btn-primary" onclick="backfillSeriesMetadata(this)">
@@ -3472,6 +3495,139 @@
                     button.innerHTML = originalText;
                     button.disabled = false;
                 }
+            }
+        }
+
+        let audioRepointPlan = null;
+
+        function escapeRepointText(value) {
+            const div = document.createElement('div');
+            div.textContent = value == null ? '' : String(value);
+            return div.innerHTML;
+        }
+
+        function formatRunTime(seconds) {
+            if (!seconds) return 'unknown';
+            const total = Math.round(Number(seconds));
+            const h = Math.floor(total / 3600);
+            const m = Math.round((total % 3600) / 60);
+            return h + 'h ' + String(m).padStart(2, '0') + 'm';
+        }
+
+        async function planAudioRepoint(button) {
+            const box = document.getElementById('audio_repoint_results');
+            const original = button.textContent;
+            button.disabled = true;
+            button.textContent = 'Checking your library...';
+            box.classList.remove('collapsed');
+            box.innerHTML = '<p class="help-text">Matching every Audiobookshelf mapping against BookOrbit and confirming run times. This takes a minute or two the first time.</p>';
+            try {
+                const res = await fetch('/api/admin/audio-repoint/plan', { method: 'POST' });
+                const data = await res.json();
+                if (!data.success) throw new Error(data.error || 'plan failed');
+                audioRepointPlan = data;
+                renderAudioRepointPlan(data);
+            } catch (err) {
+                box.innerHTML = '<p class="help-text">Could not build the plan: ' + escapeRepointText(err.message) + '</p>';
+            } finally {
+                button.disabled = false;
+                button.textContent = original;
+            }
+        }
+
+        function renderAudioRepointPlan(plan) {
+            const box = document.getElementById('audio_repoint_results');
+            const c = plan.counts || {};
+            let html = '<p class="help-text"><strong>' + c.auto + ' of ' + c.total +
+                '</strong> can move automatically. <strong>' + c.review + '</strong> need a decision. <strong>' +
+                c.unmatched + '</strong> are not in BookOrbit and will stay on Audiobookshelf.</p>';
+
+            if ((plan.review || []).length) {
+                html += '<p class="help-text">Pick the right copy, or leave a book on Audiobookshelf:</p>';
+                plan.review.forEach(function (item, idx) {
+                    html += '<div class="form-group" style="align-items: flex-start;">' +
+                        '<label style="max-width: 320px;">' + escapeRepointText(item.title) +
+                        '<br><span class="help-text">' + escapeRepointText(item.reason) +
+                        ' &middot; yours runs ' + formatRunTime(item.duration) + '</span></label><div>';
+                    // No name attribute: these controls live inside the settings form,
+                    // and a named field would be POSTed to /settings and silently dropped.
+                    html += '<select class="repoint-choice" data-repoint-idx="' + idx + '">';
+                    html += '<option value="">Leave on Audiobookshelf</option>';
+                    (item.candidates || []).forEach(function (cand) {
+                        html += '<option value="' + escapeRepointText(cand.id) + '">' +
+                            escapeRepointText(cand.title) + ' &middot; ' + formatRunTime(cand.duration) +
+                            (cand.duration_agrees ? ' &middot; run time matches' : ' &middot; run time differs') +
+                            '</option>';
+                    });
+                    html += '</select></div></div>';
+                });
+            }
+
+            html += '<div class="cleanup-group" style="margin-top: 12px;">' +
+                '<button type="button" class="btn btn-primary" onclick="applyAudioRepoint(this)">Apply</button>' +
+                '<p class="help-text flex-1 m-0">Applies the automatic matches plus anything you chose above. Reversible with Undo.</p></div>';
+            box.innerHTML = html;
+        }
+
+        async function applyAudioRepoint(button) {
+            if (!audioRepointPlan) return;
+            const selections = (audioRepointPlan.auto || []).map(function (item) {
+                return { abs_id: item.abs_id, target_id: item.target && item.target.id };
+            });
+            (audioRepointPlan.review || []).forEach(function (item, idx) {
+                const picked = document.querySelector('.repoint-choice[data-repoint-idx="' + idx + '"]');
+                if (picked && picked.value) {
+                    selections.push({ abs_id: item.abs_id, target_id: picked.value });
+                }
+            });
+            if (!selections.length) {
+                alert('Nothing selected to move.');
+                return;
+            }
+            const original = textOf(button);
+            button.disabled = true;
+            button.textContent = 'Moving ' + selections.length + ' book(s)...';
+            try {
+                const res = await fetch('/api/admin/audio-repoint/apply', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ selections: selections })
+                });
+                const data = await res.json();
+                if (!data.success) throw new Error(data.error || 'apply failed');
+                alert('Moved ' + data.updated + ' book(s) to BookOrbit audio. Skipped: ' + (data.skipped || []).length);
+                location.reload();
+            } catch (err) {
+                alert('Could not apply: ' + err.message);
+                button.disabled = false;
+                button.textContent = original;
+            }
+        }
+
+        function textOf(button) {
+            return button.textContent;
+        }
+
+        async function undoAudioRepoint(button) {
+            if (!confirm('Send every repointed book back to Audiobookshelf audio?')) return;
+            const original = button.textContent;
+            button.disabled = true;
+            button.textContent = 'Undoing...';
+            try {
+                const res = await fetch('/api/admin/audio-repoint/undo', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+                const data = await res.json();
+                if (!data.success) throw new Error(data.error || 'undo failed');
+                alert('Restored ' + data.restored + ' book(s) to Audiobookshelf audio.');
+                location.reload();
+            } catch (err) {
+                alert('Could not undo: ' + err.message);
+            } finally {
+                button.disabled = false;
+                button.textContent = original;
             }
         }
 

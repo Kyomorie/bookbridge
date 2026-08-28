@@ -10391,6 +10391,56 @@ def _series_backfill_clients() -> dict:
 
 
 @admin_required
+def api_audio_repoint_plan():
+    """Work out which ABS-audio mappings could move to BookOrbit. Changes nothing.
+
+    Slow by nature: confirming a candidate costs a BookOrbit detail call, and that
+    duration check is what proves the book's existing alignment still describes the
+    audio. Detail responses are cached for an hour, so a re-run is cheap.
+    """
+    try:
+        plan = container.audio_repoint_service().build_plan()
+    except Exception as e:
+        logger.error(f"❌ Audio repoint plan failed: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+    return jsonify({"success": True, **plan})
+
+
+@admin_required
+def api_audio_repoint_apply():
+    """Apply a set of repoint selections: [{'abs_id': ..., 'target_id': ...}]."""
+    payload = request.get_json(silent=True) or {}
+    selections = payload.get("selections") or []
+    if not isinstance(selections, list):
+        return jsonify({"success": False, "error": "selections must be a list"}), 400
+    try:
+        result = container.audio_repoint_service().apply(selections)
+    except Exception as e:
+        logger.error(f"❌ Audio repoint apply failed: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+    return jsonify({"success": True, **result})
+
+
+@admin_required
+def api_audio_repoint_undo():
+    """Send repointed books back to Audiobookshelf.
+
+    With no body, reverts every book that was repointed (rows whose audio is
+    BookOrbit but whose key is still an ABS item id).
+    """
+    payload = request.get_json(silent=True) or {}
+    abs_ids = payload.get("abs_ids")
+    if abs_ids is not None and not isinstance(abs_ids, list):
+        return jsonify({"success": False, "error": "abs_ids must be a list"}), 400
+    try:
+        result = container.audio_repoint_service().undo(abs_ids)
+    except Exception as e:
+        logger.error(f"❌ Audio repoint undo failed: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+    return jsonify({"success": True, **result})
+
+
+@admin_required
 def api_series_backfill():
     """Backfill series_name/series_sequence, optionally re-resolving known rows.
 
@@ -12149,6 +12199,9 @@ def create_app(test_container=None):
     app.add_url_rule('/api/storyteller/link/<abs_id>', 'api_storyteller_link', api_storyteller_link, methods=['POST'])
     app.add_url_rule('/api/storyteller/backfill', 'api_storyteller_backfill', api_storyteller_backfill, methods=['POST'])
     app.add_url_rule('/api/admin/backfill-series', 'api_series_backfill', api_series_backfill, methods=['POST'])
+    app.add_url_rule('/api/admin/audio-repoint/plan', 'api_audio_repoint_plan', api_audio_repoint_plan, methods=['GET', 'POST'])
+    app.add_url_rule('/api/admin/audio-repoint/apply', 'api_audio_repoint_apply', api_audio_repoint_apply, methods=['POST'])
+    app.add_url_rule('/api/admin/audio-repoint/undo', 'api_audio_repoint_undo', api_audio_repoint_undo, methods=['POST'])
     app.add_url_rule('/api/admin/debug-abs-series', 'api_debug_abs_series', api_debug_abs_series, methods=['GET'])
 
     # Forge routes

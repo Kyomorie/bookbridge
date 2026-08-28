@@ -6,6 +6,19 @@ All notable changes to BookBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Moved your audiobooks to BookOrbit? Repoint them instead of re-matching them.**
+  Settings → Advanced Options now has **Move Audiobooks to BookOrbit**, which points
+  every already-matched book at its BookOrbit audiobook without rebuilding the match.
+  Your reading progress, alignment, highlights, KOReader links and ebook pairing all
+  stay exactly as they are — only who serves the audio changes. A book moves
+  automatically only when the BookOrbit copy has the same running time, which is the
+  check that proves your existing alignment still fits the audio; a different narration
+  is never applied silently. Duplicate copies and anything ambiguous are listed for you
+  to pick from, books that are not in BookOrbit stay on Audiobookshelf, and an **Undo**
+  button sends everything back.
+
 ### Fixed
 
 - **BookOrbit and Grimmory audiobook progress can now be polled.** If you listened to an
