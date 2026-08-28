@@ -2383,6 +2383,21 @@
                     </div>
 
                     <div class="form-group full-width">
+                        <label>Series Backfill</label>
+                        <div class="cleanup-group">
+                            <button type="button" class="btn btn-primary" onclick="backfillSeriesMetadata()">
+                                Backfill Series Metadata
+                            </button>
+                            <p class="help-text flex-1 m-0">
+                                Look up the series name and number for every book that is missing them, asking the
+                                service that owns each book (Audiobookshelf for audio, BookOrbit / Grimmory / Kavita
+                                for ebook-only books). Books in the same series then collapse into one card on the
+                                dashboard. Safe to re-run; books that already have a series are left alone.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="form-group full-width">
                         <label>Cache Cleanup</label>
                         <div class="cleanup-group">
                             <button type="button" class="btn btn-danger" onclick="cleanInactiveCache()">
@@ -3259,6 +3274,49 @@
             } catch (err) {
                 console.error('Error running storyteller backfill:', err);
                 alert('An error occurred while running storyteller backfill. Check console for details.');
+            }
+        }
+
+        async function backfillSeriesMetadata() {
+            if (!confirm("Run series backfill now?
+
+This looks up the series name and number for every book that is missing them, then groups them on the dashboard. It may take a few minutes on a large library.")) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/admin/backfill-series', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const data = await response.json();
+                if (!response.ok || data.success === false) {
+                    alert(`Series backfill failed: ${data.error || 'Unknown error'}`);
+                    return;
+                }
+
+                alert(
+                    `Series backfill complete.
+` +
+                    `Scanned: ${data.scanned}
+` +
+                    `Updated: ${data.updated}
+` +
+                    `No series found: ${data.unresolved}
+` +
+                    `Failed: ${data.failed}
+` +
+                    `Duration: ${data.duration_seconds}s`
+                );
+                if (data.updated > 0) {
+                    location.reload();
+                }
+            } catch (err) {
+                console.error('Error running series backfill:', err);
+                alert('An error occurred while running series backfill. Check console for details.');
             }
         }
 

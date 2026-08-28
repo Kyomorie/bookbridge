@@ -54,6 +54,12 @@ from src.sync_clients.sync_client_interface import LocatorResult, UpdateProgress
 from src.services.audio_source_adapters import AudioResult, ABSAudioSourceAdapter, BookLoreAudioSourceAdapter, BookOrbitAudioSourceAdapter
 from src.utils.storyteller_transcript import StorytellerTranscript
 from src.utils.kosync_headers import kosync_request_kwargs
+from src.utils.series_metadata import (
+    extract_series_from_abs_metadata as _series_from_abs_metadata,
+    extract_series_from_library_detail as _series_from_library_detail,
+    extract_series_from_title as _series_from_title,
+    resolve_series_for_book,
+)
 
 def _reconfigure_logging():
     """Force update of root logger and all handler levels based on env var."""
@@ -4088,42 +4094,12 @@ def _coerce_author_display(value):
 
 def _extract_series_from_abs_metadata(metadata: dict) -> tuple:
     """Return (series_name, series_sequence) from an ABS media.metadata block."""
-    if not isinstance(metadata, dict):
-        return None, None
-    series_list = metadata.get("series") or []
-    if not isinstance(series_list, list) or not series_list:
-        name = (metadata.get("seriesName") or "").strip()
-        return (name or None, None)
-    first = series_list[0]
-    if isinstance(first, dict):
-        name = (first.get("name") or "").strip() or None
-        raw_seq = first.get("sequence")
-    else:
-        name = str(first).strip() or None
-        raw_seq = None
-    sequence = None
-    if raw_seq is not None:
-        try:
-            sequence = float(raw_seq)
-        except (TypeError, ValueError):
-            sequence = None
-    return name, sequence
+    return _series_from_abs_metadata(metadata)
 
 
 def _extract_series_from_booklore_metadata(raw: dict) -> tuple:
     """Return (series_name, series_sequence) from cached BookLore raw_metadata."""
-    if not isinstance(raw, dict):
-        return None, None
-    metadata = raw.get("metadata") or raw
-    name = (metadata.get("seriesName") or "").strip() or None
-    raw_seq = metadata.get("seriesNumber") or metadata.get("seriesSequence")
-    sequence = None
-    if raw_seq is not None:
-        try:
-            sequence = float(raw_seq)
-        except (TypeError, ValueError):
-            sequence = None
-    return name, sequence
+    return _series_from_library_detail(raw)
 
 
 def _normalize_series_key(name: str) -> str:
@@ -10334,88 +10310,84 @@ def api_storyteller_backfill():
 
 
 def _extract_series_from_title(title: str) -> tuple:
-    """
-    Heuristic: extract series name + sequence from a title like
-    "Solar Dragons Need Love, Too! 2" or "Returner's Defiance 3".
+    """Return (series_name, series_sequence) parsed out of a numbered title."""
+    return _series_from_title(title)
 
-    Handles patterns:
-      "Series Name N"          → (Series Name, N)
-      "Series Name, Book N"    → (Series Name, N)
-      "Series Name (Book N)"   → (Series Name, N)
-    Returns (None, None) when no clear numeric suffix is found.
-    """
-    if not title:
-        return None, None
-    # Strip trailing unabridged/abridged qualifiers
-    clean = re.sub(r'\s*\((?:unabridged|abridged|audio(?:\s+book)?)\)\s*$', '', title.strip(), flags=re.IGNORECASE)
 
-    # "Title, Book N" / "Title - Book N" / "Title (Book N)"
-    m = re.search(
-        r'^(.+?)[\s,\-:]+\(?(?:book|volume|vol\.?|part)\s+(\d+(?:\.\d+)?)\)?\s*$',
-        clean, re.IGNORECASE,
-    )
-    if m:
-        series = m.group(1).rstrip(' ,.!:-').strip()
-        if series:
-            return series, float(m.group(2))
-
-    # "Title N" — trailing integer (not float, to avoid matching "Author 2.0")
-    m = re.match(r'^(.+?)\s+(\d{1,3})\s*$', clean)
-    if m:
-        series = m.group(1).rstrip(' ,.!:-').strip()
-        seq = int(m.group(2))
-        # Guard: series candidate must be non-trivially long and seq plausible
-        if len(series) >= 4 and 1 <= seq <= 50:
-            return series, float(seq)
-
-    return None, None
+def _series_backfill_clients() -> dict:
+    """Return the clients the series backfill resolves against, keyed by kwarg name."""
+    return {
+        "abs_client": container.abs_client(),
+        "bookorbit_client": container.bookorbit_client(),
+        "booklore_client": container.booklore_client(),
+        "kavita_client": container.kavita_client(),
+    }
 
 
 @admin_required
 def api_series_backfill():
     """Backfill series_name/series_sequence for all books that lack it.
 
-    Tries ABS metadata first; falls back to parsing the number out of the title.
-    Writes via direct SQL UPDATE to avoid ORM session lifecycle issues.
+    Resolves each row against the service that owns its metadata — ABS for ABS
+    audio, the ebook library (BookOrbit/Grimmory/Kavita) for ebook-only rows —
+    and falls back to parsing the number out of the title. Writes via direct SQL
+    UPDATE to avoid ORM session lifecycle issues.
     """
     import time as _time
+    from types import SimpleNamespace
     import sqlalchemy as _sa
     start = _time.time()
     db = container.database_service()
-    abs_client = container.abs_client()
-    if not abs_client or not abs_client.is_configured():
-        return jsonify({"error": "ABS not configured"}), 400
+
+    clients = _series_backfill_clients()
+
+    def _usable(client) -> bool:
+        try:
+            return client is not None and client.is_configured()
+        except Exception:
+            return False
+
+    if not any(_usable(c) for c in clients.values()):
+        return jsonify({"error": "No library service is configured"}), 400
 
     # Collect all rows that need updating — read-only pass
     with db.get_session() as session:
         rows = session.execute(
-            _sa.text("SELECT abs_id, abs_title, audio_source FROM books WHERE series_name IS NULL OR series_name = ''")
+            _sa.text(
+                "SELECT abs_id, abs_title, audio_source, audio_source_id, "
+                "ebook_source, ebook_source_id FROM books "
+                "WHERE series_name IS NULL OR series_name = ''"
+            )
         ).fetchall()
 
     updates = []   # list of (abs_id, series_name, series_sequence)
-    skipped = 0
+    unresolved = 0
     failed = 0
 
-    for abs_id, abs_title, audio_source in rows:
-        sname, sseq = None, None
-
-        if audio_source == "ABS" and abs_id:
-            try:
-                item_details = abs_client.get_item_details(abs_id)
-                if item_details:
-                    meta = item_details.get("media", {}).get("metadata", {})
-                    sname, sseq = _extract_series_from_abs_metadata(meta)
-            except Exception as e:
-                logger.warning(f"Series backfill ABS lookup failed for '{abs_title}': {e}", exc_info=True)
-                failed += 1
-                continue
-
-        if not sname:
-            sname, sseq = _extract_series_from_title(abs_title or "")
+    for abs_id, abs_title, audio_source, audio_source_id, ebook_source, ebook_source_id in rows:
+        book_row = SimpleNamespace(
+            abs_id=abs_id,
+            abs_title=abs_title,
+            audio_source=audio_source,
+            audio_source_id=audio_source_id,
+            ebook_source=ebook_source,
+            ebook_source_id=ebook_source_id,
+        )
+        try:
+            sname, sseq = resolve_series_for_book(book_row, **clients)
+        except Exception as e:
+            logger.warning(
+                f"Series backfill lookup failed for '{sanitize_log_data(abs_title)}': {e}",
+                exc_info=True,
+            )
+            failed += 1
+            continue
 
         if sname:
             updates.append((abs_id, sname, sseq))
-            logger.debug(f"Series backfill queued: '{sname}' #{sseq} → '{abs_title}'")
+            logger.debug(f"Series backfill queued: '{sname}' #{sseq} → '{sanitize_log_data(abs_title)}'")
+        else:
+            unresolved += 1
 
     # Write pass — single transaction, plain SQL
     if updates:
@@ -10428,13 +10400,13 @@ def api_series_backfill():
 
     duration = round(_time.time() - start, 1)
     logger.info(
-        f"Series backfill complete: updated={len(updates)} skipped={skipped} "
+        f"Series backfill complete: updated={len(updates)} unresolved={unresolved} "
         f"failed={failed} duration={duration}s"
     )
     return jsonify({
         "scanned": len(rows),
         "updated": len(updates),
-        "skipped_already_set": skipped,
+        "unresolved": unresolved,
         "failed": failed,
         "duration_seconds": duration,
         "sample_updates": [{"abs_id": a, "series": s, "seq": q} for a, s, q in updates[:10]],

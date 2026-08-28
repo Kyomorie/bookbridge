@@ -8,6 +8,19 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Series cards now collapse every book in the series, including ebook-only ones.**
+  A series could group some of its books and leave others sitting loose on the
+  dashboard — most visibly the first book, and whole series held only as ebooks never
+  grouped at all. BookBridge worked out a book's series from Audiobookshelf and
+  nowhere else, so a book added straight from BookOrbit, Grimmory, or Kavita was saved
+  with no series at all, and an Audiobookshelf book that missed its one chance to be
+  stamped was never looked at again. Series are now read from whichever service
+  actually holds the book, and are recorded the moment a book is added. To repair
+  books already in your library there is a new **Backfill Series Metadata** button in
+  Settings → Advanced Options: it looks up everything still missing a series and
+  groups it.
+  Safe to re-run, and it leaves books that already have a series alone.
+
 - **KOReader now opens where the audiobook actually was, not at the top of the
   chapter.** If your ebook lives in BookOrbit and you read it in KOReader, progress
   synced from your audiobook landed you at the right book and the right chapter, but
