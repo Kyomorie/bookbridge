@@ -393,7 +393,9 @@
                  onerror="this.style.visibility='hidden';">
             {% endfor %}
             {% if not group.stack_cover_urls %}
-            <div class="series-stack-cover stack-1 series-stack-placeholder">&#128218;</div>
+            <div class="series-stack-cover stack-1 series-stack-placeholder" aria-hidden="true"></div>
+            <div class="series-stack-cover stack-2 series-stack-placeholder" aria-hidden="true"></div>
+            <div class="series-stack-cover stack-3 series-stack-placeholder series-stack-placeholder-top">&#128218;</div>
             {% endif %}
           </div>
 
@@ -1749,6 +1751,12 @@
             display: flex; align-items: center; justify-content: center;
             font-size: 36px;
             background: var(--gradient);
+        }
+        /* With no art to show, the fan still has to read as a stack of books
+           rather than one flat slab, so the cards under the top one are dimmed
+           and only the top card carries the glyph. */
+        .series-stack-placeholder:not(.series-stack-placeholder-top) {
+            filter: brightness(0.62) saturate(0.7);
         }
 
         @media (max-width: 768px) {

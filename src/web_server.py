@@ -4817,6 +4817,8 @@ def _browser_cover_url(
     audio_source: str | None = None,
     audio_source_id: str | None = None,
     abs_id: str | None = None,
+    ebook_source: str | None = None,
+    ebook_source_id: str | None = None,
 ) -> str:
     """Convert any cover URL into a safe, same-origin BookBridge URL.
 
@@ -4836,7 +4838,12 @@ def _browser_cover_url(
        - BookOrbit with ``audio_source_id`` -> ``/api/bookorbit/audiobook-cover/<id>``
        - ABS or unset source with ``abs_id`` (preferred) or ``audio_source_id`` ->
          ``/api/cover-proxy/<id>`` (only for non-library audio sources)
-    3. If nothing can be derived, return an empty string.
+    3. Failing that, derive from the ebook library that hosts the book, so
+       ebook-only mappings still get art: BookOrbit/BookLore with
+       ``ebook_source_id`` reuse that provider's cover proxy (one endpoint
+       serves a book's cover whether the book is audio or text). CWA, Kavita
+       and local files expose no id we can proxy, so they stay coverless.
+    4. If nothing can be derived, return an empty string.
 
     An ebook-only mapping has no Audiobookshelf item, so its synthetic
     ``ebook-<hash>`` key must not be turned into a cover-proxy URL that can only
@@ -4859,6 +4866,14 @@ def _browser_cover_url(
         proxy_id = aid or src_id
         if proxy_id and not _is_synthetic_bridge_key(proxy_id):
             return f"/api/cover-proxy/{proxy_id}"
+
+    ebook_src = (ebook_source or "").strip()
+    ebook_id = (ebook_source_id or "").strip()
+    if ebook_id:
+        if ebook_src == "BookLore":
+            return f"/api/booklore/audiobook-cover/{ebook_id}"
+        if ebook_src == "BookOrbit":
+            return f"/api/bookorbit/audiobook-cover/{ebook_id}"
     return ""
 
 
@@ -5170,8 +5185,15 @@ def _build_dashboard_mapping(
         audio_source_id=mapping.get("audio_source_id"),
         abs_id=book.abs_id,
     )
-    if safe_cover:
-        mapping["cover_url"] = safe_cover
+    # An ebook-only mapping has no audiobook to take a cover from, so fall back
+    # to the library hosting the ebook. `audio_cover_url` stays audio-only.
+    display_cover = safe_cover or _browser_cover_url(
+        None,
+        ebook_source=mapping.get("ebook_source"),
+        ebook_source_id=mapping.get("ebook_source_id"),
+    )
+    if display_cover:
+        mapping["cover_url"] = display_cover
     mapping["audio_cover_url"] = safe_cover
 
     reading_stats = reading_stats_by_book.get(book.abs_id)
@@ -10549,10 +10571,14 @@ def get_abs_libraries():
 def proxy_booklore_audiobook_cover(book_id):
     """Stream a Grimmory audiobook cover through the backend."""
     user = current_user()
-    # The route id identifies the audiobook, which can be paired with an ebook
-    # from a different provider (or a different book id on the same provider).
+    # The route id identifies a Grimmory book, which can be paired with an ebook
+    # from a different provider (or a different book id on the same provider),
+    # or be the text source of an ebook-only mapping.
     book = (
-        database_service.get_book_by_audio_source('BookLore', str(book_id))
+        (
+            database_service.get_book_by_audio_source('BookLore', str(book_id))
+            or database_service.get_book_by_ebook_source('BookLore', str(book_id))
+        )
         if database_service else None
     )
     if book and book.abs_id:
@@ -10581,9 +10607,13 @@ def proxy_booklore_audiobook_cover(book_id):
 def proxy_bookorbit_audiobook_cover(book_id):
     """Stream a BookOrbit book cover through the backend."""
     user = current_user()
-    # The route id identifies the audiobook, not the linked ebook source.
+    # The route id identifies a BookOrbit book, which may be reached as an
+    # audiobook or as an ebook-only mapping's text source.
     book = (
-        database_service.get_book_by_audio_source('BookOrbit', str(book_id))
+        (
+            database_service.get_book_by_audio_source('BookOrbit', str(book_id))
+            or database_service.get_book_by_ebook_source('BookOrbit', str(book_id))
+        )
         if database_service else None
     )
     if book and book.abs_id:

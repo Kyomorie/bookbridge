@@ -8,6 +8,16 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Ebook-only books now show their real covers.** A book with no audiobook — one
+  matched straight from BookOrbit or Grimmory — displayed a blank gradient tile
+  everywhere on the dashboard, and a collapsed series made entirely of them showed one
+  flat slab where the cover stack should be. The artwork was there in your library the
+  whole time; BookBridge simply never asked for it, because covers were only ever
+  derived from the audiobook side. Ebook-only books now take their cover from the
+  library that hosts them, served through BookBridge itself so no library address or
+  API key reaches your browser. Books whose library has no artwork now show a proper
+  fanned three-card stack instead of a single empty rectangle.
+
 - **Series cards now collapse every book in the series, including ebook-only ones.**
   A series could group some of its books and leave others sitting loose on the
   dashboard — most visibly the first book, and whole series held only as ebooks never
