@@ -8,6 +8,16 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **KOReader now opens where the audiobook actually was, not at the top of the
+  chapter.** If your ebook lives in BookOrbit and you read it in KOReader, progress
+  synced from your audiobook landed you at the right book and the right chapter, but
+  always back at its beginning — losing however far into the chapter you had listened.
+  BookBridge works out the exact spot in the ebook, but was not passing it on:
+  BookOrbit was told only the percentage and a rough location, so when KOReader asked
+  BookOrbit where you were, all BookOrbit could name was the chapter. BookBridge now
+  sends the precise KOReader position with every BookOrbit update. Your next sync of
+  an affected book repairs it — nothing to reset by hand. (#415)
+
 - **A collapsed series card now lists the books in the series.** Each row shows the
   volume number, title, and its own progress bar, with the book you are up to
   highlighted; long series show a five-book window around that book plus a count of

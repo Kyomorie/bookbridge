@@ -818,7 +818,12 @@ class BookOrbitClient:
     def update_ebook_progress(
         self, book_info: dict, percentage: float, locator: Optional[LocatorResult] = None
     ) -> bool:
-        """Push ebook progress (percentage is a 0-1 fraction)."""
+        """Push ebook progress (percentage is a 0-1 fraction).
+
+        When the locator carries a truthy `perfect_ko_xpath`, it is sent as
+        `koreaderProgress`. BookOrbit relays this value to KOReader as the pull
+        position; without it BookOrbit derives a chapter-root xpointer from the CFI.
+        """
         book_id = book_info.get("id")
         file_id = book_info.get("primaryFileId") or self._resolve_primary_file_id(book_id, "ebook")
         if file_id is None:
@@ -827,9 +832,15 @@ class BookOrbitClient:
         payload: dict = {"percentage": round(percentage * 100.0, 4)}
         if locator and locator.cfi:
             payload["cfi"] = locator.cfi
+        if locator and locator.perfect_ko_xpath:
+            payload["koreaderProgress"] = locator.perfect_ko_xpath
         resp = self._make_request("POST", f"/api/v1/books/files/{file_id}/progress", payload)
         if resp is not None and resp.status_code in (200, 201, 204):
-            logger.info("BookOrbit: %s → %.1f%%", book_info.get("title") or book_id, percentage * 100)
+            has_ko_xpath = bool(locator and locator.perfect_ko_xpath)
+            logger.info(
+                "BookOrbit: %s → %.1f%% (koreader_xpath=%s)",
+                book_info.get("title") or book_id, percentage * 100, has_ko_xpath,
+            )
             return True
         status = resp.status_code if resp is not None else "no response"
         logger.error("BookOrbit ebook update failed: %s", status)
