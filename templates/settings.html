@@ -74,6 +74,31 @@
             display: none;
         }
 
+        .repoint-scroll {
+            max-height: 320px;
+            overflow-y: auto;
+            border: 1px solid var(--border-color, #444);
+            border-radius: 6px;
+            padding: 8px;
+        }
+
+        .repoint-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 3px 0;
+            font-size: 0.9em;
+        }
+
+        .repoint-list {
+            margin: 4px 0 0 18px;
+            font-size: 0.9em;
+        }
+
+        .repoint-choice {
+            max-width: 100%;
+        }
+
         .hidden {
             display: none !important;
         }
@@ -2524,7 +2549,8 @@
                                 you to decide, and books not in BookOrbit stay on Audiobookshelf.
                             </p>
                         </div>
-                        <div id="audio_repoint_results" class="section-body collapsed" style="margin-top: 12px;"></div>
+                        <div id="audio_repoint_results" class="hidden"
+                             style="margin-top: 16px; padding: 16px; border: 1px solid var(--border-color, #444); border-radius: 8px;"></div>
                     </div>
 
                     <div class="form-group full-width">
@@ -3519,7 +3545,8 @@
             const original = button.textContent;
             button.disabled = true;
             button.textContent = 'Checking your library...';
-            box.classList.remove('collapsed');
+            box.classList.remove('hidden');
+            box.scrollIntoView({ behavior: 'smooth', block: 'start' });
             box.innerHTML = '<p class="help-text">Matching every Audiobookshelf mapping against BookOrbit and confirming run times. This takes a minute or two the first time.</p>';
             try {
                 const res = await fetch('/api/admin/audio-repoint/plan', { method: 'POST' });
@@ -3543,6 +3570,7 @@
                 c.unmatched + '</strong> are not in BookOrbit and will stay on Audiobookshelf.</p>';
 
             if ((plan.review || []).length) {
+                html += '<h4 style="margin: 18px 0 6px;">Needs your decision (' + plan.review.length + ')</h4>';
                 html += '<p class="help-text">Pick the right copy, or leave a book on Audiobookshelf:</p>';
                 plan.review.forEach(function (item, idx) {
                     html += '<div class="form-group" style="align-items: flex-start;">' +
@@ -3563,16 +3591,46 @@
                 });
             }
 
-            html += '<div class="cleanup-group" style="margin-top: 12px;">' +
+            if ((plan.unmatched || []).length) {
+                html += '<h4 style="margin: 18px 0 6px;">Staying on Audiobookshelf (' +
+                    plan.unmatched.length + ')</h4>';
+                html += '<p class="help-text">Not found in BookOrbit, so nothing changes for these.</p>';
+                html += '<ul class="repoint-list">';
+                plan.unmatched.forEach(function (item) {
+                    html += '<li>' + escapeRepointText(item.title) + '</li>';
+                });
+                html += '</ul>';
+            }
+
+            if ((plan.auto || []).length) {
+                html += '<h4 style="margin: 18px 0 6px;">Moving automatically (' + plan.auto.length + ')</h4>';
+                html += '<p class="help-text">Title and run time both agree, so the existing alignment still fits. ' +
+                    'Untick anything you would rather leave alone.</p>';
+                html += '<div class="repoint-scroll">';
+                plan.auto.forEach(function (item, idx) {
+                    html += '<label class="repoint-row">' +
+                        '<input type="checkbox" class="repoint-auto" data-repoint-auto="' + idx + '" checked> ' +
+                        '<span>' + escapeRepointText(item.title) + ' &rarr; ' +
+                        escapeRepointText(item.target.title) + ' &middot; ' +
+                        formatRunTime(item.target.duration) + '</span></label>';
+                });
+                html += '</div>';
+            }
+
+            html += '<div class="cleanup-group" style="margin-top: 16px;">' +
                 '<button type="button" class="btn btn-primary" onclick="applyAudioRepoint(this)">Apply</button>' +
-                '<p class="help-text flex-1 m-0">Applies the automatic matches plus anything you chose above. Reversible with Undo.</p></div>';
+                '<p class="help-text flex-1 m-0">Applies the ticked automatic matches plus anything you chose above. Reversible with Undo.</p></div>';
             box.innerHTML = html;
+            box.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
 
         async function applyAudioRepoint(button) {
             if (!audioRepointPlan) return;
-            const selections = (audioRepointPlan.auto || []).map(function (item) {
-                return { abs_id: item.abs_id, target_id: item.target && item.target.id };
+            const selections = [];
+            (audioRepointPlan.auto || []).forEach(function (item, idx) {
+                const box = document.querySelector('.repoint-auto[data-repoint-auto="' + idx + '"]');
+                if (box && !box.checked) return;
+                selections.push({ abs_id: item.abs_id, target_id: item.target && item.target.id });
             });
             (audioRepointPlan.review || []).forEach(function (item, idx) {
                 const picked = document.querySelector('.repoint-choice[data-repoint-idx="' + idx + '"]');
