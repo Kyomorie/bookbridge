@@ -2108,7 +2108,7 @@
                         <div class="form-group" style="align-items: center;">
                             <label>Grimmory Poll Mode</label>
                             <select name="BOOKLORE_POLL_MODE" id="booklore_poll_mode"
-                                    onchange="togglePollSeconds('booklore_poll_seconds_row', this.value)">
+                                    onchange="togglePollSeconds('booklore_poll_seconds_row', this.value); togglePollSeconds('booklore_poll_settle_row', this.value)">
                                 <option value="global" {% if get_val('BOOKLORE_POLL_MODE', 'global') == 'global' %}selected{% endif %}>Global</option>
                                 <option value="custom" {% if get_val('BOOKLORE_POLL_MODE') == 'custom' %}selected{% endif %}>Custom</option>
                             </select>
@@ -2120,13 +2120,53 @@
                                    value="{{ get_val('BOOKLORE_POLL_SECONDS', '300') }}">
                             <div class="help-text">Recommended: 300s for Grimmory.</div>
                         </div>
+                        <div class="form-group" id="booklore_poll_settle_row"
+                             {% if get_val('BOOKLORE_POLL_MODE') != 'custom' %}style="opacity: 0.45; pointer-events: none;"{% endif %}>
+                            <label>Wait for Position to Settle</label>
+                            <div class="toggle-switch-wrapper">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" name="BOOKLORE_POLL_WAIT_FOR_SETTLE"
+                                        {% if get_bool('BOOKLORE_POLL_WAIT_FOR_SETTLE') %}checked{% endif %}>
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                            <div class="help-text">Hold the sync while the position keeps changing between polls (actively reading); run it once a poll shows no further movement.</div>
+                        </div>
+                        <div class="form-group" style="align-items: center;">
+                            <label>Grimmory Audiobook Poll Mode</label>
+                            <select name="BOOKLORE_AUDIO_POLL_MODE" id="booklore_audio_poll_mode"
+                                    onchange="togglePollSeconds('booklore_audio_poll_seconds_row', this.value); togglePollSeconds('booklore_audio_poll_settle_row', this.value)">
+                                <option value="global" {% if get_val('BOOKLORE_AUDIO_POLL_MODE', 'global') == 'global' %}selected{% endif %}>Global</option>
+                                <option value="custom" {% if get_val('BOOKLORE_AUDIO_POLL_MODE') == 'custom' %}selected{% endif %}>Custom</option>
+                            </select>
+                            <div class="help-text">Listening progress is read by a separate client from ebook progress, so the Grimmory poll above does not cover it.</div>
+                        </div>
+                        <div class="form-group" id="booklore_audio_poll_seconds_row"
+                             {% if get_val('BOOKLORE_AUDIO_POLL_MODE') != 'custom' %}style="opacity: 0.45; pointer-events: none;"{% endif %}>
+                            <label>Grimmory Audiobook Poll Interval (seconds)</label>
+                            <input type="number" name="BOOKLORE_AUDIO_POLL_SECONDS" min="10"
+                                   value="{{ get_val('BOOKLORE_AUDIO_POLL_SECONDS', '300') }}">
+                            <div class="help-text">Recommended: 60s while listening.</div>
+                        </div>
+                        <div class="form-group" id="booklore_audio_poll_settle_row"
+                             {% if get_val('BOOKLORE_AUDIO_POLL_MODE') != 'custom' %}style="opacity: 0.45; pointer-events: none;"{% endif %}>
+                            <label>Wait for Position to Settle</label>
+                            <div class="toggle-switch-wrapper">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" name="BOOKLORE_AUDIO_POLL_WAIT_FOR_SETTLE"
+                                        {% if get_bool('BOOKLORE_AUDIO_POLL_WAIT_FOR_SETTLE') %}checked{% endif %}>
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                            <div class="help-text">Hold the sync while playback keeps advancing between polls; run it once a poll shows no further movement, i.e. you paused or finished listening.</div>
+                        </div>
                         {% endif %}
 
                         {% if get_bool('BOOKORBIT_ENABLED') %}
                         <div class="form-group" style="align-items: center;">
                             <label>BookOrbit Poll Mode</label>
                             <select name="BOOKORBIT_POLL_MODE" id="bookorbit_poll_mode"
-                                    onchange="togglePollSeconds('bookorbit_poll_seconds_row', this.value)">
+                                    onchange="togglePollSeconds('bookorbit_poll_seconds_row', this.value); togglePollSeconds('bookorbit_poll_settle_row', this.value)">
                                 <option value="global" {% if get_val('BOOKORBIT_POLL_MODE', 'global') == 'global' %}selected{% endif %}>Global</option>
                                 <option value="custom" {% if get_val('BOOKORBIT_POLL_MODE') == 'custom' %}selected{% endif %}>Custom</option>
                             </select>
@@ -2138,13 +2178,53 @@
                                    value="{{ get_val('BOOKORBIT_POLL_SECONDS', '300') }}">
                             <div class="help-text">Recommended: 300s for BookOrbit.</div>
                         </div>
+                        <div class="form-group" id="bookorbit_poll_settle_row"
+                             {% if get_val('BOOKORBIT_POLL_MODE') != 'custom' %}style="opacity: 0.45; pointer-events: none;"{% endif %}>
+                            <label>Wait for Position to Settle</label>
+                            <div class="toggle-switch-wrapper">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" name="BOOKORBIT_POLL_WAIT_FOR_SETTLE"
+                                        {% if get_bool('BOOKORBIT_POLL_WAIT_FOR_SETTLE') %}checked{% endif %}>
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                            <div class="help-text">Hold the sync while the position keeps changing between polls (actively reading); run it once a poll shows no further movement.</div>
+                        </div>
+                        <div class="form-group" style="align-items: center;">
+                            <label>BookOrbit Audiobook Poll Mode</label>
+                            <select name="BOOKORBIT_AUDIO_POLL_MODE" id="bookorbit_audio_poll_mode"
+                                    onchange="togglePollSeconds('bookorbit_audio_poll_seconds_row', this.value); togglePollSeconds('bookorbit_audio_poll_settle_row', this.value)">
+                                <option value="global" {% if get_val('BOOKORBIT_AUDIO_POLL_MODE', 'global') == 'global' %}selected{% endif %}>Global</option>
+                                <option value="custom" {% if get_val('BOOKORBIT_AUDIO_POLL_MODE') == 'custom' %}selected{% endif %}>Custom</option>
+                            </select>
+                            <div class="help-text">Listening progress is read by a separate client from ebook progress, so the BookOrbit poll above does not cover it.</div>
+                        </div>
+                        <div class="form-group" id="bookorbit_audio_poll_seconds_row"
+                             {% if get_val('BOOKORBIT_AUDIO_POLL_MODE') != 'custom' %}style="opacity: 0.45; pointer-events: none;"{% endif %}>
+                            <label>BookOrbit Audiobook Poll Interval (seconds)</label>
+                            <input type="number" name="BOOKORBIT_AUDIO_POLL_SECONDS" min="10"
+                                   value="{{ get_val('BOOKORBIT_AUDIO_POLL_SECONDS', '300') }}">
+                            <div class="help-text">Recommended: 60s while listening.</div>
+                        </div>
+                        <div class="form-group" id="bookorbit_audio_poll_settle_row"
+                             {% if get_val('BOOKORBIT_AUDIO_POLL_MODE') != 'custom' %}style="opacity: 0.45; pointer-events: none;"{% endif %}>
+                            <label>Wait for Position to Settle</label>
+                            <div class="toggle-switch-wrapper">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" name="BOOKORBIT_AUDIO_POLL_WAIT_FOR_SETTLE"
+                                        {% if get_bool('BOOKORBIT_AUDIO_POLL_WAIT_FOR_SETTLE') %}checked{% endif %}>
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                            <div class="help-text">Hold the sync while playback keeps advancing between polls; run it once a poll shows no further movement, i.e. you paused or finished listening.</div>
+                        </div>
                         {% endif %}
 
                         {% if get_bool('KAVITA_ENABLED') %}
                         <div class="form-group" style="align-items: center;">
                             <label>Kavita Poll Mode</label>
                             <select name="KAVITA_POLL_MODE" id="kavita_poll_mode"
-                                    onchange="togglePollSeconds('kavita_poll_seconds_row', this.value)">
+                                    onchange="togglePollSeconds('kavita_poll_seconds_row', this.value); togglePollSeconds('kavita_poll_settle_row', this.value)">
                                 <option value="global" {% if get_val('KAVITA_POLL_MODE', 'global') == 'global' %}selected{% endif %}>Global</option>
                                 <option value="custom" {% if get_val('KAVITA_POLL_MODE') == 'custom' %}selected{% endif %}>Custom</option>
                             </select>
@@ -2155,6 +2235,48 @@
                             <input type="number" name="KAVITA_POLL_SECONDS" min="10"
                                    value="{{ get_val('KAVITA_POLL_SECONDS', '300') }}">
                             <div class="help-text">Recommended: 300s for Kavita.</div>
+                        </div>
+                        <div class="form-group" id="kavita_poll_settle_row"
+                             {% if get_val('KAVITA_POLL_MODE') != 'custom' %}style="opacity: 0.45; pointer-events: none;"{% endif %}>
+                            <label>Wait for Position to Settle</label>
+                            <div class="toggle-switch-wrapper">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" name="KAVITA_POLL_WAIT_FOR_SETTLE"
+                                        {% if get_bool('KAVITA_POLL_WAIT_FOR_SETTLE') %}checked{% endif %}>
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                            <div class="help-text">Hold the sync while the position keeps changing between polls (actively reading); run it once a poll shows no further movement.</div>
+                        </div>
+                        {% endif %}
+
+                        {% if get_bool('CWA_SYNC_ENABLED') %}
+                        <div class="form-group" style="align-items: center;">
+                            <label>Calibre-Web Automated Poll Mode</label>
+                            <select name="CWA_SYNC_POLL_MODE" id="cwa_sync_poll_mode"
+                                    onchange="togglePollSeconds('cwa_sync_poll_seconds_row', this.value); togglePollSeconds('cwa_sync_poll_settle_row', this.value)">
+                                <option value="global" {% if get_val('CWA_SYNC_POLL_MODE', 'global') == 'global' %}selected{% endif %}>Global</option>
+                                <option value="custom" {% if get_val('CWA_SYNC_POLL_MODE') == 'custom' %}selected{% endif %}>Custom</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="cwa_sync_poll_seconds_row"
+                             {% if get_val('CWA_SYNC_POLL_MODE') != 'custom' %}style="opacity: 0.45; pointer-events: none;"{% endif %}>
+                            <label>Calibre-Web Automated Poll Interval (seconds)</label>
+                            <input type="number" name="CWA_SYNC_POLL_SECONDS" min="10"
+                                   value="{{ get_val('CWA_SYNC_POLL_SECONDS', '300') }}">
+                            <div class="help-text">Recommended: 300s for CWA.</div>
+                        </div>
+                        <div class="form-group" id="cwa_sync_poll_settle_row"
+                             {% if get_val('CWA_SYNC_POLL_MODE') != 'custom' %}style="opacity: 0.45; pointer-events: none;"{% endif %}>
+                            <label>Wait for Position to Settle</label>
+                            <div class="toggle-switch-wrapper">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" name="CWA_SYNC_POLL_WAIT_FOR_SETTLE"
+                                        {% if get_bool('CWA_SYNC_POLL_WAIT_FOR_SETTLE') %}checked{% endif %}>
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                            <div class="help-text">Hold the sync while the position keeps changing between polls (actively reading); run it once a poll shows no further movement.</div>
                         </div>
                         {% endif %}
 

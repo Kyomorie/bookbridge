@@ -11,11 +11,13 @@ audiobook, carrying an EPUB CFI that only the ebook write path emits:
             2576 | epub   |  72.147125 | epubcfi(/6/38!/4[x9780062...) | 2026-08-28 11:12:53.081+00
            14676 | m4b    |    95.5067 | epubcfi(/6/54!/4/2/6:0)       | 2026-08-28 17:38:29.223+00
 
-BookOrbit has no `'primary'` file role — `book_files.role` is constrained to
-content|cover|metadata|supplement — so the old `role == "primary"` lookup never
-matched and a format-agnostic fallback silently did all the work. BookOrbit
-expresses "primary" book-wide via `books.primary_file_id`, which for book 480
-points at the m4b, so it can never satisfy a kind-specific lookup either.
+Neither of BookOrbit's own "primary file" notions is kind-aware. `books.primary_file_id`
+is book-wide and pointed at the m4b for book 480. The file-level `role == "primary"` is
+format-agnostic where it exists at all: the reporter's instance constrains
+`book_files.role` to content|cover|metadata|supplement so nothing ever matched and file
+order decided, while another live instance (measured 2026-08-28) carries `role='primary'`
+on every book — an audio format in 57 of 200 sampled. Both routes can name the audiobook
+on a book that also holds an EPUB, which is why the id is now resolved per kind.
 """
 
 import os

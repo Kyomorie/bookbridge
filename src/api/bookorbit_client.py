@@ -255,12 +255,16 @@ class BookOrbitClient:
     def _build_light_info(self, book: dict) -> Optional[dict]:
         """Build a lightweight cache entry from a `/books/query` list row.
 
-        File ids are recorded per kind. BookOrbit has no `'primary'` file role
-        (`book_files.role` is constrained to content|cover|metadata|supplement)
-        and expresses "primary" book-wide via `books.primary_file_id`, which is
-        format-agnostic - on a book holding both an EPUB and an M4B it can name
-        the audiobook. A format-agnostic id must never satisfy a kind-specific
-        lookup, so the ebook and audio ids are kept apart here (#417).
+        File ids are recorded per kind. Neither of BookOrbit's own notions of a
+        "primary" file is kind-aware: `books.primary_file_id` is book-wide, and
+        the file-level `role == "primary"` is format-agnostic where it exists at
+        all (measured live 2026-08-28: present on every book, and an audio format
+        in 57 of 200 sampled - m4b or mp3; the reporter's instance constrains
+        `book_files.role` to content|cover|metadata|supplement, so it is absent
+        there and file order decided instead). Either way a format-agnostic id
+        can name the audiobook on a book that also holds an EPUB, and it must
+        never satisfy a kind-specific lookup - so the ebook and audio ids are
+        kept apart here (#417).
         """
         book_id = book.get("id")
         if book_id is None:

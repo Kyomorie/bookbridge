@@ -8,6 +8,18 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **BookOrbit and Grimmory audiobook progress can now be polled.** If you listened to an
+  audiobook in BookOrbit, your position could sit unnoticed for hours. Listening progress
+  is read by a different client from ebook progress, and that client had no poll setting
+  at all — so it was only ever checked on the slow global cycle, no matter what you set.
+  Setting the BookOrbit poll to custom only ever covered ebooks. BookOrbit and Grimmory
+  audiobooks now have their own **Poll Mode**, **Poll Interval** and **Wait for Position
+  to Settle** options in Settings, exactly like the ebook sources. Settle mode is the one
+  to use while listening: it holds the sync back while playback keeps advancing and runs
+  it once you pause or stop, instead of writing on every poll. The same settle option has
+  been added to the BookOrbit, Grimmory and Kavita ebook polls, and Calibre-Web Automated
+  now has poll settings in the UI rather than only in the database.
+
 - **Your reading position no longer jumps backwards while you sit on a page.** If you
   read forward and then stopped for a few minutes, the book could jump back roughly a
   page. BookBridge had written your position out to your other apps, and on a later
