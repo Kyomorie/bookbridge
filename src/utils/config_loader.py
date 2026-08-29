@@ -83,7 +83,7 @@ ALL_SETTINGS = [
     'CALIBRE_USE_ABS_IDENTIFIER', 'CALIBRE_LIBRARY_PATH',
 
     # Readest annotation sync (account is per-user; these are global engine defaults)
-    'READEST_ANNOTATION_SYNC', 'READEST_ANNOTATION_SYNC_MINUTES',
+    'READEST_ENABLED', 'READEST_ANNOTATION_SYNC', 'READEST_ANNOTATION_SYNC_MINUTES',
     'READEST_EMAIL', 'READEST_PASSWORD',
     'READEST_ACCESS_TOKEN', 'READEST_REFRESH_TOKEN', 'READEST_TOKEN_EXPIRES_AT',
     'READEST_SUPABASE_URL', 'READEST_SUPABASE_ANON_KEY',
@@ -302,6 +302,9 @@ DEFAULT_CONFIG = {
     'CWA_SYNC_POLL_WAIT_FOR_SETTLE': 'false',
     'CALIBRE_USE_ABS_IDENTIFIER': 'false',
     'CALIBRE_LIBRARY_PATH': '',
+    # Readest predates its own service gate, so it defaults on: the per-user
+    # highlight/upload flags are what actually start any work.
+    'READEST_ENABLED': 'true',
     'READEST_ANNOTATION_SYNC': 'false',
     'READEST_ANNOTATION_SYNC_MINUTES': '15',
     'READEST_EMAIL': '',

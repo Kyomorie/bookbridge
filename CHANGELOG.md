@@ -44,6 +44,14 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **An Enable switch for Readest, covering everything it does.** Readest had no
+  server-wide switch at all — highlight sync and both book uploads were per-reader only,
+  so there was nothing for an admin to turn off. Settings → Integrations → Readest now
+  has one, and it governs the highlight relay and both uploads together. It starts
+  switched on, so nothing changes for anyone already using Readest, and each reader's
+  own choices are remembered if it is ever switched off. Calibre-Web Automated's Kobo
+  sync now follows the same server-wide rule.
+
 - **An Enable switch for Audiobookshelf — including per user.** Audiobookshelf was the
   one service you could not simply switch off; the only way was typing the word
   `disabled` into its server URL, which applies to everyone on the install. Settings →

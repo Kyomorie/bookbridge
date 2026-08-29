@@ -1322,6 +1322,7 @@
 
             <!-- Readest Highlight Sync (engine knobs; account is per-user) -->
             <div class="settings-section" data-svc="readest">
+                {% set readest_enabled = get_val('READEST_ENABLED', 'true')|lower in ['true','1','yes','on'] %}
                 <div class="section-header">
                     <div class="svc-left">
                         <span class="svc-chev">▶</span>
@@ -1332,12 +1333,24 @@
                         </div>
                     </div>
                     <div class="header-tail">
-                        <span class="pill off">Per-user accounts</span>
+                        {% if not readest_enabled %}<span class="pill off">Disabled</span>
+                        {% else %}<span class="pill off">Per-user accounts</span>{% endif %}
+                        <div class="toggle-switch-wrapper">
+                            <span class="toggle-label">Enable</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="toggle_readest" name="READEST_ENABLED"
+                                    onchange="toggleSection('readest_body', this.checked)" {% if readest_enabled
+                                    %}checked{% endif %}>
+                                <span class="slider"></span>
+                            </label>
+                        </div>
                     </div>
                 </div>
-                <div class="section-body">
+                <div id="readest_body" class="section-body {% if not readest_enabled %}collapsed{% endif %}">
                     <div class="form-group full-width">
                         <div class="help-text" style="background:rgba(102,126,234,.08);border:1px solid rgba(102,126,234,.25);border-radius:8px;padding:10px 12px;">
+                            Covers everything Readest does for a user — highlight &amp; note relay and both
+                            book uploads. Turning this off stops all of it, whatever each user has chosen.
                             Bidirectionally syncs KOReader highlights and bookmarks with each user's
                             <a href="https://readest.com" target="_blank" style="color:#aab4f5;">Readest</a> account.
                             Enable it and enter the Readest <strong>email &amp; password</strong> per user under

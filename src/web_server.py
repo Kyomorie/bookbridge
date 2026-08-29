@@ -2186,10 +2186,12 @@ def _publish_saved_ebook_to_readest(book) -> None:
     if not filename or _is_storyteller_artifact_filename(filename):
         return
 
-    enabled = (user_setting("READEST_UPLOAD_ON_MATCH", "false") or "").strip().lower() in (
-        "true", "1", "yes", "on"
-    )
-    if not enabled:
+    def _on(key, default):
+        return (user_setting(key, default) or "").strip().lower() in ("true", "1", "yes", "on")
+
+    # The service gate covers every Readest feature, so an install-wide off here
+    # stops the upload even for a user who left it switched on.
+    if not _on("READEST_ENABLED", "true") or not _on("READEST_UPLOAD_ON_MATCH", "false"):
         return
 
     user_id = get_current_user_id()
@@ -3898,6 +3900,7 @@ def settings():
             'SYNC_ABS_EBOOK',
             'XPATH_FALLBACK_TO_PREVIOUS_SEGMENT',
             'ABS_ENABLED',
+            'READEST_ENABLED',
             'KOSYNC_ENABLED',
             'STORYTELLER_ENABLED',
             'BOOKLORE_ENABLED',

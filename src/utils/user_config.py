@@ -49,7 +49,7 @@ PER_USER_CREDENTIAL_KEYS = frozenset({
     "BOOKLORE_SHELF_NAME", "BOOKLORE_LIBRARY_ID", "BOOKLORE_ANNOTATION_SYNC",
     # Readest (Supabase cloud sync; the account is per-user and the rotating
     # access/refresh tokens are cached per-user — the user never pastes a JWT)
-    "READEST_ANNOTATION_SYNC", "READEST_EMAIL", "READEST_PASSWORD",
+    "READEST_ENABLED", "READEST_ANNOTATION_SYNC", "READEST_EMAIL", "READEST_PASSWORD",
     "READEST_ACCESS_TOKEN", "READEST_REFRESH_TOKEN", "READEST_TOKEN_EXPIRES_AT",
     "READEST_UPLOAD_ON_MATCH", "READEST_GROUP_NAME",
     "READEST_UPLOAD_READING",
@@ -150,6 +150,7 @@ PER_USER_FIELD_GROUPS = [
         ("KAVITA_COLLECTION_NAME", "Collection name (synced books moved here)", "text"),
     ]),
     ("Readest", [
+        ("READEST_ENABLED", "Enabled", "bool"),
         ("READEST_ANNOTATION_SYNC", "Highlight sync", "bool"),
         ("READEST_EMAIL", "Account email", "text"),
         ("READEST_PASSWORD", "Account password", "secret"),
@@ -188,13 +189,18 @@ PER_USER_FIELD_GROUPS = [
 # install-wide: the global value for these keys is authoritative and only ever
 # takes capability away.
 #
-# Feature sub-toggles are deliberately NOT here — `*_ANNOTATION_SYNC`,
-# `CWA_SYNC_ENABLED` and friends default to 'false' globally while users legitimately
-# turn them on for themselves, so enforcing the global would silently switch off work
-# people are already relying on.
+# A key belongs here only if an admin can actually switch its global on. The
+# `*_ANNOTATION_SYNC` flags for Grimmory and BookFusion have no toggle anywhere in
+# Settings, so their global sits at the seeded 'false' for good — gating those would
+# not enforce a decision, it would silently end highlight sync that users have turned
+# on for themselves.
 SERVICE_ENABLE_KEYS = frozenset({
     "ABS_ENABLED",
     "KOSYNC_ENABLED",
+    "READEST_ENABLED",
+    # CWA's Kobo sync half has its own global toggle in Settings, so it can be
+    # gated like a service; the annotation-sync flags cannot — see below.
+    "CWA_SYNC_ENABLED",
     "STORYTELLER_ENABLED",
     "BOOKLORE_ENABLED",
     "BOOKORBIT_ENABLED",

@@ -231,3 +231,72 @@ class TestAdminIntegrationPageRendering(TestIntegrationPageRendering):
         self.assertNotIn('checked', gate.group(0))
         self.assertIn('Off server-wide', html)
         self.assertIn('Turned off for everyone', html)
+
+
+class TestReadestServiceGate(_EnvCase):
+    """Readest had no global switch at all — its highlight relay and both uploads
+    were per-user only, so there was nothing for an admin to turn off. `READEST_ENABLED`
+    is that switch, and it covers every Readest feature at once."""
+
+    KEYS = _EnvCase.KEYS + ('READEST_ENABLED', 'READEST_UPLOAD_READING', 'READEST_UPLOAD_ON_MATCH')
+
+    def test_registered_and_defaults_on(self):
+        from src.utils.config_loader import ALL_SETTINGS, DEFAULT_CONFIG
+
+        self.assertIn('READEST_ENABLED', ALL_SETTINGS)
+        # Readest predates its gate, so 'true' keeps every existing install working
+        # when bootstrap reconciles the key in.
+        self.assertEqual(DEFAULT_CONFIG['READEST_ENABLED'], 'true')
+
+    def test_declared_per_user_and_gated(self):
+        from src.utils.user_config import PER_USER_CREDENTIAL_KEYS, PER_USER_FIELD_GROUPS
+
+        self.assertIn('READEST_ENABLED', SERVICE_ENABLE_KEYS)
+        self.assertIn('READEST_ENABLED', PER_USER_CREDENTIAL_KEYS)
+        self.assertIn(('READEST_ENABLED', 'Enabled', 'bool'), dict(PER_USER_FIELD_GROUPS)['Readest'])
+
+    def test_cwa_kobo_sync_is_gated_too(self):
+        """CWA_SYNC_ENABLED has a real global toggle in Settings, so unlike the
+        annotation flags it can be enforced."""
+        self.assertIn('CWA_SYNC_ENABLED', SERVICE_ENABLE_KEYS)
+        os.environ['CWA_SYNC_ENABLED'] = 'false'
+        self.addCleanup(os.environ.pop, 'CWA_SYNC_ENABLED', None)
+        self.assertEqual(resolve_setting({'CWA_SYNC_ENABLED': 'true'}, 'CWA_SYNC_ENABLED', ''), 'false')
+
+    def test_annotation_cycle_skips_every_readest_feature_when_off(self):
+        from unittest.mock import MagicMock, patch
+        from src.services.annotation_sync_service import AnnotationSyncService
+
+        creds = {
+            'READEST_ENABLED': 'true',
+            'READEST_ANNOTATION_SYNC': 'true',
+            'READEST_UPLOAD_READING': 'true',
+        }
+        db = MagicMock()
+        service = AnnotationSyncService(db)
+        service._enumerate_users = lambda: [(1, dict(creds))]
+        service._readest_sync = MagicMock()
+        service._readest_sync.sync_user.return_value = False
+
+        os.environ['READEST_ENABLED'] = 'false'
+        with patch('src.services.readest_upload_service.ReadestUploadService') as upload:
+            service.run_cycle()
+        service._readest_sync.sync_user.assert_not_called()
+        upload.assert_not_called()
+
+        os.environ['READEST_ENABLED'] = 'true'
+        with patch('src.services.readest_upload_service.ReadestUploadService') as upload:
+            upload.return_value.publish_reading_books.return_value = {'uploaded': 0}
+            service.run_cycle()
+        service._readest_sync.sync_user.assert_called_once()
+
+    def test_upload_on_match_respects_the_service_gate(self):
+        from unittest.mock import MagicMock, patch
+        import src.web_server as ws
+
+        book = MagicMock(original_ebook_filename='Some Book.epub', ebook_filename='Some Book.epub')
+        values = {'READEST_ENABLED': 'false', 'READEST_UPLOAD_ON_MATCH': 'true'}
+        with patch.object(ws, 'user_setting', lambda key, default='': values.get(key, default)):
+            with patch.object(ws, '_spawn_user_background') as spawn:
+                ws._publish_saved_ebook_to_readest(book)
+        spawn.assert_not_called()

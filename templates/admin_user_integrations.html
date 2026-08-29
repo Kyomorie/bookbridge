@@ -72,7 +72,7 @@
                 'BookFusion': 'BOOKFUSION_ENABLED',
                 'BookOrbit': 'BOOKORBIT_ENABLED',
                 'Kavita': 'KAVITA_ENABLED',
-                'Readest': 'READEST_ANNOTATION_SYNC',
+                'Readest': 'READEST_ENABLED',
                 'Calibre-Web Automated': 'CWA_ENABLED',
                 'Hardcover': 'HARDCOVER_ENABLED',
                 'StoryGraph': 'STORYGRAPH_ENABLED'
@@ -80,7 +80,7 @@
             {# Gates whose blank value means ON. Audiobookshelf predates per-service
                toggles, so an untouched account must keep syncing to it rather than
                save itself off the first time this page is submitted. #}
-            {% set gate_defaults_on = ['ABS_ENABLED'] %}
+            {% set gate_defaults_on = ['ABS_ENABLED', 'READEST_ENABLED'] %}
             {% set gate_key = gate_keys.get(group) %}
             {% set source_gate = group == 'KOReader Collections' %}
             {% set gate_globally_off = gate_key in service_enable_keys
