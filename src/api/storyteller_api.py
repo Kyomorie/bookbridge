@@ -767,14 +767,15 @@ class StorytellerAPIClient:
         try:
             # 1. Get Book Details for Filepath
             r_details = self._make_request("GET", f"/api/v2/books/{book_uuid}")
-            if not r_details or r_details.status_code != 200:
+            if r_details is None or r_details.status_code != 200:
+                details_status = getattr(r_details, "status_code", "No Response")
                 if polling:
                     logger.debug(
                         f"Storyteller poll: details unavailable for '{book_uuid[:8]}...' "
-                        f"({r_details.status_code if r_details else 'No Response'})"
+                        f"({details_status})"
                     )
                     return False
-                logger.error(f"❌ Failed to fetch book details for fallback: {r_details.status_code if r_details else 'No Response'}")
+                logger.error(f"❌ Failed to fetch book details for fallback: {details_status}")
                 raise Exception("API download failed and could not fetch details for fallback.")
 
             book_data = r_details.json()

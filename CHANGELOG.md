@@ -8,6 +8,13 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Storyteller fallback errors now report the real HTTP status.** A missing linked
+  Storyteller book returns HTTP 404, but BookBridge called that response "No
+  Response" because Python treats unsuccessful HTTP responses as false in boolean
+  checks. Diagnostics could therefore misclassify a stale book link as an outage or
+  credential problem. The fallback now distinguishes an actual missing response from
+  every HTTP response and reports the status code it received.
+
 - **A book could open at the very beginning instead of where you left off.** When a
   chapter's text sat inside styling tags, or a chapter held no text at all, BookBridge
   fell back to a made-up position that pointed at a paragraph the chapter did not have.
