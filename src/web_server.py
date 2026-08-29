@@ -4518,7 +4518,15 @@ def _storyteller_transcript_source(storyteller_uuid, storyteller_manifest):
 def _get_dashboard_sync_warning_clients(mapping, integrations):
     client_names = []
 
-    if integrations.get('abs') and mapping.get('sync_mode') != 'ebook_only':
+    # A book repointed away from ABS keeps its old ABS progress row so the
+    # repoint stays undoable, but the sync engine never refreshes that row and
+    # the dashboard hides its tile — counting it would flag permanent drift
+    # nothing can clear.
+    if (
+        integrations.get('abs')
+        and mapping.get('sync_mode') != 'ebook_only'
+        and (mapping.get('audio_source') or 'ABS') == 'ABS'
+    ):
         client_names.append('abs')
 
     if integrations.get('bookloreaudio') and mapping.get('audio_source') == 'BookLore':
