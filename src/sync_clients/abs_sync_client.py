@@ -231,6 +231,68 @@ class ABSSyncClient(SyncClient):
 
         return self.transcriber.get_previous_segment_text(book.transcript_file, abs_ts)
 
+    def _resolve_progress_target(self, book: Book, request: UpdateProgressRequest) -> Optional[float]:
+        """Resolve the ABS timestamp a normal progress update would target.
+
+        This is deliberately side-effect free: it reuses the same alignment path as
+        ``update_progress`` but performs neither an ABS progress read nor a write.
+        The rewind-approval policy can therefore inspect the proposed target against
+        the ABS ``ServiceState`` already fetched by the current sync cycle.
+        """
+        if request.locator_result is None:
+            return None
+        if request.locator_result.percentage == 0.0:
+            return 0.0
+
+        book_title = book.abs_title or 'Unknown Book'
+        ts_for_text = None
+        if book.transcript_file == "DB_MANAGED" and self.alignment_service:
+            char_index = request.locator_result.match_index
+            if char_index is not None:
+                ts_for_text = self.alignment_service.get_time_for_text(
+                    book.abs_id,
+                    request.txt,
+                    char_offset_hint=char_index,
+                )
+            else:
+                logger.debug(
+                    f"🔍 '{book_title}' Alignment lookup skipped: No character index provided in request"
+                )
+        elif book.transcript_file and book.transcript_file != "DB_MANAGED":
+            ts_for_text = self.transcriber.find_time_for_text(
+                book.transcript_file,
+                request.txt,
+                hint_percentage=request.locator_result.percentage,
+                char_offset=request.locator_result.match_index,
+                book_title=book_title,
+            )
+
+        try:
+            return float(ts_for_text) if ts_for_text is not None else None
+        except (TypeError, ValueError):
+            logger.warning(
+                f"⚠️ '{book_title}' Resolved ABS timestamp is invalid: {ts_for_text!r}"
+            )
+            return None
+
+    def preview_progress_update(self, book: Book, request: UpdateProgressRequest) -> Optional[dict]:
+        """Return the proposed ABS target without reading or mutating ABS.
+
+        ``ts`` is the raw alignment timestamp used by the existing monotonic guard;
+        ``adjusted_ts`` is what ``_update_abs_progress_with_offset`` would submit.
+        Keeping both avoids changing existing offset/guard semantics while giving the
+        approval flow an exact description of the eventual write.
+        """
+        ts = self._resolve_progress_target(book, request)
+        if ts is None:
+            return None
+        adjusted_ts = max(round(ts + self.abs_progress_offset, 2), 0.0)
+        return {
+            'ts': ts,
+            'adjusted_ts': adjusted_ts,
+            'pct': self._abs_to_percentage(adjusted_ts, book) or 0.0,
+        }
+
     def update_progress(self, book: Book, request: UpdateProgressRequest) -> SyncResult:
         book_title = book.abs_title or 'Unknown Book'
         if request.locator_result.percentage == 0.0:
@@ -247,30 +309,7 @@ class ABSSyncClient(SyncClient):
                 error_code=self._stale_item_error_code(book.abs_id, result),
             )
 
-        # Route database-managed books to AlignmentService and legacy books to Transcriber.
-        ts_for_text = None
-        
-        if book.transcript_file == "DB_MANAGED" and self.alignment_service:
-            # Use database alignment.
-            # We use the match_index (character offset) found by the EbookParser
-            char_index = request.locator_result.match_index
-            if char_index is not None:
-                ts_for_text = self.alignment_service.get_time_for_text(
-                    book.abs_id, 
-                    request.txt, 
-                    char_offset_hint=char_index
-                )
-            else:
-                logger.debug(f"🔍 '{book_title}' Alignment lookup skipped: No character index provided in request")
-                
-        elif book.transcript_file and book.transcript_file != "DB_MANAGED":
-            # Legacy Path: Use JSON File
-            ts_for_text = self.transcriber.find_time_for_text(
-                book.transcript_file, request.txt,
-                hint_percentage=request.locator_result.percentage,
-                char_offset=request.locator_result.match_index,
-                book_title=book_title
-            )
+        ts_for_text = self._resolve_progress_target(book, request)
         if ts_for_text is not None:
             response = self.abs_client.get_progress(book.abs_id)
             abs_ts = response.get('currentTime') if response is not None else None

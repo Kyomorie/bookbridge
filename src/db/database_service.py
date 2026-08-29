@@ -1399,6 +1399,10 @@ class DatabaseService:
     # (admin) so single-user callers and pre-migration data keep working; pass
     # an explicit user_id for per-user sync. Progress is keyed by
     # (abs_id, client_name, user_id).
+    def resolve_user_id(self, user_id: int = None) -> Optional[int]:
+        """Resolve an explicit/ambient user using the normal state-owner rules."""
+        return self._resolve_uid(user_id)
+
     def _resolve_uid(self, user_id):
         if user_id is not None:
             return user_id

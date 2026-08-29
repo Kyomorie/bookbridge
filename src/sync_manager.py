@@ -317,6 +317,166 @@ class SyncManager:
 
         return current
 
+    _KOSYNC_REWIND_SOURCE_KEYS = (
+        'pct',
+        'xpath',
+        'service_updated_at',
+        '_kosync_last_put_device',
+        '_kosync_last_put_device_id',
+    )
+    _ABS_REWIND_TARGET_KEYS = ('pct', 'ts', 'service_updated_at', 'service_duration')
+
+    @staticmethod
+    def _rewind_snapshot(state: ServiceState | None, keys: tuple[str, ...]) -> dict:
+        current = getattr(state, 'current', None)
+        if not isinstance(current, dict):
+            return {}
+        # Exclude transient metadata such as _kosync_last_put_age_seconds: including
+        # a clock-like value in the source fingerprint would recreate a dismissed
+        # request every cycle even though the reader never moved.
+        return {key: current[key] for key in keys if current.get(key) is not None}
+
+    @staticmethod
+    def _kosync_abs_rewind_ttl_hours() -> Optional[float]:
+        raw = os.environ.get('KOSYNC_ABS_REWIND_TTL_HOURS', '24')
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def _maybe_queue_kosync_abs_rewind(
+        self,
+        book: Book,
+        leader: str,
+        leader_state: ServiceState,
+        client_name: str,
+        client: SyncClient,
+        client_state: ServiceState | None,
+        request: UpdateProgressRequest,
+        title_snip: str,
+    ) -> bool:
+        """Suppress and persist a KoSync -> ABS backward write pending approval.
+
+        Returns True when the normal ABS write must not run. This path is purposely
+        narrow: every other leader/target pair keeps the existing dispatch behavior.
+        The safe default ``KOSYNC_FURTHEST_WINS=true`` short-circuits before even
+        previewing a candidate, exactly as the user-facing setting promises.
+        """
+        if leader != 'KoSync' or client_name != 'ABS':
+            return False
+        if env_truthy('KOSYNC_FURTHEST_WINS', 'true'):
+            return False
+
+        locator = getattr(request, 'locator_result', None)
+        # Explicit Clear Progress is an existing, deliberate reset workflow. Never
+        # convert its exact 0% write into a pending rewind decision.
+        if locator is None or getattr(locator, 'percentage', None) == 0.0:
+            return False
+
+        current_ts = None
+        current = getattr(client_state, 'current', None)
+        if isinstance(current, dict):
+            try:
+                current_ts = float(current.get('ts')) if current.get('ts') is not None else None
+            except (TypeError, ValueError):
+                current_ts = None
+        if current_ts is None:
+            # No snapshot means we cannot bind an approval safely. Fall through to
+            # the long-standing ABS client guard, which will re-read ABS before any
+            # backward write and remains the final defensive boundary.
+            return False
+
+        preview = getattr(client, 'preview_progress_update', None)
+        if not callable(preview):
+            return False
+        proposal = preview(book, request)
+        if not isinstance(proposal, dict) or proposal.get('ts') is None:
+            return False
+        try:
+            proposed_ts = float(proposal['ts'])
+        except (TypeError, ValueError):
+            return False
+
+        if proposed_ts >= current_ts:
+            return False
+
+        ttl_hours = self._kosync_abs_rewind_ttl_hours()
+        if ttl_hours is None:
+            logger.error(
+                "⛔ '%s' '%s' Blocking KoSync → ABS rewind %.2fs → %.2fs: "
+                "KOSYNC_ABS_REWIND_TTL_HOURS is invalid; approval creation fails closed",
+                book.abs_id,
+                title_snip,
+                current_ts,
+                proposed_ts,
+            )
+            return True
+
+        user_id = self.database_service.resolve_user_id(get_current_user_id())
+        if user_id is None:
+            logger.error(
+                "⛔ '%s' '%s' Blocking KoSync → ABS rewind because no user could be resolved",
+                book.abs_id,
+                title_snip,
+            )
+            return True
+
+        source_snapshot = self._rewind_snapshot(
+            leader_state,
+            self._KOSYNC_REWIND_SOURCE_KEYS,
+        )
+        target_snapshot = self._rewind_snapshot(
+            client_state,
+            self._ABS_REWIND_TARGET_KEYS,
+        )
+        if source_snapshot.get('pct') is None or target_snapshot.get('ts') is None:
+            logger.error(
+                "⛔ '%s' '%s' Blocking KoSync → ABS rewind because a snapshot is incomplete",
+                book.abs_id,
+                title_snip,
+            )
+            return True
+
+        try:
+            pending, created = self.database_service.get_or_create_pending_rewind(
+                user_id=user_id,
+                abs_id=book.abs_id,
+                source_snapshot=source_snapshot,
+                target_snapshot=target_snapshot,
+                proposed_timestamp=proposed_ts,
+                proposed_percentage=float(proposal.get('pct') or 0.0),
+                ttl_hours=ttl_hours,
+            )
+        except Exception as exc:
+            logger.error(
+                "⛔ '%s' '%s' Blocking KoSync → ABS rewind because pending state "
+                "could not be persisted: %s",
+                book.abs_id,
+                title_snip,
+                exc,
+                exc_info=True,
+            )
+            return True
+
+        if created:
+            logger.info(
+                "⏸️ '%s' '%s' KoSync → ABS rewind %.2fs → %.2fs awaits user approval (request %s)",
+                book.abs_id,
+                title_snip,
+                current_ts,
+                proposed_ts,
+                pending.get('id'),
+            )
+        else:
+            logger.debug(
+                "KoSync → ABS rewind for '%s' matched existing request %s (%s)",
+                book.abs_id,
+                pending.get('id'),
+                pending.get('status'),
+            )
+        return True
+
     def _completion_propagation_enabled(self) -> bool:
         return env_truthy('SYNC_COMPLETION_PROPAGATION')
 
@@ -4029,6 +4189,17 @@ class SyncManager:
                             # lets it skip re-fetching state it just had.
                             current_state=client_state,
                         )
+                        if self._maybe_queue_kosync_abs_rewind(
+                            book,
+                            leader,
+                            leader_state,
+                            client_name,
+                            client,
+                            client_state,
+                            request,
+                            title_snip,
+                        ):
+                            continue
                         result = client.update_progress(book, request)
                         results[client_name] = result
                         self._record_bridge_write(client_name, abs_id, result)
