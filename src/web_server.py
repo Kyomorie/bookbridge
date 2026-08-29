@@ -285,6 +285,13 @@ def setup_dependencies(app, test_container=None):
         ConfigLoader.load_settings(database_service)
         logger.info("✅ Settings loaded into environment variables")
 
+        # One-time upgrade safety net: a service switched on only per-user, with
+        # the global left at its seeded 'false', would go dark the moment the
+        # install-wide gate became authoritative. Runs once, then never again —
+        # so an admin switching a service off later stays off for everyone.
+        from src.db.user_bootstrap import reconcile_service_gates
+        reconcile_service_gates(database_service)
+
         # Force reconfigure logging level based on new settings
         _reconfigure_logging()
 

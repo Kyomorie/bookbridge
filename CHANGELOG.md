@@ -18,6 +18,20 @@ All notable changes to BookBridge will be documented in this file.
   everyone's settings return exactly as they were. Per-reader feature options, such as
   highlight sync, are unaffected.
 
+- **Switching Calibre-Web Automated off now takes effect straight away.** Every other
+  integration reacts to its server-wide switch the moment you save it, but CWA read its
+  switch once when BookBridge started and then never again — so turning CWA off left it
+  syncing until the next restart. It now checks the switch each time it is used, like
+  the rest.
+
+- **Upgrading no longer silently unsyncs readers who had a service enabled only in their
+  own account.** When the server-wide switches became authoritative, a service that had
+  only ever been switched on by individual readers — with the server-wide switch left
+  off — would have stopped syncing for them on upgrade. BookBridge now checks once, on
+  the first start after the update, and switches the server-wide switch on for any
+  service a reader was actually using, so nothing goes dark. This happens only that once:
+  switching a service off in Settings afterwards still switches it off for everyone.
+
 - **"Out of sync" warnings on audiobooks you moved to BookOrbit.** A book whose audio
   was repointed from Audiobookshelf to BookOrbit keeps its old Audiobookshelf position
   on file so the move stays undoable. That old position is frozen — nothing updates it
