@@ -1,0 +1,51 @@
+name: PR2 slice 2 policy
+on:
+  push:
+    branches: [feature/kosync-abs-rewind-approval]
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Preflight
+        run: |
+          set -eu
+          echo "BASE_HEAD=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          git fetch origin feature/kosync-abs-rewind-approval
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/feature/kosync-abs-rewind-approval)"
+          git fetch --no-tags https://github.com/cporcellijr/bookbridge.git dev:refs/remotes/upstream/dev
+          test "$(git rev-parse refs/remotes/upstream/dev)" = "6afbdc68de3e67298d0def330e0d15cf8c6781e2"
+      - name: Dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y lua5.4 >/dev/null
+          python -m pip install --upgrade pip >/dev/null
+          pip install flake8 pytest pytest-cov >/dev/null
+          pip install -r requirements.txt >/dev/null
+      - name: Patch
+        run: python .github/pr2-slice2-patch.py
+      - name: Focused tests
+        run: |
+          flake8 src/sync_clients/abs_sync_client.py src/sync_manager.py src/db/database_service.py tests/test_kosync_abs_rewind_policy.py --count --select=E9,F63,F7,F82 --show-source --statistics
+          pytest -q tests/test_kosync_abs_rewind_policy.py tests/test_pending_rewinds.py tests/test_abs_unittest.py tests/test_clear_progress.py tests/test_kosync_cross_device_rewinds.py tests/test_kosync_collapse_guard.py tests/test_sync_cycle_user_scoping.py tests/test_leader_own_writeback.py
+      - name: Commit validated slice
+        run: |
+          set -eu
+          git fetch origin feature/kosync-abs-rewind-approval
+          test "$(git rev-parse origin/feature/kosync-abs-rewind-approval)" = "$BASE_HEAD"
+          git fetch --no-tags https://github.com/cporcellijr/bookbridge.git dev:refs/remotes/upstream/dev
+          test "$(git rev-parse refs/remotes/upstream/dev)" = "6afbdc68de3e67298d0def330e0d15cf8c6781e2"
+          rm .github/workflows/pr2-slice2-policy.yml .github/pr2-slice2-patch.py
+          git config user.name Kyomorie
+          git config user.email 246901271+Kyomorie@users.noreply.github.com
+          git add -A
+          git diff --cached --check
+          git commit -m "[Feature] Queue KoSync ABS rewind approvals"
+          git push origin HEAD:feature/kosync-abs-rewind-approval
