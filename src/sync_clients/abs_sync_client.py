@@ -6,6 +6,7 @@ from typing import Optional
 from src.api.api_clients import ABSClient
 from src.db.models import Book, State
 from src.sync_clients.sync_client_interface import SyncClient, SyncResult, UpdateProgressRequest, ServiceState, ABS_ITEM_NOT_FOUND
+from src.utils.config_loader import env_truthy
 from src.utils.ebook_utils import EbookParser
 from src.utils.progress_metadata import parse_service_timestamp
 from src.utils.transcriber import AudioTranscriber
@@ -275,11 +276,27 @@ class ABSSyncClient(SyncClient):
             response = self.abs_client.get_progress(book.abs_id)
             abs_ts = response.get('currentTime') if response is not None else None
 
-            # Direction/conflict policy is resolved before this adapter is called:
-            # SyncManager selects the leader after freshness, rollback and own-write
-            # provenance guards, while KoSync applies its cross-device rewind policy
-            # at PUT time. Re-applying a monotonic "furthest wins" rule here makes a
-            # verified lower leader impossible to propagate to Audiobookshelf (#215).
+            # Keep the legacy monotonic ABS guard as the safe default. The managed
+            # KoSync setting deliberately exposes one opt-in escape hatch: disabling
+            # KOSYNC_FURTHEST_WINS means a newer backward reader position is allowed
+            # to move the rest of the bridge back as well (#215 / #391).
+            allow_rewind = not env_truthy("KOSYNC_FURTHEST_WINS", "true")
+            if abs_ts is not None and ts_for_text < abs_ts and not allow_rewind:
+                logger.info(
+                    f"🔄 '{book_title}' Not updating ABS progress — target timestamp "
+                    f"{ts_for_text:.2f}s is before current ABS position {abs_ts:.2f}s "
+                    "and backward sync protection is enabled"
+                )
+                return SyncResult(abs_ts, True, {
+                    'ts': abs_ts,
+                    'pct': self._abs_to_percentage(abs_ts, book) or 0
+                })
+            if abs_ts is not None and ts_for_text < abs_ts:
+                logger.info(
+                    f"↩️ '{book_title}' Applying ABS rewind from {abs_ts:.2f}s to "
+                    f"{ts_for_text:.2f}s because backward KoSync progress is explicitly allowed"
+                )
+
             prev_ts = abs_ts if abs_ts is not None else 0.0
             time_listened = (ts_for_text - prev_ts) if request.credit_listening else 0.0
             result, final_ts = self._update_abs_progress_with_offset(
