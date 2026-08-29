@@ -3300,6 +3300,17 @@ class SyncManager:
             )
             return None
 
+    @staticmethod
+    def _sync_result_was_applied(result) -> bool:
+        """Return True only when a successful result represents a real remote write."""
+        if not result or not getattr(result, 'success', False):
+            return False
+        updated_state = getattr(result, 'updated_state', None)
+        return not (
+            isinstance(updated_state, dict)
+            and bool(updated_state.get('skipped'))
+        )
+
     def _record_bridge_write(self, client_name: str, abs_id: str, result) -> None:
         """Record that BookBridge itself produced this client's current position.
 
@@ -3309,7 +3320,7 @@ class SyncManager:
         client's own axis via SyncResult.updated_state['pct'], so audio and ebook
         clients each record a value comparable with what they will report next."""
         try:
-            if not result or not getattr(result, 'success', False):
+            if not self._sync_result_was_applied(result):
                 return
             updated_state = getattr(result, 'updated_state', None)
             pct = updated_state.get('pct') if isinstance(updated_state, dict) else None
@@ -4113,7 +4124,7 @@ class SyncManager:
 
                 # Save sync results from other clients
                 for client_name, result in results.items():
-                    if result.success:
+                    if self._sync_result_was_applied(result):
                         # Use updated_state if provided, otherwise fall back to basic state
                         state_data = result.updated_state if result.updated_state else {'pct': result.location}
                         logger.info(f"'{abs_id}' '{title_snip}' Updated state data for '{client_name}': {state_data}")
