@@ -279,8 +279,7 @@ class ABSSyncClient(SyncClient):
                 return SyncResult(abs_ts, True, {
                     'ts': abs_ts,
                     'pct': self._abs_to_percentage(abs_ts, book) or 0,
-                    'skipped': True,
-                })
+                }, skipped=True)
 
             prev_ts = abs_ts if abs_ts is not None else 0.0
             time_listened = (ts_for_text - prev_ts) if request.credit_listening else 0.0

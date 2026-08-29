@@ -363,10 +363,18 @@ class SyncManager:
                 else:
                     result = client.update_progress(book, request)
                     self._record_bridge_write(client_name, abs_id, result)
-                    if getattr(result, 'success', False):
+                    if self._sync_result_was_applied(result):
+                        # Genuinely applied write: persist the snapshot and log
                         self._persist_state_snapshot(book, client_name, {'pct': 1.0}, current_time)
                         logger.info(f"🏁 '{abs_id}' '{title_snip}' completion propagated to '{client_name}'")
+                    elif getattr(result, 'success', False) and getattr(result, 'skipped', False):
+                        # Deliberate policy skip: successful but not applied.
+                        # Persist NOTHING — the {'pct': 1.0} value is a fabricated constant,
+                        # not an observation. Persisting it would assert a completion that
+                        # never happened. Log at INFO so the skip appears in diagnostics.
+                        logger.info(f"🏁 '{abs_id}' '{title_snip}' completion propagation skipped for '{client_name}' by client policy; no write performed")
                     else:
+                        # Real failure: keep the existing warning line
                         logger.warning(f"⚠️ Completion propagation failed for '{client_name}': client reported unsuccessful write")
             except Exception as e:
                 logger.warning(f"⚠️ Completion propagation failed for '{client_name}': {e}", exc_info=True)
@@ -3302,14 +3310,23 @@ class SyncManager:
 
     @staticmethod
     def _sync_result_was_applied(result) -> bool:
-        """Return True only when a successful result represents a real remote write."""
+        """Return True only when a successful result represents a real remote write.
+
+        This answers the question: "Did a real remote write happen?" — it governs
+        whether we may stamp own-write provenance and whether we may claim a
+        completion was propagated. A skip answers NO.
+
+        This is NOT the right question to ask before persisting an observed state.
+        """
         if not result or not getattr(result, 'success', False):
             return False
-        updated_state = getattr(result, 'updated_state', None)
-        return not (
-            isinstance(updated_state, dict)
-            and bool(updated_state.get('skipped'))
-        )
+        # Identity comparison against True is deliberate:
+        # - Real SyncResult objects always have a real bool 'skipped' field.
+        # - unittest.mock.Mock auto-creates a truthy child Mock for any attribute
+        #   access; 'skipped' would be a Mock, not the boolean True. An identity
+        #   check (is True) correctly rejects that, preserving the pre-existing
+        #   behavior where a bare Mock is treated as applied (not skipped).
+        return getattr(result, 'skipped', False) is not True
 
     def _record_bridge_write(self, client_name: str, abs_id: str, result) -> None:
         """Record that BookBridge itself produced this client's current position.
@@ -4124,7 +4141,14 @@ class SyncManager:
 
                 # Save sync results from other clients
                 for client_name, result in results.items():
-                    if self._sync_result_was_applied(result):
+                    if result.success:
+                        # The position in a skipped result is a genuine fresh read of the
+                        # service (from a live get_progress() call inside update_progress()).
+                        # This loop is the only place follower state is persisted, so dropping
+                        # it would leave the ABS State row stale. But it is still not a write,
+                        # so no provenance marker is stamped (that gate is in
+                        # _record_bridge_write a few lines earlier, which still uses
+                        # _sync_result_was_applied).
                         # Use updated_state if provided, otherwise fall back to basic state
                         state_data = result.updated_state if result.updated_state else {'pct': result.location}
                         logger.info(f"'{abs_id}' '{title_snip}' Updated state data for '{client_name}': {state_data}")
