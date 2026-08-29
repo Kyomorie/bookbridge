@@ -27,6 +27,7 @@ from .models import (
     KosyncUserProgress,
     KosyncXpathOrderCache,
     PendingSuggestion,
+    PendingRewind,
     BookloreBook,
     ReadingSession,
     KOReaderBookStat,
@@ -2215,6 +2216,164 @@ class DatabaseService:
                 count += 1
             return count
 
+
+    # Pending rewind approval operations (KoSync -> ABS only)
+    @staticmethod
+    def _rewind_snapshot_json(snapshot: dict) -> str:
+        """Canonical JSON used both for persistence and source fingerprinting."""
+        if not isinstance(snapshot, dict):
+            raise ValueError("rewind snapshot must be a dict")
+        return json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+    @classmethod
+    def _rewind_source_fingerprint(cls, source_snapshot: dict) -> str:
+        import hashlib
+        payload = cls._rewind_snapshot_json(source_snapshot).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    @staticmethod
+    def _serialize_pending_rewind(row: PendingRewind) -> dict:
+        return {
+            "id": row.id,
+            "user_id": row.user_id,
+            "abs_id": row.abs_id,
+            "source": row.source,
+            "source_fingerprint": row.source_fingerprint,
+            "source_snapshot": row.source_snapshot,
+            "target_snapshot": row.target_snapshot,
+            "proposed_timestamp": row.proposed_timestamp,
+            "proposed_percentage": row.proposed_percentage,
+            "status": row.status,
+            "created_at": row.created_at,
+            "expires_at": row.expires_at,
+            "resolved_at": row.resolved_at,
+        }
+
+    @staticmethod
+    def _expire_rewind_row(row: PendingRewind, now: datetime) -> bool:
+        if row.status == "pending" and row.expires_at is not None and row.expires_at <= now:
+            row.status = "expired"
+            row.resolved_at = now
+            return True
+        return False
+
+    def get_or_create_pending_rewind(
+        self,
+        user_id: int,
+        abs_id: str,
+        source_snapshot: dict,
+        target_snapshot: dict,
+        proposed_timestamp: float,
+        proposed_percentage: float,
+        ttl_hours: float,
+        now: datetime = None,
+    ) -> tuple[dict, bool]:
+        """Create one durable pending rewind, or return the prior source decision.
+
+        Dedupe deliberately spans all statuses. Once a source snapshot is
+        dismissed or expires it cannot reappear until KoSync actually moves and
+        therefore produces a different fingerprint.
+        """
+        if user_id is None or not abs_id:
+            raise ValueError("user_id and abs_id are required for pending rewinds")
+        try:
+            ttl = float(ttl_hours)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("ttl_hours must be numeric") from exc
+        if ttl <= 0:
+            raise ValueError("ttl_hours must be greater than zero")
+
+        source_json = self._rewind_snapshot_json(source_snapshot)
+        target_json = self._rewind_snapshot_json(target_snapshot)
+        source_fingerprint = self._rewind_source_fingerprint(source_snapshot)
+        now = now or utcnow()
+        expires_at = now + timedelta(hours=ttl)
+
+        with self.get_session() as session:
+            existing = session.query(PendingRewind).filter(
+                PendingRewind.user_id == user_id,
+                PendingRewind.abs_id == abs_id,
+                PendingRewind.source_fingerprint == source_fingerprint,
+            ).first()
+            if existing is not None:
+                self._expire_rewind_row(existing, now)
+                session.flush()
+                return self._serialize_pending_rewind(existing), False
+
+            row = PendingRewind(
+                user_id=user_id,
+                abs_id=abs_id,
+                source_fingerprint=source_fingerprint,
+                source_snapshot_json=source_json,
+                target_snapshot_json=target_json,
+                proposed_timestamp=float(proposed_timestamp),
+                proposed_percentage=float(proposed_percentage),
+                expires_at=expires_at,
+            )
+            session.add(row)
+            session.flush()
+            return self._serialize_pending_rewind(row), True
+
+    def get_pending_rewinds(self, user_id: int, now: datetime = None) -> list[dict]:
+        """Return only live pending requests for one explicit user."""
+        if user_id is None:
+            return []
+        now = now or utcnow()
+        with self.get_session() as session:
+            rows = session.query(PendingRewind).filter(
+                PendingRewind.user_id == user_id,
+                PendingRewind.status == "pending",
+            ).order_by(PendingRewind.created_at.asc(), PendingRewind.id.asc()).all()
+            live = []
+            for row in rows:
+                if self._expire_rewind_row(row, now):
+                    continue
+                live.append(self._serialize_pending_rewind(row))
+            return live
+
+    def get_pending_rewind(self, user_id: int, request_id: int, now: datetime = None) -> Optional[dict]:
+        """Fetch one live request, never crossing the caller's user boundary."""
+        if user_id is None or request_id is None:
+            return None
+        now = now or utcnow()
+        with self.get_session() as session:
+            row = session.query(PendingRewind).filter(
+                PendingRewind.id == request_id,
+                PendingRewind.user_id == user_id,
+            ).first()
+            if row is None:
+                return None
+            if self._expire_rewind_row(row, now):
+                return None
+            if row.status != "pending":
+                return None
+            return self._serialize_pending_rewind(row)
+
+    def resolve_pending_rewind(
+        self,
+        user_id: int,
+        request_id: int,
+        status: str,
+        now: datetime = None,
+    ) -> bool:
+        """Move a live request to a terminal state for the same explicit user."""
+        if status not in {"accepted", "dismissed", "stale"}:
+            raise ValueError(f"invalid pending rewind status: {status}")
+        if user_id is None or request_id is None:
+            return False
+        now = now or utcnow()
+        with self.get_session() as session:
+            row = session.query(PendingRewind).filter(
+                PendingRewind.id == request_id,
+                PendingRewind.user_id == user_id,
+            ).first()
+            if row is None or row.status != "pending":
+                return False
+            if self._expire_rewind_row(row, now):
+                return False
+            row.status = status
+            row.resolved_at = now
+            return True
 
     # PendingSuggestion operations
     def get_pending_suggestion(self, source_id: str) -> Optional[PendingSuggestion]:

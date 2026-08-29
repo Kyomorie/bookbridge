@@ -422,6 +422,89 @@ class Job(Base):
 
 
 
+class PendingRewind(Base):
+    """Durable user decision for a proposed KoSync -> ABS backward write.
+
+    ``source_fingerprint`` is a SHA-256 of the canonical source snapshot and is
+    unique per user/book. Terminal rows deliberately remain in the table so a
+    dismissed or expired source snapshot cannot nag again every sync cycle.
+    ``target_snapshot_json`` is stored separately and must be revalidated before
+    an approval is allowed to write anything to Audiobookshelf.
+    """
+    __tablename__ = 'pending_rewinds'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    abs_id = Column(String(255), ForeignKey('books.abs_id', ondelete='CASCADE'), nullable=False, index=True)
+    source = Column(String(32), nullable=False, default='KoSync')
+    source_fingerprint = Column(String(64), nullable=False)
+    source_snapshot_json = Column(Text, nullable=False)
+    target_snapshot_json = Column(Text, nullable=False)
+    proposed_timestamp = Column(Float, nullable=False)
+    proposed_percentage = Column(Float, nullable=False)
+    status = Column(String(20), nullable=False, default='pending', index=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    resolved_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index(
+            'ix_pending_rewinds_user_abs_source',
+            'user_id', 'abs_id', 'source_fingerprint',
+            unique=True,
+        ),
+        Index('ix_pending_rewinds_user_status_expiry', 'user_id', 'status', 'expires_at'),
+    )
+
+    def __init__(
+        self,
+        user_id: int,
+        abs_id: str,
+        source_fingerprint: str,
+        source_snapshot_json: str,
+        target_snapshot_json: str,
+        proposed_timestamp: float,
+        proposed_percentage: float,
+        expires_at: datetime,
+        source: str = 'KoSync',
+        status: str = 'pending',
+    ):
+        self.user_id = user_id
+        self.abs_id = abs_id
+        self.source = source
+        self.source_fingerprint = source_fingerprint
+        self.source_snapshot_json = source_snapshot_json
+        self.target_snapshot_json = target_snapshot_json
+        self.proposed_timestamp = proposed_timestamp
+        self.proposed_percentage = proposed_percentage
+        self.status = status
+        self.created_at = utcnow()
+        self.expires_at = expires_at
+
+    @staticmethod
+    def _json_dict(raw: str) -> dict:
+        import json
+        try:
+            parsed = json.loads(raw) if raw else {}
+            return parsed if isinstance(parsed, dict) else {}
+        except (TypeError, json.JSONDecodeError):
+            return {}
+
+    @property
+    def source_snapshot(self) -> dict:
+        return self._json_dict(self.source_snapshot_json)
+
+    @property
+    def target_snapshot(self) -> dict:
+        return self._json_dict(self.target_snapshot_json)
+
+    def __repr__(self):
+        return (
+            f"<PendingRewind(id={self.id}, user_id={self.user_id}, "
+            f"abs_id='{self.abs_id}', status='{self.status}')>"
+        )
+
+
 class PendingSuggestion(Base):
     """
     Model for progress-triggered ebook suggestions.
