@@ -16,13 +16,21 @@ class TestCWASyncApi(unittest.TestCase):
 
     def _make_client(self, server='http://cwa.local:8083', token='abc123token',
                      enabled='true', cwa_client=None):
-        """Create a client with config snapshotted from env."""
-        with patch.dict('os.environ', {
+        """Create a client with server/token snapshotted from env.
+
+        The enable flag is read per call, not snapshotted — the class is a DI
+        Singleton, so a flag captured at construction would outlive an admin
+        switching CWA off. The patch therefore has to stay up for the whole test,
+        not just the constructor.
+        """
+        patcher = patch.dict('os.environ', {
             'CWA_SERVER': server,
             'CWA_SYNC_ENABLED': enabled,
             'CWA_SYNC_TOKEN': token,
-        }):
-            return CWASyncApi(cwa_client=cwa_client)
+        })
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return CWASyncApi(cwa_client=cwa_client)
 
     def setUp(self):
         self.mock_cwa_client = Mock()

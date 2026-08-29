@@ -28,19 +28,20 @@ class CWASyncApi:
         self._session.headers.update({"Content-Type": "application/json"})
         self._timeout = 15
 
-        # Snapshot config at init (matches CWAClient pattern). CWA_SYNC_TOKEN/
-        # ENABLED are per-user when credentials are provided; server is global.
+        # Snapshot config at init. Server and token are snapshotted; the enable
+        # flag is deliberately read per call because this class is a DI Singleton
+        # and the install-wide gate must apply without a restart.
         self._server = (cwa_client.base_url if cwa_client else
                         resolve_setting(credentials, "CWA_SERVER", "").rstrip("/"))
         self._token = (resolve_setting(credentials, "CWA_SYNC_TOKEN", "") or "").strip()
-        self._enabled = str(resolve_setting(credentials, "CWA_SYNC_ENABLED", "")).lower() == "true"
 
     @property
     def _base_url(self) -> str:
         return f"{self._server}/kobo/{self._token}/v1"
 
     def is_configured(self) -> bool:
-        return self._enabled and bool(self._server) and bool(self._token)
+        enabled = str(resolve_setting(self._creds, "CWA_SYNC_ENABLED", "")).lower() == "true"
+        return enabled and bool(self._server) and bool(self._token)
 
     def check_connection(self) -> bool:
         if not self.is_configured():
