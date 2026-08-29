@@ -48,6 +48,8 @@ PER_USER_CREDENTIAL_KEYS = frozenset({
     # access/refresh tokens are cached per-user — the user never pastes a JWT)
     "READEST_ANNOTATION_SYNC", "READEST_EMAIL", "READEST_PASSWORD",
     "READEST_ACCESS_TOKEN", "READEST_REFRESH_TOKEN", "READEST_TOKEN_EXPIRES_AT",
+    "READEST_UPLOAD_ON_MATCH", "READEST_GROUP_NAME",
+    "READEST_UPLOAD_READING",
     # BookFusion
     "BOOKFUSION_ENABLED", "BOOKFUSION_ACCESS_TOKEN", "BOOKFUSION_API_KEY",
     "BOOKFUSION_ANNOTATION_SYNC",
@@ -147,6 +149,9 @@ PER_USER_FIELD_GROUPS = [
         ("READEST_ANNOTATION_SYNC", "Highlight sync", "bool"),
         ("READEST_EMAIL", "Account email", "text"),
         ("READEST_PASSWORD", "Account password", "secret"),
+        ("READEST_UPLOAD_ON_MATCH", "Upload matched books to Readest", "bool"),
+        ("READEST_UPLOAD_READING", "Upload books you are currently reading", "bool"),
+        ("READEST_GROUP_NAME", "Group name for uploaded books", "text"),
     ]),
     ("Calibre-Web Automated", [
         ("CWA_ENABLED", "Enabled", "bool"),

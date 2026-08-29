@@ -241,6 +241,21 @@ class AnnotationSyncService:
                     except Exception as e:
                         logger.error("Readest annotation sync failed for user %s: %s", user_id, e, exc_info=True)
 
+                if self._truthy(resolve_setting(creds, "READEST_UPLOAD_READING", "false")):
+                    try:
+                        from src.api.readest_client import ReadestClient
+                        from src.services.readest_upload_service import ReadestUploadService
+
+                        client = ReadestClient(
+                            credentials=creds, database_service=self.database_service, user_id=user_id
+                        )
+                        upload_service = ReadestUploadService(client, self.ebook_parser, self.database_service)
+                        summary = upload_service.publish_reading_books(user_id)
+                        if summary.get("uploaded", 0) > 0:
+                            synced_this_user = True
+                    except Exception as e:
+                        logger.error("Readest upload sweep failed for user %s: %s", user_id, e, exc_info=True)
+
                 if self._truthy(resolve_setting(creds, "BOOKFUSION_ANNOTATION_SYNC", "false")):
                     try:
                         if self._bookfusion_sync.sync_user(user_id, creds):
