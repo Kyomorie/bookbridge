@@ -1,19 +1,20 @@
 # Regression coverage for the remaining Audiobookshelf side of issue #215.
 
+import os
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from src.sync_clients.abs_sync_client import ABSSyncClient
 from src.sync_clients.sync_client_interface import LocatorResult, UpdateProgressRequest
 
 
-def _make_client():
+def _make_client(*, current_time=700.0, target_time=300.0):
     abs_client = Mock()
-    abs_client.get_progress.return_value = {"currentTime": 700.0}
+    abs_client.get_progress.return_value = {"currentTime": current_time}
     abs_client.update_progress.return_value = {"success": True}
 
     alignment_service = Mock()
-    alignment_service.get_time_for_text.return_value = 300.0
+    alignment_service.get_time_for_text.return_value = target_time
 
     client = ABSSyncClient(
         abs_client=abs_client,
@@ -25,31 +26,56 @@ def _make_client():
     return client, abs_client, alignment_service
 
 
-def test_verified_sync_target_can_rewind_audiobookshelf():
-    """The ABS adapter must apply the position selected by SyncManager.
-
-    Direction/conflict policy belongs to SyncManager/KoSync provenance guards.
-    Once a locator reaches a follower client, a lower mapped timestamp is a
-    legitimate sync target and must not be silently converted back to ABS's
-    current (furthest) position. This is the remaining #215 failure mode.
-    """
-    client, abs_client, alignment_service = _make_client()
-    book = SimpleNamespace(
+def _book(title="Issue 215 Rewind"):
+    return SimpleNamespace(
         abs_id="abs-1",
-        abs_title="Issue 215 Rewind",
+        abs_title=title,
         transcript_file="DB_MANAGED",
         duration=1000.0,
     )
-    request = UpdateProgressRequest(
-        LocatorResult(percentage=0.3, match_index=300),
-        txt="verified rewind anchor",
+
+
+def _request(*, percentage=0.3, match_index=300, txt="rewind anchor"):
+    return UpdateProgressRequest(
+        LocatorResult(percentage=percentage, match_index=match_index),
+        txt=txt,
         credit_listening=False,
     )
 
-    result = client.update_progress(book, request)
+
+def test_safe_default_still_blocks_backward_abs_write():
+    """The stale-reader protection remains fail-closed by default."""
+    client, abs_client, alignment_service = _make_client()
+
+    with patch.dict(os.environ, {"KOSYNC_FURTHEST_WINS": "true"}, clear=False):
+        result = client.update_progress(_book(), _request())
 
     alignment_service.get_time_for_text.assert_called_once_with(
-        "abs-1", "verified rewind anchor", char_offset_hint=300
+        "abs-1", "rewind anchor", char_offset_hint=300
+    )
+    abs_client.update_progress.assert_not_called()
+    assert result.success is True
+    assert result.location == 700.0
+    assert result.updated_state["ts"] == 700.0
+    assert result.updated_state["pct"] == 0.7
+
+
+def test_explicit_rewind_opt_in_propagates_backward_position_to_abs():
+    """#391's opt-in must actually move Audiobookshelf back as promised.
+
+    KOSYNC_FURTHEST_WINS=false is the deliberate unsafe-side-of-the-tradeoff
+    setting: BookBridge accepts a newer backward reader position, including from
+    another device. Once that policy is selected, the ABS adapter must not apply
+    an older unconditional furthest-only veto and silently keep the audiobook at
+    its previous higher position (#215).
+    """
+    client, abs_client, alignment_service = _make_client()
+
+    with patch.dict(os.environ, {"KOSYNC_FURTHEST_WINS": "false"}, clear=False):
+        result = client.update_progress(_book(), _request())
+
+    alignment_service.get_time_for_text.assert_called_once_with(
+        "abs-1", "rewind anchor", char_offset_hint=300
     )
     abs_client.update_progress.assert_called_once_with("abs-1", 300.0, 0.0)
     assert result.success is True
@@ -58,24 +84,18 @@ def test_verified_sync_target_can_rewind_audiobookshelf():
     assert result.updated_state["pct"] == 0.3
 
 
-def test_forward_abs_sync_still_credits_no_listening_for_reader_progress():
-    """Removing the rewind veto must not turn reader sync into listening time."""
-    client, abs_client, alignment_service = _make_client()
-    abs_client.get_progress.return_value = {"currentTime": 200.0}
-    alignment_service.get_time_for_text.return_value = 600.0
-    book = SimpleNamespace(
-        abs_id="abs-1",
-        abs_title="Forward Control",
-        transcript_file="DB_MANAGED",
-        duration=1000.0,
-    )
-    request = UpdateProgressRequest(
-        LocatorResult(percentage=0.6, match_index=600),
-        txt="forward anchor",
-        credit_listening=False,
+def test_forward_abs_sync_is_unchanged_and_credits_no_listening():
+    """The rewind policy must not affect ordinary forward reader progress."""
+    client, abs_client, _alignment_service = _make_client(
+        current_time=200.0,
+        target_time=600.0,
     )
 
-    result = client.update_progress(book, request)
+    with patch.dict(os.environ, {"KOSYNC_FURTHEST_WINS": "true"}, clear=False):
+        result = client.update_progress(
+            _book("Forward Control"),
+            _request(percentage=0.6, match_index=600, txt="forward anchor"),
+        )
 
     abs_client.update_progress.assert_called_once_with("abs-1", 600.0, 0.0)
     assert result.success is True
