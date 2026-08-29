@@ -8,6 +8,16 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Turning a service off in Settings now turns it off for everyone.** The global
+  switch for each integration was only a default: if a reader had switched that service
+  on in their own integrations, BookBridge kept syncing it — so a Storyteller that was
+  switched off (and not even running) was still being contacted every minute. A service
+  switched off server-wide is now off for every reader, and their own integrations page
+  shows the switch greyed out with the reason instead of letting them turn on something
+  that will not work. Nobody's personal choice is lost: switch the service back on and
+  everyone's settings return exactly as they were. Per-reader feature options, such as
+  highlight sync, are unaffected.
+
 - **"Out of sync" warnings on audiobooks you moved to BookOrbit.** A book whose audio
   was repointed from Audiobookshelf to BookOrbit keeps its old Audiobookshelf position
   on file so the move stays undoable. That old position is frozen — nothing updates it

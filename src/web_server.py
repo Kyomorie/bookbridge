@@ -35,6 +35,7 @@ from src.utils.user_context import (
 )
 from src.utils.user_config import user_setting
 from src.utils.user_config import global_fallback_allowed as _global_fallback_allowed
+from src.utils.user_config import SERVICE_ENABLE_KEYS
 
 from src.utils.config_loader import ConfigLoader, KNOWN_SETTING_KEYS, env_truthy
 from src.utils.cache_paths import safe_cache_path, safe_library_path, is_plain_basename
@@ -1196,6 +1197,7 @@ def account_integrations():
         groups=PER_USER_FIELD_GROUPS,
         creds=creds,
         master=master,
+        service_enable_keys=SERVICE_ENABLE_KEYS,
         allow_master_fallback=_global_fallback_allowed(database_service, user),
         message=message,
         account_user=user,
@@ -1290,6 +1292,7 @@ def admin_user_integrations(user_id):
         groups=PER_USER_FIELD_GROUPS,
         creds=creds,
         master=master,
+        service_enable_keys=SERVICE_ENABLE_KEYS,
         allow_master_fallback=_global_fallback_allowed(database_service, target),
         message=message,
         target_user=target,
@@ -1363,7 +1366,10 @@ def _posted_user_test_credentials(target, submitted):
     for service_fields in _TEST_CONNECTION_FIELDS.values():
         for key in service_fields:
             if key in PER_USER_CREDENTIAL_KEYS:
-                payload[key] = resolve_setting(creds, key, "")
+                # A connection test validates credentials, so it is not subject to
+                # the install-wide service gate: an admin must be able to check a
+                # user's account before switching the service on for everyone.
+                payload[key] = resolve_setting(creds, key, "", enforce_global_gate=False)
             else:
                 payload[key] = os.environ.get(key, "")
     return payload

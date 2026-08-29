@@ -183,13 +183,61 @@ PER_USER_FIELD_GROUPS = [
 ]
 
 
-def resolve_setting(credentials, key, default=None):
+# Service availability gates. A user may pick their own account for each
+# integration, but they may not switch on a service the admin has turned off
+# install-wide: the global value for these keys is authoritative and only ever
+# takes capability away.
+#
+# Feature sub-toggles are deliberately NOT here — `*_ANNOTATION_SYNC`,
+# `CWA_SYNC_ENABLED` and friends default to 'false' globally while users legitimately
+# turn them on for themselves, so enforcing the global would silently switch off work
+# people are already relying on.
+SERVICE_ENABLE_KEYS = frozenset({
+    "ABS_ENABLED",
+    "KOSYNC_ENABLED",
+    "STORYTELLER_ENABLED",
+    "BOOKLORE_ENABLED",
+    "BOOKORBIT_ENABLED",
+    "KAVITA_ENABLED",
+    "BOOKFUSION_ENABLED",
+    "CWA_ENABLED",
+    "HARDCOVER_ENABLED",
+    "STORYGRAPH_ENABLED",
+})
+
+_FALSEY_SETTING_VALUES = frozenset({"false", "0", "no", "off"})
+
+
+def global_service_disabled(key: str) -> bool:
+    """Whether a service gate is switched off install-wide.
+
+    Only an explicit falsey global counts. An unset key is not a decision, and
+    must never be read as one — several gates ship with no seeded value.
+    """
+    if key not in SERVICE_ENABLE_KEYS:
+        return False
+    return str(os.environ.get(key, "")).strip().lower() in _FALSEY_SETTING_VALUES
+
+
+def resolve_setting(credentials, key, default=None, *, enforce_global_gate: bool = True):
     """Resolve a config value for a (possibly per-user) client.
 
     Returns the user's value when present and non-empty. For recognized
     per-user account keys, regular user bundles do not fall back to the global
     admin environment unless their registry explicitly allows it.
+
+    A service gate the admin has switched off install-wide resolves to 'false'
+    for everyone, whatever the user stored. Enforcing it here rather than in each
+    client means no code path can miss it — every client reads its enable flag
+    through this function. The user's own value is left untouched in the database,
+    so turning the global back on restores what each person chose.
+
+    ``enforce_global_gate=False`` skips that check for callers that are not asking
+    "should this run?" — an explicit *Test connection* answers "are these credentials
+    good?", which does not depend on whether the service is currently switched on.
     """
+    if enforce_global_gate and global_service_disabled(key):
+        return "false"
     if credentials:
         val = credentials.get(key)
         if val not in (None, ""):
