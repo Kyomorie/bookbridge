@@ -64,14 +64,14 @@ services:
     volumes:
       - ./data:/data
       - /path/to/ebooks:/books
-      # - /path/to/storyteller/library:/storyteller_library  # Optional: Forge output
+      # - /path/to/storyteller/library:/storyteller_library  # Optional: Storyteller output
       # - /path/to/storyteller/assets:/storyteller/assets    # Optional: Storyteller transcript ingest
 ```
 
 Replace:
 
 - `/path/to/ebooks` with your real EPUB folder
-- The optional Storyteller paths if you plan to use Forge or transcript ingest
+- The optional Storyteller paths if you plan to build Storyteller editions or use transcript ingest
 
 ---
 
@@ -186,7 +186,7 @@ Look for path, permission, or connection errors.
 Once the basics work, try:
 
 - **Suggestions** for bulk review and queueing
-- **Forge** for Storyteller processing
+- **Storyteller Editions** for read-along processing
 - **Storyteller Backfill** in Settings
 - **Bridge Sync plugin + Grimmory shelf settings** if you want plugin-managed KOReader collections
 - **Split-port mode** if you want to expose only the sync endpoint

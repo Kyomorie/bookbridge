@@ -88,11 +88,21 @@ Audiobookshelf remains the default audiobook source when a mapping is not explic
 | Auto-add Collection | `ABS_COLLECTION_NAME` | `Synced with KOReader` | Per-user (set in user Integrations). Collection matched audiobooks are added to. The value here is the global default; the admin's value seeds from it on first startup. |
 | Progress Offset | `ABS_PROGRESS_OFFSET_SECONDS` | `0` | Rewinds progress written back to ABS by this many seconds. |
 | Limit Search to Configured Library | `ABS_ONLY_SEARCH_IN_ABS_LIBRARY_ID` | `false` | In the UI this is a checkbox. Direct env usage can also be set to a library ID string. |
+| Enable ABS Ebook Sync | `SYNC_ABS_EBOOK` | `false` | Turns on bidirectional reading-progress sync with the ebook file attached to an Audiobookshelf item. |
+| ABS Ebook Position Format | `ABS_EBOOK_LOCATOR_FORMAT` | `cfi` | `cfi`, `readium`, or `auto`. See the note below. |
 
 Audiobookshelf notes:
 
 - Use **Find IDs** next to **Library ID** in Settings to load your available ABS libraries and fill the field from a dropdown.
 - If you want to run without Audiobookshelf for a while, enter `disabled` in the ABS URL or token field to intentionally turn ABS off.
+- **ABS ebook sync** (`SYNC_ABS_EBOOK`) treats the ebook attached to an Audiobookshelf item as a full sync
+  client in its own right, reading and writing its position like any other ebook source. Both of these settings
+  live in the Settings UI under **Sync Behavior**, not under Advanced.
+- **Position format.** Audiobookshelf stores one position field that every reader shares, but readers disagree
+  on how to write it. **CFI** is the safe default, and is what the official Audiobookshelf apps and the web
+  reader read and write. **Readium locator** is for readers that speak Readium JSON. **Auto** mirrors whichever
+  format your reader last wrote. If a mixed set of readers is opening books at the wrong place, or at the very
+  start, this setting is the first thing to check.
 
 #### KOReader / KoSync
 
@@ -138,7 +148,8 @@ BookFusion notes:
 
 #### Readest
 
-Readest can participate in highlight and note relay through Readest cloud sync. It is not a progress sync source.
+Readest can participate in highlight and note relay through Readest cloud sync, and can
+receive copies of your books. It is not a progress sync source.
 
 | Setting | Env Var | Default | Notes |
 | --- | --- | --- | --- |
@@ -148,12 +159,26 @@ Readest can participate in highlight and note relay through Readest cloud sync. 
 | Account Password | `READEST_PASSWORD` | empty | Per-reader. Used to refresh cloud-sync tokens. |
 | Supabase URL | `READEST_SUPABASE_URL` | `https://readest.supabase.co` | Leave as default unless you self-host Readest. |
 | Supabase Anon Key | `READEST_SUPABASE_ANON_KEY` | empty | Optional override for self-hosted Readest. |
+| Upload Matched Books | `READEST_UPLOAD_ON_MATCH` | `false` | Per-reader. Uploads a book to Readest at the moment you match it. |
+| Upload Currently Reading | `READEST_UPLOAD_READING` | `false` | Per-reader. Timed sweep that uploads books you are part-way through. |
+| Group Name | `READEST_GROUP_NAME` | `BookBridge` | Per-reader. The Readest group uploaded books are filed into. |
+| Upload Max Per Run | `READEST_UPLOAD_MAX_PER_RUN` | `5` | Global. Caps uploads per sweep so a first run cannot flood an account. `0` pauses uploading. |
+| Upload Sweep Interval | `READEST_UPLOAD_SWEEP_MINUTES` | `60` | Global. How often to look for newly started books. Shares a daemon with the annotation syncs, so the fastest of those intervals wins. `0` removes it from that schedule. |
 
 Readest notes:
 
 - Enter the Readest email and password under **Account -> My Integrations** for each reader that wants Readest highlights.
 - Tokens are cached and refreshed by the bridge after login.
 - Readest sync depends on the same book identity being available to Readest and the bridge.
+- Uploads are off by default and set per reader. The two upload switches are independent:
+  you can upload on match, on the currently-reading sweep, or both.
+- The sweep only considers books with a reading position above 0% and below
+  `SYNC_COMPLETION_THRESHOLD`, and skips any book already present in that Readest account.
+  This matters because Readest's free plan includes 500 MB, which a full library will not fit.
+- Uploading never overwrites your Readest reading position, reading status, or cover.
+  If you move an uploaded book into a different group inside Readest, the bridge leaves it there.
+- Only EPUB files are uploaded. If the account runs out of storage, the bridge logs the
+  quota and stops uploading rather than failing quietly.
 
 #### Storyteller
 
@@ -169,7 +194,7 @@ as an alignment source. The bridge talks to Storyteller through the REST API onl
 | Username | `STORYTELLER_USER` | empty | Storyteller username. |
 | Password | `STORYTELLER_PASSWORD` | empty | Storyteller password. |
 | Collection Name | `STORYTELLER_COLLECTION_NAME` | `Synced with KOReader` | Collection used when linked books are added to Storyteller. |
-| Library Path | `STORYTELLER_LIBRARY_DIR` | `/storyteller_library` | Optional local Storyteller library path used for fallback/download helpers. Forge uploads go through the API. |
+| Library Path | `STORYTELLER_LIBRARY_DIR` | `/storyteller_library` | Optional local Storyteller library path used for fallback/download helpers. Storyteller edition uploads go through the API. |
 | Assets Path | `STORYTELLER_ASSETS_DIR` | empty | Root path that contains `/assets/{title}/transcriptions`. |
 | Upload Chunk Size | `STORYTELLER_UPLOAD_CHUNK_SIZE` | `5242880` | TUS PATCH chunk size in bytes for direct Storyteller uploads. |
 | Poll Mode | `STORYTELLER_POLL_MODE` | `global` | `global` uses the main sync cycle. `custom` polls Storyteller separately. |
@@ -177,7 +202,7 @@ as an alignment source. The bridge talks to Storyteller through the REST API onl
 
 Storyteller notes:
 
-- Forge imports use the Storyteller REST/TUS API directly. A Storyteller library mount is optional unless you want local fallback access to generated artifacts.
+- Storyteller edition uploads use the Storyteller REST/TUS API directly. A Storyteller library mount is optional unless you want local fallback access to generated artifacts.
 - If you mount `/path/to/storyteller/assets:/storyteller/assets`, set **Storyteller Assets Path** to `/storyteller`.
 - Storyteller timing data stays the preferred alignment source whenever valid transcript assets are available.
 - **Settings -> System -> Advanced -> Storyteller Backfill** rechecks existing Storyteller-linked books and rebuilds their alignment data without rerunning Whisper.
@@ -202,7 +227,7 @@ Grimmory is a supported ebook and audiobook source. You can use it for ebook syn
 
 Grimmory notes:
 
-- Match, Batch Match, Suggestions, and Forge can now use **Grimmory audiobooks** as the audio source.
+- Add / Update Book, the match queue, and Suggestions can all use **Grimmory audiobooks** as the audio source.
 - The dashboard shows **BL Audio** progress when a mapping is driven by Grimmory audio.
 - When **Record Reading Sessions** is enabled, Grimmory gets session updates as you make progress.
 - Enable **Highlight Sync** in each reader's Grimmory integration if you want Grimmory web-reader highlights and notes to round-trip through the bridge.
@@ -265,7 +290,7 @@ Optional "Up Next" collection watch — drop a book onto a collection in BookOrb
 
 BookOrbit notes:
 
-- BookOrbit is available across Match, Batch Match, Suggestions, Forge, and the dashboard. Pick it as the ebook source, the audio source, or both when you create a mapping.
+- BookOrbit is available across Add / Update Book, the match queue, Suggestions, and the dashboard. Pick it as the ebook source, the audio source, or both when you create a mapping.
 - Use the **Test** button in Settings to check the connection before saving.
 - To sync BookOrbit web-reader highlights through the bridge, fill in the BookOrbit KOReader sync username/password in each reader's Integrations. BookBridge only relays annotations when ownership is clear.
 - **Moving from Grimmory to BookOrbit?** You do not need to rematch. A helper script, `scripts/migrate_grimmory_to_bookorbit.py`, re-points your existing Grimmory ebook links at BookOrbit by filename, leaving the audio link and reading progress untouched. Enable and scan BookOrbit first, then run it from inside the container (it is a dry run by default; add `--apply` to commit):
@@ -277,7 +302,7 @@ BookOrbit notes:
 #### Kavita
 
 Kavita is a supported EPUB source and bidirectional reading-progress client. It can
-provide books to Match, Batch Match, Suggestions, Forge, managed KOReader devices,
+provide books to Add / Update Book, the match queue, Suggestions, managed KOReader devices,
 and ebook-only mappings. BookBridge uses Kavita's native KOReader progress endpoint,
 so the same Kavita position is visible in its web reader and other compatible
 clients.
@@ -333,7 +358,7 @@ CWA is a supported ebook source and optional Kobo-sync progress source. Use it t
 
 CWA notes:
 
-- CWA appears as a standard ebook source in Add / Update Book, Batch Match, Suggestions, and Forge.
+- CWA appears as a standard ebook source in Add / Update Book, the match queue, and Suggestions.
 - Kobo sync lets CWA-sourced ebook progress participate alongside KOReader, Grimmory, BookOrbit, Storyteller, and ABS ebook progress.
 - The CWA username/password and Kobo sync token are per-reader integration credentials.
 - If you use the Audiobookshelf Calibre plugin, the bridge can read the `audiobookshelf_id` identifier from Calibre metadata or CWA as a fallback to avoid fuzzy matching already-linked books.
@@ -514,7 +539,6 @@ Found under **Settings -> Sync**, alongside instant-sync options and Alignment H
 
 | Setting | Env Var | Default | Notes |
 | --- | --- | --- | --- |
-| Sync ABS Ebook | `SYNC_ABS_EBOOK` | `false` | Also syncs to the ABS ebook item when present. |
 | XPath Fallback | `XPATH_FALLBACK_TO_PREVIOUS_SEGMENT` | `false` | Tries the previous segment if a locator lookup fails. |
 | Reprocess on Clear | `REPROCESS_ON_CLEAR_IF_NO_ALIGNMENT` | `true` | Rebuilds missing data after resetting progress when needed. |
 | Instant Sync | `INSTANT_SYNC_ENABLED` | `true` | Turns ABS playback-triggered sync and KOReader push-triggered sync on or off together. |
