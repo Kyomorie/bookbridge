@@ -1,3 +1,5 @@
+# Regression coverage for the remaining Audiobookshelf side of issue #215.
+
 from types import SimpleNamespace
 from unittest.mock import Mock
 
