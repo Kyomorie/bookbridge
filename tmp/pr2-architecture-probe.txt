@@ -1,0 +1,875 @@
+
+===== PendingSuggestion model =====
+00415:         self.retry_count = retry_count
+00416:         self.last_error = last_error
+00417:         self.progress = progress
+00418: 
+00419:     def __repr__(self):
+00420:         return f"<Job(abs_id='{self.abs_id}', retries={self.retry_count})>"
+00421: 
+00422: 
+00423: 
+00424: 
+00425: class PendingSuggestion(Base):
+00426:     """
+00427:     Model for progress-triggered ebook suggestions.
+00428:     """
+00429:     __tablename__ = 'pending_suggestions'
+00430: 
+00431:     id = Column(Integer, primary_key=True, autoincrement=True)
+00432:     source = Column(String(50), default='abs')
+00433:     source_id = Column(String(255))
+00434:     title = Column(String(500))
+00435:     author = Column(String(500))
+00436:     cover_url = Column(String(500))
+00437:     matches_json = Column(Text)
+00438:     status = Column(String(20), default='pending')
+00439:     created_at = Column(DateTime, default=utcnow)
+00440:     origin = Column(String(50), nullable=True, index=True)
+00441:     origin_metadata_json = Column(Text, nullable=True)
+00442: 
+00443:     def __init__(self, source_id: str, title: str, author: str = None,
+00444:                  cover_url: str = None, matches_json: str = "[]", status: str = 'pending',
+00445:                  source: str = None, origin: str = None, origin_metadata_json: str = None):
+00446:         self.source = source or 'abs'
+00447:         self.source_id = source_id
+00448:         self.title = title
+00449:         self.author = author
+00450:         self.cover_url = cover_url
+00451:         self.matches_json = matches_json
+00452:         self.status = status
+00453:         self.created_at = utcnow()
+00454:         self.origin = origin
+00455:         self.origin_metadata_json = origin_metadata_json
+00456: 
+00457:     @property
+00458:     def matches(self):
+00459:         import json
+00460:         try:
+00461:             return json.loads(self.matches_json) if self.matches_json else []
+00462:         except json.JSONDecodeError:
+00463:             return []
+00464: 
+00465:     @property
+00466:     def origin_metadata(self):
+00467:         import json
+00468:         try:
+00469:             return json.loads(self.origin_metadata_json) if self.origin_metadata_json else {}
+00470:         except json.JSONDecodeError:
+00471:             return {}
+00472: 
+00473:     @property
+00474:     def audiobook_count(self):
+00475:         """Count only audiobook matches, excluding ebook entries."""
+00476:         return sum(1 for m in self.matches if m.get('source') != 'ebook')
+00477: 
+00478:     def __repr__(self):
+00479:         return f"<PendingSuggestion(id={self.id}, title='{self.title}', status='{self.status}')>"
+00480: 
+00481: 
+00482: class ShelfWatchScan(Base):
+00483:     """
+00484:     Throttle / history row for the Grimmory "Up Next" shelf watcher.
+00485:     One row per Grimmory book that has been considered for auto-matching.
+00486:     """
+00487:     __tablename__ = 'shelf_watch_scans'
+00488: 
+00489:     grimmory_book_id = Column(String(255), primary_key=True)
+00490:     grimmory_filename = Column(String(500), nullable=False)
+00491:     last_scan_at = Column(DateTime, nullable=False, index=True)
+00492:     last_top_score = Column(Float, nullable=True)
+00493:     last_status = Column(String(50), nullable=True)
+00494: 
+00495:     def __init__(self, grimmory_book_id: str, grimmory_filename: str,
+00496:                  last_scan_at: datetime = None, last_top_score: float = None,
+00497:                  last_status: str = None):
+00498:         self.grimmory_book_id = grimmory_book_id
+00499:         self.grimmory_filename = grimmory_filename
+00500:         self.last_scan_at = last_scan_at or utcnow()
+00501:         self.last_top_score = last_top_score
+00502:         self.last_status = last_status
+00503: 
+00504:     def __repr__(self):
+00505:         return f"<ShelfWatchScan(book_id='{self.grimmory_book_id}', status='{self.last_status}')>"
+00506: 
+00507: 
+00508: class Setting(Base):
+00509:     """
+00510:     Setting model storing application configuration.
+00511:     """
+00512:     __tablename__ = 'settings'
+00513: 
+00514:     key = Column(String(255), primary_key=True)
+00515:     value = Column(Text, nullable=True)
+
+
+===== PendingSuggestion references =====
+src/sync_manager.py:37: from src.db.models import State, Book, PendingSuggestion
+src/sync_manager.py:1916:             suggestion = PendingSuggestion(
+src/web_server.py:8080:                 from src.db.models import PendingSuggestion
+src/web_server.py:8112:                     suggestion = PendingSuggestion(
+src/services/suggestions_service.py:242:         from src.db.models import PendingSuggestion
+src/services/suggestions_service.py:247:                 rows = db_session.query(PendingSuggestion.source_id).filter(
+src/services/suggestions_service.py:248:                     PendingSuggestion.status == 'ignored'
+src/services/shelf_watch_service.py:9:   - Top score < threshold (with candidates) → save PendingSuggestion with
+src/services/shelf_watch_service.py:25: from src.db.models import PendingSuggestion
+src/services/shelf_watch_service.py:489:         suggestion = PendingSuggestion(
+src/api/kosync_server.py:3311:     from src.db.models import Book, PendingSuggestion
+src/api/kosync_server.py:3351:             _database_service.save_pending_suggestion(PendingSuggestion(
+src/db/database_service.py:29:     PendingSuggestion,
+src/db/database_service.py:2219:     # PendingSuggestion operations
+src/db/database_service.py:2220:     def get_pending_suggestion(self, source_id: str) -> Optional[PendingSuggestion]:
+src/db/database_service.py:2223:             suggestion = session.query(PendingSuggestion).filter(
+src/db/database_service.py:2224:                 PendingSuggestion.source_id == source_id,
+src/db/database_service.py:2225:                 PendingSuggestion.status == 'pending'
+src/db/database_service.py:2234:             return session.query(PendingSuggestion).filter(
+src/db/database_service.py:2235:                 PendingSuggestion.source_id == source_id
+src/db/database_service.py:2238:     def save_pending_suggestion(self, suggestion: PendingSuggestion) -> PendingSuggestion:
+src/db/database_service.py:2241:             existing = session.query(PendingSuggestion).filter(
+src/db/database_service.py:2242:                 PendingSuggestion.source_id == suggestion.source_id
+src/db/database_service.py:2271:     def get_all_pending_suggestions(self) -> List[PendingSuggestion]:
+src/db/database_service.py:2274:             suggestions = session.query(PendingSuggestion).filter(
+src/db/database_service.py:2275:                 PendingSuggestion.status == 'pending'
+src/db/database_service.py:2276:             ).order_by(PendingSuggestion.created_at.desc()).all()
+src/db/database_service.py:2284:             rows = session.query(PendingSuggestion.source_id).filter(
+src/db/database_service.py:2285:                 PendingSuggestion.status == 'ignored'
+src/db/database_service.py:2292:             suggestion = session.query(PendingSuggestion).filter(
+src/db/database_service.py:2293:                 PendingSuggestion.source_id == source_id
+src/db/database_service.py:2304:             suggestion = session.query(PendingSuggestion).filter(
+src/db/database_service.py:2305:                 PendingSuggestion.source_id == source_id
+src/db/database_service.py:2372:             stale_query = session.query(PendingSuggestion).filter(
+src/db/database_service.py:2373:                 not_(PendingSuggestion.source_id.in_(
+
+
+===== KOSYNC_FURTHEST_WINS references =====
+src/utils/config_loader.py:37:     'KOSYNC_XPATH_ORDER_ENABLED', 'KOSYNC_FURTHEST_WINS',
+src/utils/config_loader.py:232:     'KOSYNC_FURTHEST_WINS': 'true',
+src/api/kosync_server.py:1643:     furthest_wins = env_truthy('KOSYNC_FURTHEST_WINS', 'true')
+templates/settings.html:896:                                 <select name="KOSYNC_FURTHEST_WINS">
+templates/settings.html:897:                                     <option value="true" {% if get_val('KOSYNC_FURTHEST_WINS', 'true')|lower == 'true' %}selected{% endif %}>
+templates/settings.html:900:                                     <option value="false" {% if get_val('KOSYNC_FURTHEST_WINS', 'true')|lower != 'true' %}selected{% endif %}>
+
+
+===== ABSSyncClient.update_progress =====
+00214:                          full_text, _ = self.ebook_parser.extract_text_and_map(book_path)
+00215:                          start = max(0, char_offset - 50)
+00216:                          end = min(len(full_text), char_offset + 150)
+00217:                          return full_text[start:end]
+00218: 
+00219:         return self.transcriber.get_text_at_time(book.transcript_file, abs_ts)
+00220: 
+00221:     def get_fallback_text(self, book: Book, state: ServiceState) -> Optional[str]:
+00222:         # Similar logic for fallback
+00223:         abs_ts = state.current.get('ts')
+00224:         if not book or abs_ts is None:
+00225:             return None
+00226:             
+00227:         if book.transcript_file == "DB_MANAGED" and self.alignment_service:
+00228:              # Just look a bit earlier?
+00229:              earlier_ts = max(0, abs_ts - 10)
+00230:              return self.get_text_from_current_state(book, ServiceState({'ts': earlier_ts}))
+00231: 
+00232:         return self.transcriber.get_previous_segment_text(book.transcript_file, abs_ts)
+00233: 
+00234:     def update_progress(self, book: Book, request: UpdateProgressRequest) -> SyncResult:
+00235:         book_title = book.abs_title or 'Unknown Book'
+00236:         if request.locator_result.percentage == 0.0:
+00237:             logger.info(f"🔄 '{book_title}' Locator percentage is 0.0% — Setting ABS progress to start of book")
+00238:             result, final_ts = self._update_abs_progress_with_offset(book.abs_id, 0.0)
+00239:             updated_state = {
+00240:                 'ts': final_ts,
+00241:                 'pct': 0.0
+00242:             }
+00243:             return SyncResult(
+00244:                 final_ts,
+00245:                 result.get("success", False),
+00246:                 updated_state,
+00247:                 error_code=self._stale_item_error_code(book.abs_id, result),
+00248:             )
+00249: 
+00250:         # Route database-managed books to AlignmentService and legacy books to Transcriber.
+00251:         ts_for_text = None
+00252:         
+00253:         if book.transcript_file == "DB_MANAGED" and self.alignment_service:
+00254:             # Use database alignment.
+00255:             # We use the match_index (character offset) found by the EbookParser
+00256:             char_index = request.locator_result.match_index
+00257:             if char_index is not None:
+00258:                 ts_for_text = self.alignment_service.get_time_for_text(
+00259:                     book.abs_id, 
+00260:                     request.txt, 
+00261:                     char_offset_hint=char_index
+00262:                 )
+00263:             else:
+00264:                 logger.debug(f"🔍 '{book_title}' Alignment lookup skipped: No character index provided in request")
+00265:                 
+00266:         elif book.transcript_file and book.transcript_file != "DB_MANAGED":
+00267:             # Legacy Path: Use JSON File
+00268:             ts_for_text = self.transcriber.find_time_for_text(
+00269:                 book.transcript_file, request.txt,
+00270:                 hint_percentage=request.locator_result.percentage,
+00271:                 char_offset=request.locator_result.match_index,
+00272:                 book_title=book_title
+00273:             )
+00274:         if ts_for_text is not None:
+00275:             response = self.abs_client.get_progress(book.abs_id)
+00276:             abs_ts = response.get('currentTime') if response is not None else None
+00277:             if abs_ts is not None and ts_for_text < abs_ts:
+00278:                 logger.info(f"🔄 '{book_title}' Not updating ABS progress — target timestamp {ts_for_text:.2f}s is before current ABS position {abs_ts:.2f}s")
+00279:                 return SyncResult(abs_ts, True, {
+00280:                     'ts': abs_ts,
+00281:                     'pct': self._abs_to_percentage(abs_ts, book) or 0
+00282:                 })
+00283: 
+00284:             prev_ts = abs_ts if abs_ts is not None else 0.0
+00285:             time_listened = (ts_for_text - prev_ts) if request.credit_listening else 0.0
+00286:             result, final_ts = self._update_abs_progress_with_offset(
+00287:                 book.abs_id, ts_for_text, prev_ts, time_listened=time_listened
+00288:             )
+00289:             # Calculate percentage from timestamp for state
+00290:             pct = self._abs_to_percentage(final_ts, book)
+00291:             updated_state = {
+00292:                 'ts': final_ts,
+00293:                 'pct': pct or 0
+00294:             }
+00295:             return SyncResult(
+00296:                 final_ts,
+00297:                 result.get("success", False),
+00298:                 updated_state,
+00299:                 error_code=self._stale_item_error_code(book.abs_id, result),
+00300:             )
+00301:         logger.warning(f"⚠️ '{book_title}' Not updating ABS progress — could not find timestamp for provided text")
+00302:         return SyncResult(None, False)
+00303: 
+00304:     def _update_abs_progress_with_offset(self, abs_id, ts, prev_abs_ts: float = 0, time_listened: float = 0):
+00305:         """Apply offset to timestamp and update ABS progress.
+00306: 
+00307:         Args:
+00308:             abs_id: ABS library item ID
+00309:             ts: New timestamp to set (seconds)
+00310:             prev_abs_ts: Previous ABS timestamp (kept for logging context)
+00311:             time_listened: Listening seconds to credit. Normally 0 (a bridge push
+00312:                 from reading progress is not playback); a non-zero value is passed
+00313:                 only when an audiobook-companion leader advanced the position and the
+00314:                 forward audio delta should count as listening time.
+00315:         """
+00316:         adjusted_ts = max(round(ts + self.abs_progress_offset, 2), 0)
+00317:         if self.abs_progress_offset != 0:
+00318:             logger.debug(f"   📐 Adjusted timestamp: {ts}s → {adjusted_ts}s (offset: {self.abs_progress_offset:+.1f}s)")
+00319: 
+00320:         # Bridge pushes originate from reading progress (KoSync/Storyteller/Grimmory
+00321:         # leader), never from actual playback — send zero timeListened so reading
+00322:         # does not accrue listening time in ABS stats. Exception: an audiobook
+00323:         # companion (Storyteller) advancing the position is treated as listening, so
+00324:         # the caller credits the forward audio delta as time_listened.
+00325:         time_listened = max(0.0, round(float(time_listened or 0.0), 2))
+00326:         if time_listened > 0:
+00327:             logger.debug(f"   ⏱️ time_listened: {time_listened:.1f}s (listening push; prev: {prev_abs_ts:.1f}s → new: {adjusted_ts:.1f}s)")
+00328:         else:
+00329:             logger.debug(f"   ⏱️ time_listened: 0s (reading-driven push; prev: {prev_abs_ts:.1f}s → new: {adjusted_ts:.1f}s)")
+00330:         abs_ok = self.abs_client.update_progress(abs_id, adjusted_ts, time_listened)
+00331:         if isinstance(abs_ok, dict) and abs_ok.get("success"):
+00332:             try:
+00333:                 from src.services.write_tracker import record_write
+00334:                 record_write('ABS', abs_id)
+00335:             except ImportError:
+00336:                 pass
+00337:         return abs_ok, adjusted_ts
+00338: 
+00339:     def _stale_item_error_code(self, abs_id: str, write_result) -> Optional[str]:
+00340:         """Classify a failed ABS write as a stale mapping, when that is provable.
+00341: 
+00342:         Returns ABS_ITEM_NOT_FOUND only when the write failed AND a direct probe
+00343:         confirms the library item is gone (HTTP 404). A probe that reports the
+00344:         item present, cannot determine it, or raises is never treated as proof —
+00345:         the caller acts on this code by marking the user's book unusable.
+00346:         """
+00347:         succeeded = write_result.get("success") if isinstance(write_result, dict) else bool(write_result)
+00348:         if succeeded:
+00349:             return None
+00350: 
+00351:         try:
+00352:             exists = self.abs_client.item_exists(abs_id)
+00353:         except Exception as e:
+00354:             logger.debug(f"ABS stale-item probe failed for '{abs_id}': {e}", exc_info=True)
+00355:             return None
+00356: 
+00357:         if exists is False:
+00358:             logger.warning(
+00359:                 f"⚠️ ABS library item not found for '{abs_id}' — the mapping looks stale "
+00360:                 f"(the library item was renamed, moved, or removed in Audiobookshelf)"
+00361:             )
+00362:             return ABS_ITEM_NOT_FOUND
+00363:         return None
+
+
+===== SyncManager record write =====
+03288:                     f"resolution collapsed to start-of-book (~0%); keeping percentage-based locator"
+03289:                 )
+03290:                 return None
+03291: 
+03292:             logger.debug(
+03293:                 f"'{abs_id}' '{title_snip}' Hydrated missing CFI for leader '{leader}' "
+03294:                 f"at offset {target_offset} (roundtrip={cfi_offset})"
+03295:             )
+03296:             return hydrated
+03297:         except Exception as exc:
+03298:             logger.debug(
+03299:                 f"'{abs_id}' '{title_snip}' CFI hydration failed: {exc}", exc_info=True
+03300:             )
+03301:             return None
+03302: 
+03303:     def _record_bridge_write(self, client_name: str, abs_id: str, result) -> None:
+03304:         """Record that BookBridge itself produced this client's current position.
+03305: 
+03306:         A later cycle reads this client back and sees a freshly stamped position;
+03307:         the marker (client, book, written percentage) is how it tells the echo of
+03308:         our own write from genuine user movement. The percentage comes from the
+03309:         client's own axis via SyncResult.updated_state['pct'], so audio and ebook
+03310:         clients each record a value comparable with what they will report next."""
+03311:         try:
+03312:             if not result or not getattr(result, 'success', False):
+03313:                 return
+03314:             updated_state = getattr(result, 'updated_state', None)
+03315:             pct = updated_state.get('pct') if isinstance(updated_state, dict) else None
+03316:             if isinstance(pct, bool) or not isinstance(pct, (int, float)):
+03317:                 pct = None
+03318:             from src.services.write_tracker import record_write
+03319:             record_write(client_name, abs_id, pct)
+03320:         except Exception as e:
+03321:             logger.debug(
+03322:                 f"Could not record own-write marker for '{client_name}'/'{abs_id}': {e}",
+03323:                 exc_info=True,
+03324:             )
+03325: 
+03326:     def _persist_state_snapshot(self, book, client_name: str, state_current: dict, current_time: float) -> None:
+03327:         """Save a single client's current position to the DB without running a
+03328:         cross-client sync. Used to record a leader's own (unchanged) value so a
+03329:         static/stale source — e.g. a manual-link sibling-hash resolution that never
+03330:         receives a new PUT — is not re-detected as a fresh change every cycle."""
+03331:         try:
+03332:             self.database_service.save_state(State(
+03333:                 abs_id=book.abs_id,
+03334:                 client_name=client_name.lower(),
+03335:                 last_updated=current_time,
+03336:                 percentage=state_current.get('pct'),
+03337:                 timestamp=state_current.get('ts'),
+03338:                 xpath=state_current.get('xpath'),
+03339:                 cfi=state_current.get('cfi'),
+03340:                 **state_metadata_kwargs(state_current),
+03341:             ))
+03342:         except Exception as e:
+03343:             logger.debug(f"Could not persist state snapshot for '{client_name}': {e}")
+03344: 
+03345:     def sync_cycle(self, target_abs_id=None, user_id=None):
+03346:         """
+03347:         Run a sync cycle.
+03348: 
+03349:         Args:
+03350:             target_abs_id: If provided, only sync this specific book (Instant Sync trigger).
+03351:                            Otherwise, sync all active books using bulk-poll optimization.
+03352:             user_id: Multi-user — run the cycle for this user, using their own
+03353:                      client bundle and scoping state/progress to them. When None,
+03354:                      runs as the default (single-user/admin) exactly as before.
+03355:         """
+03356:         # Per-user context: only when an explicit user + a registry are present,
+03357:         # so the default cycle is byte-for-byte unchanged.
+03358:         clients_token = None
+03359:         bundle_token = None
+03360:         library_token = None
+03361:         user_token = None
+03362:         creds_token = None
+03363:         if user_id is not None and self.user_client_registry is not None:
+03364:             try:
+03365:                 bundle = self.user_client_registry.get_clients(user_id)
+03366:                 configured = {
+03367:                     name: client for name, client in bundle.sync_clients.items()
+03368:                     if client.is_configured()
+03369:                 }
+03370:                 clients_token = _sync_clients_override.set(configured)
+03371:                 bundle_token = _client_bundle_override.set(bundle)
+03372:                 library_token = _library_service_override.set(getattr(bundle, "library_service", None))
+03373:                 user_token = set_current_user_id(user_id)
+03374:                 creds_token = set_current_user_credentials(bundle.credentials)
+03375:                 logger.debug("🔄 Sync cycle scoped to user_id=%s (%d clients)", user_id, len(configured))
+03376:             except Exception as e:
+03377:                 logger.error("Failed to set up per-user sync context for user %s: %s", user_id, e, exc_info=True)
+03378:                 return
+03379: 
+03380:         try:
+03381:             # Prevent race condition: If daemon is running, skip. If Instant Sync, wait.
+03382:             acquired = False
+03383:             if target_abs_id:
+
+
+===== SyncManager follower update call #1 =====
+00324:         try:
+00325:             value = float(os.environ.get('SYNC_COMPLETION_THRESHOLD', '99'))
+00326:         except (TypeError, ValueError):
+00327:             value = 99.0
+00328:         return max(0.0, min(value, 100.0)) / 100.0
+00329: 
+00330:     def _propagate_completion(
+00331:         self,
+00332:         book: Book | None,
+00333:         active_clients: dict,
+00334:         leader: str,
+00335:         abs_id: str,
+00336:         title_snip: str,
+00337:     ) -> None:
+00338:         """Mark a book finished on non-leader clients once the leader crosses
+00339:         the configured completion threshold.
+00340: 
+00341:         Trackers (StoryGraph, Hardcover) and ABSEbook are excluded: trackers
+00342:         are driven by trailing-edge idle-cooldown handlers, and ABSEbook rejects
+00343:         a percentage-only locator. ABS uses mark_finished instead of
+00344:         update_progress.
+00345:         """
+00346:         current_time = time.time()
+00347:         request = UpdateProgressRequest(LocatorResult(percentage=1.0), "Book finished", previous_location=None)
+00348:         for client_name, client in self._iter_update_targets(active_clients, leader):
+00349:             if client_name in _COMPLETION_PROPAGATION_EXCLUDED_CLIENTS:
+00350:                 continue
+00351:             try:
+00352:                 if client_name.lower() == 'abs':
+00353:                     success = client.abs_client.mark_finished(abs_id)
+00354:                     if success:
+00355:                         try:
+00356:                             from src.services.write_tracker import record_write
+00357:                             record_write('ABS', abs_id)
+00358:                         except ImportError:
+00359:                             pass
+00360:                         logger.info(f"🏁 '{abs_id}' '{title_snip}' completion propagated to '{client_name}'")
+00361:                     else:
+00362:                         logger.warning(f"⚠️ Completion propagation failed for '{client_name}': mark_finished returned False")
+00363:                 else:
+00364:                     result = client.update_progress(book, request)
+00365:                     self._record_bridge_write(client_name, abs_id, result)
+00366:                     if getattr(result, 'success', False):
+00367:                         self._persist_state_snapshot(book, client_name, {'pct': 1.0}, current_time)
+00368:                         logger.info(f"🏁 '{abs_id}' '{title_snip}' completion propagated to '{client_name}'")
+00369:                     else:
+00370:                         logger.warning(f"⚠️ Completion propagation failed for '{client_name}': client reported unsuccessful write")
+00371:             except Exception as e:
+00372:                 logger.warning(f"⚠️ Completion propagation failed for '{client_name}': {e}", exc_info=True)
+00373: 
+00374:     def _iter_update_targets(self, active_clients: dict, leader_name: str | None):
+00375:         """Yield non-leader clients with KoSync updated last."""
+00376:         ordered = [
+00377:             (client_name, client)
+00378:             for client_name, client in active_clients.items()
+00379:             if client_name != leader_name
+00380:         ]
+00381:         ordered.sort(key=lambda item: item[0] == "KoSync")
+00382:         return ordered
+00383: 
+00384:     def _get_epub_for_client(self, book: Book | None, client_name: str | None) -> str | None:
+00385:         if client_name == "Storyteller":
+00386:             return self._get_storyteller_ebook_filename(book)
+00387:         return self._get_non_story_ebook_filename(book)
+00388: 
+00389:     def _get_locator_target_epub(self, book: Book | None, leader_name: str | None) -> str | None:
+00390:         """
+00391:         Locator generation target EPUB used for cross-client updates.
+00392:         Prefer non-Storyteller EPUB so KoSync/Grimmory/ABS locators stay stable,
+00393:         but fall back to Storyteller artifact when that's all we have.
+00394:         """
+00395:         return self._get_non_story_ebook_filename(book) or self._get_storyteller_ebook_filename(book)
+00396: 
+00397:     def _get_audio_source_name(self, book: Book | None) -> str | None:
+00398:         if not book:
+00399:             return None
+00400:         source = getattr(book, "audio_source", None)
+00401:         if source:
+00402:             return source
+00403:         if getattr(book, "sync_mode", "audiobook") == "ebook_only":
+00404:             return None
+00405:         return "ABS"
+00406: 
+00407:     def _get_primary_audio_client_name(self, book: Book | None) -> str | None:
+00408:         source = self._get_audio_source_name(book)
+00409:         if source == "BookLore":
+00410:             return "BookLoreAudio"
+00411:         if source == "BookOrbit":
+00412:             return "BookOrbitAudio"
+00413:         if source == "ABS":
+00414:             return "ABS"
+00415:         return None
+00416: 
+00417:     def _get_audio_source_adapter(self, book: Book | None):
+00418:         source = self._get_audio_source_name(book)
+00419:         if not source:
+00420:             return None
+00421:         return self.active_audio_source_adapters.get(source)
+00422: 
+00423:     @staticmethod
+00424:     def _freshness_guards_enabled() -> bool:
+00425:         """Kill switch for the Phase 2 freshness guards (staleness suppression +
+00426:         rollback veto). Read per call so the settings UI applies immediately."""
+00427:         return os.environ.get("SYNC_FRESHNESS_GUARDS", "true").strip().lower() in ("true", "1", "yes", "on")
+00428: 
+00429:     @staticmethod
+00430:     def _rollback_veto_tolerance_seconds() -> float:
+00431:         """How much newer a peer's service timestamp must be before a behind
+00432:         candidate is vetoed. Generous by default to absorb clock skew between
+00433:         services — this is a veto threshold, not an arbitration signal."""
+00434:         try:
+00435:             return float(os.environ.get("SYNC_ROLLBACK_VETO_SECONDS", "600") or 600)
+00436:         except (TypeError, ValueError):
+00437:             return 600.0
+00438: 
+00439:     @staticmethod
+00440:     def _own_writeback_window_seconds() -> int:
+00441:         """How long a recorded own-write stays usable as evidence that a peer's
+00442:         position is BookBridge's own echo.
+00443: 
+00444:         A follower write is only observed on the NEXT cycle, so the tracker's 60s
+00445:         default is far too short at any realistic cadence. Sized from the sync
+00446:         period with slack, and capped at the tracker's own 3600s retention horizon
+00447:         beyond which no marker survives anyway. The percentage match, not this
+00448:         window, is what keeps the exclusion honest: a peer the user actually moved
+00449:         no longer matches the value we wrote."""
+00450:         try:
+00451:             period_mins = float(os.environ.get("SYNC_PERIOD_MINS", "5") or 5)
+00452:         except (TypeError, ValueError):
+00453:             period_mins = 5.0
+00454:         window = period_mins * 120.0 + 60.0
+00455:         return int(max(600.0, min(window, 3600.0)))
+00456: 
+00457:     def _peer_position_is_own_writeback(
+00458:         self, abs_id: str, client_name: str, observed_pct: float, margin: float
+00459:     ) -> bool:
+00460:         """Whether a peer's current position is the echo of BookBridge's own write.
+00461: 
+00462:         The rollback veto reads a peer's fresh service timestamp as evidence the
+00463:         user is active there. That inference fails for a client BookBridge itself
+00464:         writes to every cycle: the service restamps on write, so the peer we just
+00465:         pushed to always looks newest and vetoes a genuine rewind forever (#413).
+00466:         A peer stops counting as evidence only when a recorded own-write — scoped
+00467:         to this user, or to the unscoped namespace a globally-triggered sync
+00468:         records under — still matches the value the service now reports. A missing,
+00469:         expired, percentage-less, mismatched or wrong-user marker leaves the veto
+00470:         exactly as it was."""
+00471:         try:
+00472:             from src.services.write_tracker import GLOBAL_USER, get_recent_write
+00473:         except ImportError:
+00474:             return False
+
+
+===== Suggestion route/service references =====
+src/sync_manager.py:37: from src.db.models import State, Book, PendingSuggestion
+src/sync_manager.py:971:             # From Pending Suggestions (covers auto-discovery matches)
+src/sync_manager.py:972:             suggestions = self.database_service.get_all_pending_suggestions()
+src/sync_manager.py:1714:             # Dismiss existing pending suggestions for books now >70% complete
+src/sync_manager.py:1715:             existing_suggestions = self.database_service.get_all_pending_suggestions()
+src/sync_manager.py:1729:                     logger.info(f"🧹 Dismissing suggestion for '{suggestion.title}': progress {pct:.1%} (finished={is_finished})")
+src/sync_manager.py:1730:                     self.database_service.dismiss_suggestion(suggestion.source_id)
+src/sync_manager.py:1746:                         # Check if a suggestion already exists (pending, dismissed, or ignored)
+src/sync_manager.py:1748:                             logger.debug(f"Skipping {abs_id}: suggestion already exists/dismissed")
+src/sync_manager.py:1916:             suggestion = PendingSuggestion(
+src/sync_manager.py:1923:             self.database_service.save_pending_suggestion(suggestion)
+src/web_server.py:481:     'dismiss_suggestion', 'ignore_suggestion', 'clear_stale_suggestions',
+src/web_server.py:2674:     database_service.dismiss_suggestion(saved_book.abs_id)
+src/web_server.py:2676:         database_service.dismiss_suggestion(saved_book.kosync_doc_id)
+src/web_server.py:3534:     database_service.dismiss_suggestion(saved_book.abs_id)
+src/web_server.py:3536:         database_service.dismiss_suggestion(saved_book.kosync_doc_id)
+src/web_server.py:3631:         database_service.dismiss_suggestion(saved_book.abs_id)
+src/web_server.py:3838:     database_service.dismiss_suggestion(saved_book.abs_id)
+src/web_server.py:4728:             pending = database_service.get_pending_suggestion(key)
+src/web_server.py:5465:         suggestions = [s for s in database_service.get_all_pending_suggestions() if len(s.matches) > 0]
+src/web_server.py:6228:             database_service.dismiss_suggestion(forge_book_id)
+src/web_server.py:6230:                 database_service.dismiss_suggestion(kosync_doc_id)
+src/web_server.py:6407:         # Auto-dismiss any pending suggestion for this book
+src/web_server.py:6409:         database_service.dismiss_suggestion(abs_id)
+src/web_server.py:6410:         database_service.dismiss_suggestion(kosync_doc_id)
+src/web_server.py:6416:                 logger.info(f"🔄 Dismissing additional suggestion/hash for '{ebook_filename}': '{device_doc.document_hash}'")
+src/web_server.py:6417:                 database_service.dismiss_suggestion(device_doc.document_hash)
+src/web_server.py:6547:                 # and leaves the suggestion pending, so it deliberately does not.
+src/web_server.py:6798:         # Auto-dismiss any pending suggestion
+src/web_server.py:6799:         database_service.dismiss_suggestion(item['abs_id'])
+src/web_server.py:6800:         database_service.dismiss_suggestion(kosync_doc_id)
+src/web_server.py:6806:                  database_service.dismiss_suggestion(device_doc.document_hash)
+src/web_server.py:6983:             database_service.dismiss_suggestion(item['abs_id'])
+src/web_server.py:6984:             database_service.dismiss_suggestion(kosync_doc_id)
+src/web_server.py:6989:                     database_service.dismiss_suggestion(device_doc.document_hash)
+src/web_server.py:7136:         database_service.dismiss_suggestion(forge_id)
+src/web_server.py:7138:             database_service.dismiss_suggestion(kosync_doc_id)
+src/web_server.py:8080:                 from src.db.models import PendingSuggestion
+src/web_server.py:8112:                     suggestion = PendingSuggestion(
+src/web_server.py:8121:                     database_service.save_pending_suggestion(suggestion)
+src/web_server.py:8741:     database_service.dismiss_suggestion(doc.document_hash)
+src/web_server.py:10177: # ---------------- SUGGESTION API ROUTES ----------------
+src/web_server.py:10179:     suggestions = database_service.get_all_pending_suggestions()
+src/web_server.py:10199: def dismiss_suggestion(source_id):
+src/web_server.py:10200:     if database_service.dismiss_suggestion(source_id):
+src/web_server.py:12195:     # Suggestion routes
+src/web_server.py:12198:     app.add_url_rule('/api/suggestions/<source_id>/dismiss', 'dismiss_suggestion', dismiss_suggestion, methods=['POST'])
+src/services/suggestions_service.py:242:         from src.db.models import PendingSuggestion
+src/services/suggestions_service.py:247:                 rows = db_session.query(PendingSuggestion.source_id).filter(
+src/services/suggestions_service.py:248:                     PendingSuggestion.status == 'ignored'
+src/services/book_mapping_service.py:302:             self.database_service.dismiss_suggestion(saved_book.abs_id)
+src/services/book_mapping_service.py:304:                 self.database_service.dismiss_suggestion(saved_book.kosync_doc_id)
+src/services/book_mapping_service.py:424:             self.database_service.dismiss_suggestion(saved_book.abs_id)
+src/services/book_mapping_service.py:426:                 self.database_service.dismiss_suggestion(saved_book.kosync_doc_id)
+src/services/shelf_watch_service.py:9:   - Top score < threshold (with candidates) → save PendingSuggestion with
+src/services/shelf_watch_service.py:25: from src.db.models import PendingSuggestion
+src/services/shelf_watch_service.py:407:             self._create_pending_suggestion(grimmory_book, filename, grimmory_id, matches)
+src/services/shelf_watch_service.py:474:     def _create_pending_suggestion(self, grimmory_book: dict, filename: str,
+src/services/shelf_watch_service.py:489:         suggestion = PendingSuggestion(
+src/services/shelf_watch_service.py:500:         self.database_service.save_pending_suggestion(suggestion)
+src/api/kosync_server.py:1559:         _database_service.dismiss_suggestion(doc_hash_val)
+src/api/kosync_server.py:3311:     from src.db.models import Book, PendingSuggestion
+src/api/kosync_server.py:3325:         _database_service.dismiss_suggestion(doc_hash_val)
+src/api/kosync_server.py:3351:             _database_service.save_pending_suggestion(PendingSuggestion(
+src/api/kosync_server.py:3365:     _database_service.dismiss_suggestion(doc_hash_val)
+src/api/kosync_server.py:3450:         # Cleanup: Dismiss any pending suggestion for this document since it's now linked
+src/api/kosync_server.py:3451:         _database_service.dismiss_suggestion(doc_hash)
+src/db/models.py:425: class PendingSuggestion(Base):
+src/db/models.py:429:     __tablename__ = 'pending_suggestions'
+src/db/models.py:479:         return f"<PendingSuggestion(id={self.id}, title='{self.title}', status='{self.status}')>"
+src/db/database_service.py:29:     PendingSuggestion,
+src/db/database_service.py:2219:     # PendingSuggestion operations
+src/db/database_service.py:2220:     def get_pending_suggestion(self, source_id: str) -> Optional[PendingSuggestion]:
+src/db/database_service.py:2221:         """Get a pending suggestion by source ID (e.g. ABS ID). Only returns pending, not dismissed."""
+src/db/database_service.py:2223:             suggestion = session.query(PendingSuggestion).filter(
+src/db/database_service.py:2224:                 PendingSuggestion.source_id == source_id,
+src/db/database_service.py:2225:                 PendingSuggestion.status == 'pending'
+src/db/database_service.py:2232:         """Check if any suggestion exists for source_id (pending or dismissed)."""
+src/db/database_service.py:2234:             return session.query(PendingSuggestion).filter(
+src/db/database_service.py:2235:                 PendingSuggestion.source_id == source_id
+src/db/database_service.py:2238:     def save_pending_suggestion(self, suggestion: PendingSuggestion) -> PendingSuggestion:
+src/db/database_service.py:2239:         """Save or update a pending suggestion."""
+src/db/database_service.py:2241:             existing = session.query(PendingSuggestion).filter(
+src/db/database_service.py:2242:                 PendingSuggestion.source_id == suggestion.source_id
+src/db/database_service.py:2271:     def get_all_pending_suggestions(self) -> List[PendingSuggestion]:
+src/db/database_service.py:2272:         """Get all pending suggestions."""
+src/db/database_service.py:2274:             suggestions = session.query(PendingSuggestion).filter(
+src/db/database_service.py:2275:                 PendingSuggestion.status == 'pending'
+src/db/database_service.py:2276:             ).order_by(PendingSuggestion.created_at.desc()).all()
+src/db/database_service.py:2284:             rows = session.query(PendingSuggestion.source_id).filter(
+src/db/database_service.py:2285:                 PendingSuggestion.status == 'ignored'
+src/db/database_service.py:2289:     def dismiss_suggestion(self, source_id: str) -> bool:
+src/db/database_service.py:2290:         """Mark a suggestion as dismissed."""
+src/db/database_service.py:2292:             suggestion = session.query(PendingSuggestion).filter(
+src/db/database_service.py:2293:                 PendingSuggestion.source_id == source_id
+src/db/database_service.py:2296:                 suggestion.status = 'dismissed'
+src/db/database_service.py:2304:             suggestion = session.query(PendingSuggestion).filter(
+src/db/database_service.py:2305:                 PendingSuggestion.source_id == source_id
+src/db/database_service.py:2372:             stale_query = session.query(PendingSuggestion).filter(
+src/db/database_service.py:2373:                 not_(PendingSuggestion.source_id.in_(
+
+
+===== templates suggestion/csrf refs =====
+templates/_match_queue_panel.html:15:     <form method="POST" action="/suggestions" class="inline-form">
+templates/_match_queue_panel.html:23:     <form method="POST" action="/suggestions">
+templates/_match_queue_panel.html:28:     <form method="POST" action="/suggestions">
+templates/_match_queue_panel.html:34:     <form method="POST" action="/suggestions">
+templates/index.html:1594:         /* Suggestions Banner Styling */
+templates/index.html:1595:         .suggestions-banner {
+templates/index.html:1608:         .suggestions-banner:hover {
+templates/index.html:1615:         .suggestions-banner.active {
+templates/index.html:1622:         .suggestions-title-group {
+templates/index.html:1628:         .suggestions-title {
+templates/index.html:1662:         .suggestions-banner.active .chevron {
+templates/index.html:1666:         .suggestions-content {
+templates/index.html:1677:         .suggestions-content.show {
+templates/index.html:1985:         {% if suggestions %}
+templates/index.html:1986:         <div id="suggestions-section">
+templates/index.html:1987:             <div class="suggestions-banner" id="suggestions-banner">
+templates/index.html:1988:                 <div class="suggestions-title-group">
+templates/index.html:1989:                     <h2 class="suggestions-title">💡 Pending Suggestions</h2>
+templates/index.html:1990:                     <span class="count-badge">{{ suggestions|length }}</span>
+templates/index.html:1997:             <div class="suggestions-content" id="suggestions-content">
+templates/index.html:1998:                 <div class="suggestions-container" style="padding: 0; border: none; background: transparent;">
+templates/index.html:1999:                     <div class="suggestions-grid"
+templates/index.html:2001:                         {% for suggestion in suggestions %}
+templates/index.html:2002:                         <div class="suggestion-card" id="suggestion-{{ suggestion.source_id }}"
+templates/index.html:2004:                             <div class="suggestion-details">
+templates/index.html:2006:                                     title="{{ suggestion.title }}">{{ suggestion.title }}</h3>
+templates/index.html:2009:                                     {{ suggestion.author }}</div>
+templates/index.html:2013:                                     <span>📚</span> Found {{ suggestion.audiobook_count }} potential match(es)
+templates/index.html:2016:                                 <div class="suggestion-actions" style="display: flex; gap: 8px;">
+templates/index.html:2017:                                     <a href="{{ url_for('add_book', search=suggestion.title) }}"
+templates/index.html:2020:                                     <button onclick="dismissSuggestion(event, '{{ suggestion.source_id }}')"
+templates/index.html:2032:                 window.toggleSuggestions = function () {
+templates/index.html:2033:                     const content = document.getElementById('suggestions-content');
+templates/index.html:2034:                     const banner = document.getElementById('suggestions-banner');
+templates/index.html:2043:                         localStorage.setItem('suggestions_expanded', isShowing);
+templates/index.html:2052:                     const banner = document.getElementById('suggestions-banner');
+templates/index.html:2054:                         banner.addEventListener('click', window.toggleSuggestions);
+templates/index.html:2059:                         const shouldExpand = localStorage.getItem('suggestions_expanded') === 'true';
+templates/index.html:2061:                             const content = document.getElementById('suggestions-content');
+templates/index.html:2072:                 function dismissSuggestion(e, id) {
+templates/index.html:2074:                     console.log('Dismissing suggestion:', id);
+templates/index.html:2075:                     fetch(`/api/suggestions/${id}/dismiss`, { method: 'POST' })
+templates/index.html:2083:                                 const card = document.getElementById(`suggestion-${id}`);
+templates/account.html:96:         <p class="help">Suggested from this browser's address — adjust the host or port to match how
+templates/suggestions.html:2: {% set active_page = 'suggestions' %}
+templates/suggestions.html:3: {% block title %}Suggestions · BookBridge{% endblock %}
+templates/suggestions.html:7:     .suggestions-wrap { max-width: 1800px; margin: 0 auto; padding: 28px 24px 36px; }
+templates/suggestions.html:43:     .suggestions-list { max-height: calc(100vh - 290px); overflow-y: auto; padding: 12px; display: grid; gap: 10px; }
+templates/suggestions.html:44:     .suggestion-card { border: 1px solid var(--border-strong); background: var(--panel-soft); border-radius: 10px; padding: 10px; cursor: pointer; }
+templates/suggestions.html:45:     .suggestion-card:hover { border-color: rgba(102,126,234,0.5); }
+templates/suggestions.html:46:     .suggestion-card.selected { border-color: rgba(102,126,234,0.85); background: rgba(102,126,234,0.14); }
+templates/suggestions.html:48:     .suggestion-select { font-size: 12px; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; gap: 4px; margin-right: auto; }
+templates/suggestions.html:49:     .suggestion-card.is-queued { opacity: 0.5; border-color: rgba(76,175,80,0.5); }
+templates/suggestions.html:50:     .suggestion-card.is-queued::before { content: '✓ Queued'; float: right; font-size: 11px; font-weight: 700; color: #81c784; }
+templates/suggestions.html:51:     .suggestion-main { display: grid; grid-template-columns: 54px minmax(0,1fr); gap: 10px; align-items: center; }
+templates/suggestions.html:122:     @media (max-width: 1180px) { .layout { grid-template-columns: 1fr; } .queue-panel { position: static; max-height: none; } .suggestions-list { max-height: 440px; } .selection-grid-scroll { max-height: none; overflow: visible; padding-right: 0; } }
+templates/suggestions.html:124:         .suggestions-wrap { padding: 20px 14px 28px; }
+templates/suggestions.html:130: <div class="suggestions-wrap">
+templates/suggestions.html:132:         <h2>Library Suggestions</h2>
+templates/suggestions.html:137:             <form method="POST" action="/suggestions" id="scanForm">
+templates/suggestions.html:141:             <form method="POST" action="/suggestions" id="scanFullForm">
+templates/suggestions.html:154:             <span class="count" id="topCount">Showing {{ suggestions|length }} suggestions</span>
+templates/suggestions.html:170:                 <span class="count" id="panelCount">{{ suggestions|length }} items</span>
+templates/suggestions.html:172:             {% if suggestions %}
+templates/suggestions.html:175:                 <button type="button" class="btn btn-small btn-muted" id="addSelectedBtn" onclick="addSelectedSuggestions()" disabled>➕ Add selected (<span id="selectedCount">0</span>)</button>
+templates/suggestions.html:187:                 {% if suggestions %}
+templates/suggestions.html:188:                 <div class="suggestions-list" id="suggestionsList">
+templates/suggestions.html:189:                     {% for s in suggestions %}
+templates/suggestions.html:190:                     {% set suggestion_source_label, suggestion_source_class = suggestion_source_badge(s.audio_source, s.bridge_key or s.abs_id) %}
+templates/suggestions.html:191:                     <div class="suggestion-card"
+templates/suggestions.html:192:                          id="suggestion-{{ s.bridge_key or s.abs_id }}"
+templates/suggestions.html:196:                          onclick="selectSuggestion('{{ s.bridge_key or s.abs_id }}')">
+templates/suggestions.html:197:                         <div class="suggestion-main">
+templates/suggestions.html:202:                                     <span class="source-badge {{ suggestion_source_class }}" title="Audiobook source">{{ suggestion_source_label }}</span>
+templates/suggestions.html:216:                             <label class="suggestion-select" onclick="event.stopPropagation();">
+templates/suggestions.html:217:                                 <input type="checkbox" class="suggestion-check" data-abs-id="{{ s.bridge_key or s.abs_id }}" onchange="updateBulkCounts()"> Select
+templates/suggestions.html:219:                             <button type="button" class="btn btn-small btn-dismiss" onclick="dismissSuggestion(event, '{{ s.bridge_key or s.abs_id }}')">Dismiss</button>
+templates/suggestions.html:220:                             <form method="POST" action="/suggestions" class="inline-form" onsubmit="event.stopPropagation();">
+templates/suggestions.html:236:                     <p>No suggestions found above 60% confidence.<br>Run another scan after your library changes.</p>
+templates/suggestions.html:252:                 <h4>Selected Suggestion</h4>
+templates/suggestions.html:253:                 <p class="selection-placeholder" id="selectionPlaceholder">Click a suggestion to review and add to queue.</p>
+templates/suggestions.html:262:                     <form method="POST" action="/suggestions" id="addToQueueForm">
+templates/suggestions.html:289:                         <p id="ebookGridEmpty" class="ebook-grid-empty hidden">No ebook matches available for this suggestion. Storyteller-only queue is allowed.</p>
+templates/suggestions.html:304:     let suggestionsData = {{ suggestions|tojson }};
+templates/suggestions.html:305:     let selectedSuggestionId = null;
+templates/suggestions.html:314:     let suggestionSubmitInFlight = false;
+templates/suggestions.html:316:     function showSuggestionSubmitFeedback(targetId, message) {
+templates/suggestions.html:330:     function setSuggestionButtonHtml(button, html) {
+templates/suggestions.html:334:     function getSuggestionPrimarySubmitter(form) {
+templates/suggestions.html:338:     function startSuggestionSubmitState(submitter) {
+templates/suggestions.html:339:         if (!submitter || suggestionSubmitInFlight) {
+templates/suggestions.html:343:         suggestionSubmitInFlight = true;
+templates/suggestions.html:356:         setSuggestionButtonHtml(submitter, submitter.dataset.workingLabel || 'Working...');
+templates/suggestions.html:357:         showSuggestionSubmitFeedback(
+templates/suggestions.html:413:         fetch('/api/suggestions/scan-status')
+templates/suggestions.html:422:                     setTimeout(() => { window.location.href = '/suggestions'; }, 350);
+templates/suggestions.html:427:                     setTimeout(() => { window.location.href = '/suggestions'; }, 350);
+templates/suggestions.html:431:                     window.location.href = '/suggestions';
+templates/suggestions.html:480:     function renderStorytellerOptions(suggestion) {
+templates/suggestions.html:501:         const queryParts = [suggestion.audio_title || suggestion.abs_title || '', suggestion.audio_author || suggestion.abs_author || '']
+templates/suggestions.html:608:     function applySuggestionSort(mode) {
+templates/suggestions.html:609:         const list = document.getElementById('suggestionsList');
+templates/suggestions.html:612:         const cards = Array.from(list.querySelectorAll('.suggestion-card'));
+templates/suggestions.html:633:         selectedSuggestionId = null;
+templates/suggestions.html:634:         document.querySelectorAll('.suggestion-card').forEach((card) => card.classList.remove('selected'));
+templates/suggestions.html:661:     function selectSuggestion(suggestionKey) {
+templates/suggestions.html:662:         const suggestion = suggestionsData.find((item) => (item.bridge_key || item.abs_id) === suggestionKey);
+templates/suggestions.html:663:         if (!suggestion || !suggestion.matches || suggestion.matches.length === 0) return;
+templates/suggestions.html:665:         selectedSuggestionId = suggestionKey;
+templates/suggestions.html:666:         document.querySelectorAll('.suggestion-card').forEach((card) => card.classList.toggle('selected', card.dataset.absId === suggestionKey));
+templates/suggestions.html:670:         document.getElementById('selected_audiobook_id').value = suggestion.bridge_key || suggestion.abs_id || '';
+templates/suggestions.html:671:         document.getElementById('selected_audio_source').value = suggestion.audio_source || '';
+templates/suggestions.html:672:         document.getElementById('selected_audio_source_id').value = suggestion.audio_source_id || '';
+templates/suggestions.html:673:         document.getElementById('selected_audio_title').value = suggestion.audio_title || suggestion.abs_title || '';
+templates/suggestions.html:674:         document.getElementById('selected_audio_author').value = suggestion.audio_author || suggestion.abs_author || '';
+templates/suggestions.html:675:         document.getElementById('selected_audio_cover_url').value = suggestion.audio_cover_url || suggestion.cover_url || '';
+templates/suggestions.html:676:         document.getElementById('selected_audio_duration').value = suggestion.audio_duration ?? suggestion.duration ?? '';
+templates/suggestions.html:677:         document.getElementById('selected_audio_provider_book_id').value = suggestion.audio_provider_book_id || suggestion.audio_source_id || '';
+templates/suggestions.html:678:         document.getElementById('selected_audio_provider_file_id').value = suggestion.audio_provider_file_id || '';
+templates/suggestions.html:679:         document.getElementById('selectedTitle').textContent = suggestion.audio_title || suggestion.abs_title || '';
+templates/suggestions.html:680:         document.getElementById('selectedAuthor').textContent = suggestion.audio_author || suggestion.abs_author || '';
+templates/suggestions.html:681:         document.getElementById('selectedCover').src = suggestion.audio_cover_url || suggestion.cover_url || '';
+templates/suggestions.html:682:         renderStorytellerOptions(suggestion);
+templates/suggestions.html:684:         const matches = [...suggestion.matches].sort((a, b) => (b.score || 0) - (a.score || 0));
+templates/suggestions.html:785:         const count = document.querySelectorAll('.suggestion-card').length;
+templates/suggestions.html:786:         document.getElementById('topCount').textContent = `Showing ${count} suggestions`;
+templates/suggestions.html:794:             empty.innerHTML = '<p>All current suggestions are hidden.<br>Run Scan Library to refresh.</p>';
+templates/suggestions.html:796:             const list = document.getElementById('suggestionsList');
+templates/suggestions.html:801:     function dismissSuggestion(event, suggestionKey) {
+templates/suggestions.html:804:         const card = document.getElementById(`suggestion-${suggestionKey}`);
+templates/suggestions.html:806:         suggestionsData = suggestionsData.filter((item) => (item.bridge_key || item.abs_id) !== suggestionKey);
+templates/suggestions.html:807:         if (selectedSuggestionId === suggestionKey) clearSelection();
+templates/suggestions.html:831:     function markSuggestionQueued(suggestionKey) {
+templates/suggestions.html:832:         const card = suggestionKey ? document.getElementById(`suggestion-${suggestionKey}`) : null;
+templates/suggestions.html:837:         const queuedKey = action === 'add_to_queue' ? selectedSuggestionId : null;
+templates/suggestions.html:851:                 markSuggestionQueued(queuedKey);
+templates/suggestions.html:881:                 if (submitter && !startSuggestionSubmitState(submitter)) {
+templates/suggestions.html:890:     // suggestion keys to add_many_to_queue; the server builds the queue items from its
+templates/suggestions.html:891:     // cached suggestions and returns the refreshed queue panel fragment. ---
+templates/suggestions.html:893:         return Array.from(document.querySelectorAll('.suggestion-card:not(.is-queued)'))
+templates/suggestions.html:900:         return Array.from(document.querySelectorAll('.suggestion-check:checked'))
+templates/suggestions.html:929:             const response = await fetch('/suggestions', {
+templates/suggestions.html:949:                     markSuggestionQueued(key);
+templates/suggestions.html:950:                     const cb = document.querySelector(`.suggestion-check[data-abs-id="${CSS.escape(key)}"]`);
+templates/suggestions.html:977:     function addSelectedSuggestions() { addManyToQueue(getCheckedKeys()); }
+templates/suggestions.html:983:         const savedSortMode = localStorage.getItem('suggestionsSortMode');
+templates/suggestions.html:987:         applySuggestionSort(sortModeSelect.value || 'best');
+templates/suggestions.html:990:             localStorage.setItem('suggestionsSortMode', sortMode);
+templates/suggestions.html:991:             applySuggestionSort(sortMode);
+templates/settings.html:1063:                             <div class="help-text">Matches at or above this score auto-create a mapping. Lower-scoring matches become pending Suggestions.</div>
+templates/settings.html:1222:                             <div class="help-text">Matches at or above this score auto-create a mapping. Lower-scoring matches become pending Suggestions.</div>
+templates/settings.html:1473:                             this identifier is treated as authoritative and bypasses fuzzy title/author matching during library suggestion scans.</div>
+templates/settings.html:1719:                     <h3>Suggestions</h3>
+templates/settings.html:1723:                             <input type="checkbox" id="toggle_suggestions" name="SUGGESTIONS_ENABLED" {% if
+templates/settings.html:1724:                                 get_bool('SUGGESTIONS_ENABLED') %}checked{% endif %}>
+templates/settings.html:1732:                             When enabled, the system will look for unmapped audiobooks with progress and suggest
+templates/settings.html:1737:                         <input type="checkbox" id="suggestions_auto_match" name="SUGGESTIONS_AUTO_MATCH_ENABLED"
+templates/settings.html:1739:                             {% if get_bool('SUGGESTIONS_AUTO_MATCH_ENABLED') %}checked{% endif %}>
+templates/settings.html:1740:                         <label for="suggestions_auto_match">Auto-match suggestions at or above a score</label>
+templates/settings.html:1742:                             automatically. Suggestions scoring below the threshold are left on the Suggestions page
+templates/settings.html:1745:                     <div class="form-group{% if not get_bool('SUGGESTIONS_AUTO_MATCH_ENABLED') %} hidden{% endif %}"
+templates/settings.html:1748:                         <input type="number" min="1" max="100" step="0.5" id="suggestions_auto_match_threshold"
+templates/settings.html:1749:                             name="SUGGESTIONS_AUTO_MATCH_THRESHOLD"
+templates/settings.html:1750:                             value="{{ get_val('SUGGESTIONS_AUTO_MATCH_THRESHOLD') or '100' }}"
+templates/settings.html:1764:                         <small>When you read an unmapped ebook, skip the suggestion and link it automatically if a
+templates/settings.html:1766:                             on a single exact audiobook. Ambiguous matches still become suggestions. Requires Ollama
+templates/settings.html:1836:                             llama-swap to improve book-match suggestions and rescue failed audio/text alignments.
+templates/settings.html:1890:                         <input type="checkbox" id="ollama_rerank" name="OLLAMA_RERANK_SUGGESTIONS" {% if
+templates/settings.html:1891:                             get_bool('OLLAMA_RERANK_SUGGESTIONS') %}checked{% endif %}>
+templates/settings.html:1892:                         <label for="ollama_rerank">Re-rank suggestions by semantic similarity (embeddings)</label>
+templates/settings.html:1903:                         <input type="checkbox" id="ollama_suggest_gate" name="OLLAMA_SUGGEST_JUDGE_GATE" {% if
+templates/settings.html:1904:                             get_bool('OLLAMA_SUGGEST_JUDGE_GATE') %}checked{% endif %}>
+templates/settings.html:1905:                         <label for="ollama_suggest_gate">Suppress suggestions the LLM can't confirm as a real match
+templates/settings.html:1910:                         <input type="number" name="OLLAMA_SUGGEST_AUTOKEEP_SCORE"
+templates/settings.html:1911:                             value="{{ get_val('OLLAMA_SUGGEST_AUTOKEEP_SCORE') }}">
+templates/settings.html:1917:                         <input type="checkbox" id="ollama_judge" name="OLLAMA_JUDGE_SUGGESTIONS" {% if
+templates/settings.html:1918:                             get_bool('OLLAMA_JUDGE_SUGGESTIONS') %}checked{% endif %}>
+templates/settings.html:2529:                         <label>Suggestion Cleanup</label>
+templates/settings.html:2531:                             <button type="button" class="btn btn-danger" onclick="clearStaleSuggestions()">
+templates/settings.html:2532:                                 🧹 Clear Stale Suggestions
+templates/settings.html:2535:                                 Deletes all suggestions for books that are not currently in your bridge library.
+templates/settings.html:2536:                                 This helps clear out junk suggestions and allows the bridge to re-suggest them if
+templates/settings.html:2733:                             <input type="text" name="WHISPER_MODEL" list="whisper-model-suggestions"
+templates/settings.html:2735:                             <datalist id="whisper-model-suggestions">
+templates/settings.html:2741:                                 model from the suggestions or enter a custom whisper.cpp model name. Larger = better
+templates/settings.html:3356:         async function clearStaleSuggestions() {
+templates/settings.html:3357:             if (!confirm("Are you sure you want to clear stale suggestions?\n\nThis will permanently delete all suggestions for books that are not currently matched in your bridge. Books you are already syncing will be preserved.")) {
+templates/settings.html:3362:                 const response = await fetch('/api/suggestions/clear_stale', {
+templates/settings.html:3371:                     alert(`✅ Success! Cleared ${data.count} stale suggestions.`);
+templates/settings.html:3373:                     alert(`❌ Failed to clear suggestions: ${data.error || 'Unknown error'}`);
+templates/settings.html:3376:                 console.error('Error clearing suggestions:', err);
+templates/settings.html:3377:                 alert('❌ An error occurred while clearing suggestions. Check console for details.');
+templates/settings.html:3741:                 const toggle = document.getElementById('suggestions_auto_match');
+templates/settings.html:3743:                 const field = document.getElementById('suggestions_auto_match_threshold');
+templates/_nav.html:3:    nav (is_admin = current_user and current_user.is_admin): Stats/Suggestions/
+templates/_nav.html:26:         <a href="/suggestions" class="nav-tab {% if active_page == 'suggestions' %}active{% endif %}">Suggestions</a>
+
+
+===== config_loader setting lists =====
+MISSING src/config_loader.py
+
+
+===== config_loader default config =====
+MISSING src/config_loader.py
+
+
+===== Alembic heads (parsed) =====
+2e0a47a3dadd alembic/versions/2e0a47a3dadd_add_book_alignments_provenance_index.py
+add_settings_table alembic/versions/add_settings_table.py
+c8a2d7e4f1b9 alembic/versions/c8a2d7e4f1b9_add_koreader_statistics_tables.py
+d1e2f3a4b5c6 alembic/versions/d1e2f3a4b5c6_add_abs_ebook_item_id.py
+f3c8e2a5b9d4 alembic/versions/f3c8e2a5b9d4_add_shelf_watch.py
+fix_original_filename alembic/versions/fix_original_filename.py
