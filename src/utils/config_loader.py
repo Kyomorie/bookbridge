@@ -21,7 +21,7 @@ def env_truthy(key: str, default: str = "false") -> bool:
 # Full list of settings to manage
 ALL_SETTINGS = [
     # Required ABS
-    'ABS_SERVER', 'ABS_WEB_URL', 'ABS_KEY', 'ABS_LIBRARY_ID',
+    'ABS_ENABLED', 'ABS_SERVER', 'ABS_WEB_URL', 'ABS_KEY', 'ABS_LIBRARY_ID',
     
     # Optional ABS
     'ABS_COLLECTION_NAME', 'ABS_PROGRESS_OFFSET_SECONDS', 'ABS_ONLY_SEARCH_IN_ABS_LIBRARY_ID',
@@ -247,6 +247,9 @@ DEFAULT_CONFIG = {
     'BOOKORBIT_ENABLED': 'false',
     'BOOKORBIT_SERVER': '',
     'ABS_WEB_URL': '',
+    # ABS defaults to enabled so existing installs keep working when the key is
+    # reconciled in bootstrap_config(). Every other service defaults 'false'.
+    'ABS_ENABLED': 'true',
     'BOOKLORE_WEB_URL': '',
     'BOOKORBIT_WEB_URL': '',
     'CWA_WEB_URL': '',

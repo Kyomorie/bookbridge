@@ -3891,6 +3891,7 @@ def settings():
             'SYNC_COMPLETION_PROPAGATION',
             'SYNC_ABS_EBOOK',
             'XPATH_FALLBACK_TO_PREVIOUS_SEGMENT',
+            'ABS_ENABLED',
             'KOSYNC_ENABLED',
             'STORYTELLER_ENABLED',
             'BOOKLORE_ENABLED',

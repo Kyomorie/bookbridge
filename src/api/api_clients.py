@@ -65,7 +65,15 @@ class ABSClient:
         self.session.headers.update(self.headers)
 
     def is_configured(self):
-        """Check if ABS is configured with URL and token."""
+        """Check if ABS is enabled and configured with URL and token.
+
+        Only an explicit falsey ABS_ENABLED disables: the key is per-user, and
+        `resolve_setting` hands a regular user the default rather than the global
+        value, so blank has to keep ABS on for everyone who never touched it.
+        """
+        enabled_val = str(self._cfg("ABS_ENABLED", "")).strip().lower()
+        if enabled_val in ('false', '0', 'no', 'off'):
+            return False
         if is_abs_disabled_value(self._cfg("ABS_SERVER")) or is_abs_disabled_value(self._cfg("ABS_KEY")):
             return False
         return bool(self.base_url and self.token)

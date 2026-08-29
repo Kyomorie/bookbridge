@@ -65,6 +65,7 @@
         <form method="POST" action="{{ url_for('admin_user_integrations', user_id=target_user.id) }}">
             {% for group, fields in groups %}
             {% set gate_keys = {
+                'Audiobookshelf': 'ABS_ENABLED',
                 'KOReader / KoSync': 'KOSYNC_ENABLED',
                 'Storyteller': 'STORYTELLER_ENABLED',
                 'Grimmory': 'BOOKLORE_ENABLED',
@@ -76,6 +77,10 @@
                 'Hardcover': 'HARDCOVER_ENABLED',
                 'StoryGraph': 'STORYGRAPH_ENABLED'
             } %}
+            {# Gates whose blank value means ON. Audiobookshelf predates per-service
+               toggles, so an untouched account must keep syncing to it rather than
+               save itself off the first time this page is submitted. #}
+            {% set gate_defaults_on = ['ABS_ENABLED'] %}
             {% set gate_key = gate_keys.get(group) %}
             {% set source_gate = group == 'KOReader Collections' %}
             {% if gate_key %}
@@ -86,7 +91,11 @@
                 {% else %}
                     {% set gate_raw = '' %}
                 {% endif %}
-                {% set group_enabled = gate_raw|lower in ['true','1','yes','on'] %}
+                {% if gate_raw == '' and gate_key in gate_defaults_on %}
+                    {% set group_enabled = true %}
+                {% else %}
+                    {% set group_enabled = gate_raw|lower in ['true','1','yes','on'] %}
+                {% endif %}
             {% elif source_gate %}
                 {% if 'DEVICE_SYNC_COLLECTION_SOURCE' in creds %}
                     {% set source_raw = creds.get('DEVICE_SYNC_COLLECTION_SOURCE', 'off') %}

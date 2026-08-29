@@ -731,6 +731,7 @@
             </div>
 
             <div class="settings-section section-highlight" data-svc="audiobookshelf">
+                {% set abs_enabled = get_val('ABS_ENABLED', 'true')|lower in ['true','1','yes','on'] %}
                 <div class="section-header">
                     <div class="svc-left">
                         <span class="svc-chev">▶</span>
@@ -741,12 +742,21 @@
                         </div>
                     </div>
                     <div class="header-tail">
-                        {% if get_val('ABS_SERVER')|lower == 'disabled' %}<span class="pill off">Disabled</span>
+                        {% if not abs_enabled or get_val('ABS_SERVER')|lower == 'disabled' %}<span class="pill off">Disabled</span>
                         {% elif get_val('ABS_SERVER') %}<span class="pill ok">Configured</span>
                         {% else %}<span class="pill off">Not configured</span>{% endif %}
+                        <div class="toggle-switch-wrapper">
+                            <span class="toggle-label">Enable</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="toggle_abs" name="ABS_ENABLED"
+                                    onchange="toggleSection('abs_body', this.checked)" {% if abs_enabled
+                                    %}checked{% endif %}>
+                                <span class="slider"></span>
+                            </label>
+                        </div>
                     </div>
                 </div>
-                <div class="section-body">
+                <div id="abs_body" class="section-body {% if not abs_enabled %}collapsed{% endif %}">
                     <div class="checkbox-wrapper full-width">
                         <input type="checkbox" id="abs_only_lib" name="ABS_ONLY_SEARCH_IN_ABS_LIBRARY_ID" {% if
                             get_bool('ABS_ONLY_SEARCH_IN_ABS_LIBRARY_ID') %}checked{% endif %}>
@@ -756,7 +766,7 @@
                     <div class="form-group full-width">
                         <label>Server URL</label>
                         <input type="text" name="ABS_SERVER" value="{{ get_val('ABS_SERVER') }}">
-                        <div class="help-text">Enter <code>disabled</code> to skip Audiobookshelf</div>
+                        <div class="help-text">Turn Audiobookshelf off with the Enable switch above. Entering <code>disabled</code> here does the same thing and is the equivalent for a compose-env-only setup.</div>
                     </div>
                     <div class="form-group full-width">
                         <label>Public URL <span style="font-weight:400;opacity:.65;">(optional)</span></label>

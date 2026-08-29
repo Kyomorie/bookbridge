@@ -8,6 +8,14 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **"Out of sync" warnings on audiobooks you moved to BookOrbit.** A book whose audio
+  was repointed from Audiobookshelf to BookOrbit keeps its old Audiobookshelf position
+  on file so the move stays undoable. That old position is frozen — nothing updates it
+  again — and the dashboard does not show it, but the drift badge was still comparing
+  against it, so a perfectly in-sync book could read "Out of sync by 15.0%" forever and
+  no amount of syncing would clear it. The badge now ignores Audiobookshelf for books
+  whose audio lives somewhere else. Real Audiobookshelf drift is still reported.
+
 - **Storyteller fallback errors now report the real HTTP status.** A missing linked
   Storyteller book returns HTTP 404, but BookBridge called that response "No
   Response" because Python treats unsuccessful HTTP responses as false in boolean
@@ -25,6 +33,15 @@ All notable changes to BookBridge will be documented in this file.
   covers positions sent to KOReader through BookOrbit, not just direct KOReader sync.
 
 ### Added
+
+- **An Enable switch for Audiobookshelf — including per user.** Audiobookshelf was the
+  one service you could not simply switch off; the only way was typing the word
+  `disabled` into its server URL, which applies to everyone on the install. Settings →
+  Integrations → Audiobookshelf now has the same Enable toggle every other service has,
+  and each reader gets their own under Account → My Integrations (or Settings → Users →
+  Integrations). Stop using Audiobookshelf without taking it away from the other people
+  who share your install. It stays on unless you turn it off, so nothing changes on
+  upgrade.
 
 - **Moved your audiobooks to BookOrbit? Repoint them instead of re-matching them.**
   Settings → Advanced Options now has **Move Audiobooks to BookOrbit**, which points
