@@ -3328,6 +3328,42 @@ class SyncManager:
         #   behavior where a bare Mock is treated as applied (not skipped).
         return getattr(result, 'skipped', False) is not True
 
+    def _maybe_offer_pending_rewind(
+        self,
+        *,
+        book,
+        leader: str,
+        leader_state: ServiceState,
+        client_name: str,
+        result: SyncResult,
+    ):
+        """Offer only a policy-skipped KoSync -> ABS rewind for approval."""
+        if leader != "KoSync" or client_name != "ABS":
+            return None
+        if not result.success or result.skipped is not True:
+            return None
+
+        try:
+            from src.services.pending_rewind_service import PendingRewindService
+
+            return PendingRewindService(self.database_service).offer(
+                book=book,
+                source_state=leader_state.current,
+                skipped_result=result,
+                user_id=get_current_user_id(),
+            )
+        except Exception as exc:
+            # Failure to create the approval row must never alter ordinary sync
+            # behavior or turn a deliberate ABS policy skip into an error.
+            logger.warning(
+                "⚠️ Pending KoSync -> ABS rewind could not be recorded for "
+                "'%s': %s",
+                getattr(book, "abs_id", "unknown"),
+                exc,
+                exc_info=True,
+            )
+            return None
+
     def _record_bridge_write(self, client_name: str, abs_id: str, result) -> None:
         """Record that BookBridge itself produced this client's current position.
 
@@ -4060,6 +4096,13 @@ class SyncManager:
                         result = client.update_progress(book, request)
                         results[client_name] = result
                         self._record_bridge_write(client_name, abs_id, result)
+                        self._maybe_offer_pending_rewind(
+                            book=book,
+                            leader=leader,
+                            leader_state=leader_state,
+                            client_name=client_name,
+                            result=result,
+                        )
                     except Exception as e:
                         logger.warning(f"⚠️ Failed to update '{client_name}': {e}", exc_info=True)
                         results[client_name] = SyncResult(None, False)

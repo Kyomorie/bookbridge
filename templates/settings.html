@@ -910,6 +910,21 @@
                                     that newer action to move everyone back — for example after a sleep timer. With that option,
                                     simply opening an out-of-date second reader can also become the new position.
                                 </div>
+                            <div class="form-group full-width">
+                                <label>Pending rewind expiry (hours)</label>
+                                <input type="number"
+                                    name="KOSYNC_PENDING_REWIND_TTL_HOURS"
+                                    min="0"
+                                    max="720"
+                                    step="1"
+                                    value="{{ get_val('KOSYNC_PENDING_REWIND_TTL_HOURS', '24') }}">
+                                <div class="help-text">
+                                    When backward moves are allowed, a KoSync → Audiobookshelf
+                                    rewind waits for explicit approval on the Suggestions page.
+                                    Unanswered requests expire without changing Audiobookshelf.
+                                    Default: 24 hours.
+                                </div>
+                            </div>
                             </div>
                         </div>
                     </details>

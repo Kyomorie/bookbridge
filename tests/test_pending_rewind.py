@@ -287,3 +287,61 @@ def test_abs_approved_rewind_final_compare_is_fail_closed():
     assert result.skipped is True
     assert result.location == 510.0
     abs_client.update_progress.assert_not_called()
+
+
+def test_pending_rewind_ttl_setting_is_registered():
+    from src.utils.config_loader import ALL_SETTINGS, DEFAULT_CONFIG
+
+    assert "KOSYNC_PENDING_REWIND_TTL_HOURS" in ALL_SETTINGS
+    assert DEFAULT_CONFIG["KOSYNC_PENDING_REWIND_TTL_HOURS"] == "24"
+
+
+def test_sync_manager_offers_only_kosync_to_abs_policy_skip():
+    from unittest.mock import patch
+    from src.sync_manager import SyncManager
+
+    manager = SyncManager.__new__(SyncManager)
+    manager.database_service = MagicMock()
+    book = SimpleNamespace(abs_id="book-1")
+    leader_state = _service_state(_source())
+    skipped = _skipped()
+
+    with patch(
+        "src.services.pending_rewind_service.PendingRewindService"
+    ) as service_cls:
+        service_cls.return_value.offer.return_value = {"id": 1}
+
+        result = manager._maybe_offer_pending_rewind(
+            book=book,
+            leader="KoSync",
+            leader_state=leader_state,
+            client_name="ABS",
+            result=skipped,
+        )
+
+        assert result == {"id": 1}
+        service_cls.return_value.offer.assert_called_once()
+
+
+def test_sync_manager_does_not_offer_non_kosync_rewind():
+    from unittest.mock import patch
+    from src.sync_manager import SyncManager
+
+    manager = SyncManager.__new__(SyncManager)
+    manager.database_service = MagicMock()
+    book = SimpleNamespace(abs_id="book-1")
+    leader_state = _service_state(_source())
+
+    with patch(
+        "src.services.pending_rewind_service.PendingRewindService"
+    ) as service_cls:
+        result = manager._maybe_offer_pending_rewind(
+            book=book,
+            leader="Storyteller",
+            leader_state=leader_state,
+            client_name="ABS",
+            result=_skipped(),
+        )
+
+        assert result is None
+        service_cls.assert_not_called()
