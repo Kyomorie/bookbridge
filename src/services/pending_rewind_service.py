@@ -62,8 +62,6 @@ class PendingRewindService:
             hours = float(os.environ.get("KOSYNC_PENDING_REWIND_TTL_HOURS", "24") or 24)
         except (TypeError, ValueError):
             hours = 24.0
-        # Zero is useful as a fail-closed administrative kill of outstanding offers;
-        # cap absurd values while still allowing a long-lived queue when desired.
         return max(0.0, min(hours, 24.0 * 30.0)) * 3600.0
 
     def _resolve_user_id(self, user_id: int | None = None) -> int | None:
@@ -72,11 +70,11 @@ class PendingRewindService:
         ambient = get_current_user_id()
         if ambient is not None:
             return int(ambient)
-        # Single-user/global cycles predate the ambient user context. DatabaseService
-        # already uses this exact fallback for State ownership; keep the decision row
-        # bound to the same concrete account instead of creating an unscoped row.
         resolver = getattr(self.database_service, "_default_user_id", None)
-        return int(resolver()) if callable(resolver) and resolver() is not None else None
+        if not callable(resolver):
+            return None
+        resolved = resolver()
+        return int(resolved) if resolved is not None else None
 
     @staticmethod
     def source_snapshot(source_state: dict | None) -> dict:
@@ -129,13 +127,7 @@ class PendingRewindService:
         user_id: int | None = None,
         now: float | None = None,
     ) -> dict | None:
-        """Create/dedupe a pending decision for a skipped KoSync -> ABS write.
-
-        Caller owns source/target identity: this method is intentionally narrow and
-        expects SyncManager to call it only for KoSync leader -> ABS target. The
-        engine-level rewind policy is checked again here so no alternate caller can
-        accidentally make the default furthest-wins mode start prompting.
-        """
+        """Create/dedupe a pending decision for a skipped KoSync -> ABS write."""
         if env_truthy("KOSYNC_FURTHEST_WINS", "true"):
             return None
         if not skipped_result or getattr(skipped_result, "skipped", False) is not True:
@@ -167,10 +159,6 @@ class PendingRewindService:
         expires_at = created_at + self._ttl_seconds()
         proposed_pct = source.get("pct")
 
-        # INSERT OR IGNORE + immutable unique key makes concurrent/repeated cycles
-        # idempotent. Dismissed/expired/approved rows remain as the dedupe tombstone,
-        # so the same source snapshot never nags again; moving KoSync creates a new
-        # fingerprint and therefore a new decision.
         with self.database_service.get_session() as session:
             session.execute(
                 text(
@@ -270,9 +258,7 @@ class PendingRewindService:
         return (
             _number_close(expected.get("pct"), live.get("pct"), 1e-6)
             and (expected.get("xpath") or "") == (live.get("xpath") or "")
-            and _number_close(
-                expected.get("service_updated_at"), live.get("service_updated_at"), 1e-3
-            )
+            and _number_close(expected.get("service_updated_at"), live.get("service_updated_at"), 1e-3)
         )
 
     @staticmethod
@@ -280,9 +266,7 @@ class PendingRewindService:
         return (
             _number_close(expected.get("pct"), live.get("pct"), 1e-6)
             and _number_close(expected.get("ts"), live.get("ts"), 0.05)
-            and _number_close(
-                expected.get("service_updated_at"), live.get("service_updated_at"), 1e-3
-            )
+            and _number_close(expected.get("service_updated_at"), live.get("service_updated_at"), 1e-3)
         )
 
     def approve(
@@ -293,13 +277,7 @@ class PendingRewindService:
         user_id: int | None = None,
         now: float | None = None,
     ) -> dict:
-        """Revalidate source+target snapshots, then apply exactly one ABS rewind.
-
-        Cross-service atomicity is impossible. We therefore fail closed with two
-        source reads around the target read and a final target compare inside the
-        ABS client's apply_approved_rewind() method. Any movement makes the row
-        stale and performs no write.
-        """
+        """Revalidate source+target snapshots, then apply exactly one ABS rewind."""
         uid = self._resolve_user_id(user_id)
         if uid is None:
             return {"status": "not_found", "applied": False}
@@ -352,12 +330,11 @@ class PendingRewindService:
             book,
             float(decision["proposed_abs_ts"]),
             expected_current_ts=float(expected_target["ts"]),
+            expected_service_updated_at=expected_target.get("service_updated_at"),
         )
         if not result or not getattr(result, "success", False):
             return {"status": "write_failed", "applied": False}
         if getattr(result, "skipped", False) is True:
-            # The ABS client performs the final target compare immediately before
-            # writing. A skip here means it changed in the last race window.
             self._set_status(rewind_id, uid, "stale", now=now)
             return {"status": "stale", "applied": False}
 
