@@ -1,0 +1,84 @@
+.pending-rewinds-panel {
+    margin-top: 18px;
+    padding: 16px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--panel-soft);
+}
+
+.pending-rewinds-panel[hidden] { display: none; }
+
+.pending-rewind-heading {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: flex-start;
+    margin-bottom: 12px;
+}
+
+.pending-rewind-heading h3 {
+    margin: 0 0 4px;
+    font-size: 18px;
+}
+
+.pending-rewind-heading p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.pending-rewind-list {
+    display: grid;
+    gap: 10px;
+}
+
+.pending-rewind-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 12px 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    background: rgba(255,255,255,0.04);
+}
+
+.pending-rewind-copy { min-width: 0; }
+
+.pending-rewind-title {
+    font-weight: 700;
+    margin-bottom: 5px;
+}
+
+.pending-rewind-progress {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    font-size: 14px;
+}
+
+.pending-rewind-progress strong { color: #9fb2ff; }
+
+.pending-rewind-meta,
+.pending-rewind-status {
+    margin-top: 5px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.pending-rewind-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+}
+
+@media (max-width: 760px) {
+    .pending-rewind-card {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .pending-rewind-actions .btn { flex: 1; }
+}
