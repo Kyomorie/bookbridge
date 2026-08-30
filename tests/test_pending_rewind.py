@@ -238,7 +238,7 @@ def test_abs_policy_skip_carries_target_snapshot_and_proposed_timestamp():
     abs_client.is_configured.return_value = True
     abs_client.get_progress.return_value = {
         "currentTime": 500.0,
-        "lastUpdate": 2_000_000,
+        "lastUpdate": 2_000_000_000_000,
         "duration": 1000.0,
     }
     transcriber = MagicMock()
@@ -260,7 +260,7 @@ def test_abs_policy_skip_carries_target_snapshot_and_proposed_timestamp():
     assert result.skipped is True
     assert result.updated_state["ts"] == 500.0
     assert result.updated_state["pct"] == pytest.approx(0.50)
-    assert result.updated_state["service_updated_at"] == pytest.approx(2000.0)
+    assert result.updated_state["service_updated_at"] == pytest.approx(2_000_000_000.0)
     assert result.updated_state["_proposed_ts"] == 200.0
     abs_client.update_progress.assert_not_called()
 
