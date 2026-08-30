@@ -10,6 +10,9 @@
     {% if active_page == 'library' %}
     <link rel="stylesheet" href="/static/css/reading-position-preview.css">
     {% endif %}
+    {% if active_page == 'suggestions' %}
+    <link rel="stylesheet" href="/static/css/pending-rewinds.css">
+    {% endif %}
     {% block head %}{% endblock %}
 </head>
 <body>
@@ -20,6 +23,9 @@
     {% block scripts %}{% endblock %}
     {% if active_page == 'library' %}
     <script src="/static/js/reading-position-preview.js"></script>
+    {% endif %}
+    {% if active_page == 'suggestions' %}
+    <script src="/static/js/pending-rewinds.js"></script>
     {% endif %}
 </body>
 </html>
