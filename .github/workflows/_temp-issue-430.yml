@@ -1,0 +1,134 @@
+name: Temporary issue 430 validation
+
+on:
+  push:
+    branches:
+      - fix/430-not-started-chevron
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/430-not-started-chevron
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
+          python -m pip install --upgrade pip
+          pip install flake8 pytest pytest-cov
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Apply focused fix and regression test
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          template = Path("templates/index.html")
+          text = template.read_text(encoding="utf-8")
+          old = """        .collapsible-section-header {
+              cursor: pointer;
+              -webkit-user-select: none;
+              user-select: none;
+          }
+          """
+          new = """        .collapsible-section-header {
+              justify-content: flex-start;
+              gap: 10px;
+              cursor: pointer;
+              -webkit-user-select: none;
+              user-select: none;
+          }
+          """
+          if text.count(old) != 1:
+              raise SystemExit(f"expected exactly one collapsible header block, found {text.count(old)}")
+          template.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          tests = Path("tests/test_dashboard_series_grouping.py")
+          text = tests.read_text(encoding="utf-8")
+          anchor = "    def test_collapsed_series_header_fills_its_grid_row(self):\n"
+          regression = '''    def test_not_started_collapse_chevron_stays_with_heading(self):
+              source = (Path(__file__).parent.parent / "templates" / "index.html").read_text(
+                  encoding="utf-8"
+              )
+              collapsible_start = source.index(".collapsible-section-header {")
+              collapsible_rule = source[
+                  collapsible_start:source.index("}", collapsible_start)
+              ]
+              self.assertIn("justify-content: flex-start", collapsible_rule)
+              self.assertIn("gap: 10px", collapsible_rule)
+
+              section_start = source.index(".section-header {")
+              section_rule = source[section_start:source.index("}", section_start)]
+              self.assertIn("justify-content: space-between", section_rule)
+
+          '''
+          if anchor not in text:
+              raise SystemExit("series layout test anchor not found")
+          tests.write_text(text.replace(anchor, regression + anchor, 1), encoding="utf-8")
+          PY
+
+      - name: Focused validation
+        run: |
+          pytest tests/test_dashboard_series_grouping.py -q
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          git diff --check
+
+      - name: Squash to one clean feature commit
+        shell: bash
+        env:
+          BASE_SHA: d38ef8c64ac83649ef12f661097fa6b1b6efeedc
+        run: |
+          rm .github/workflows/_temp-issue-430.yml
+          git config user.name "Kyomorie"
+          git config user.email "246901271+Kyomorie@users.noreply.github.com"
+          git add -A
+          git reset --soft "$BASE_SHA"
+          git commit -m "Fix Not Started collapse control layout"
+          git push --force-with-lease origin HEAD:fix/430-not-started-chevron
+
+  validate:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/430-not-started-chevron
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
+          python -m pip install --upgrade pip
+          pip install flake8 pytest pytest-cov
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Validate final branch head
+        run: |
+          echo "Validating $(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "d38ef8c64ac83649ef12f661097fa6b1b6efeedc"
+          test ! -e .github/workflows/_temp-issue-430.yml
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          pytest tests/test_dashboard_series_grouping.py -q
+          pytest tests/ --cov=src --cov-report=term-missing --cov-report=xml
+          git diff --check d38ef8c64ac83649ef12f661097fa6b1b6efeedc..HEAD
