@@ -1,0 +1,174 @@
+name: Temporary issue 432 validation
+
+on:
+  push:
+    branches:
+      - fix/432-mixed-series-bucket
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/432-mixed-series-bucket
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
+          python -m pip install --upgrade pip
+          pip install flake8 pytest pytest-cov
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Apply mixed-series bucket fix and regressions
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          server = Path("src/web_server.py")
+          text = server.read_text(encoding="utf-8")
+          old = '        "section_bucket": "finished" if finished == total else "not_started",\n'
+          new = '''        "section_bucket": (
+              "finished" if finished == total
+              else "in_progress" if in_progress
+              else "not_started"
+          ),
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f"expected exactly one series bucket expression, found {text.count(old)}")
+          server.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          template = Path("templates/index.html")
+          text = template.read_text(encoding="utf-8")
+          old = '''                {% for m in mappings %}
+                    {% if m.unified_progress > 0 and m.unified_progress < 100 %}{{ render_book_card(m, integrations) }}{% endif %}
+                  {% endfor %}
+          '''
+          new = '''                {% for entry in grouped_mappings %}
+                  {% if entry.is_series_group %}
+                    {% if entry.section_bucket == 'in_progress' %}{{ render_series_card(entry, integrations) }}{% endif %}
+                  {% else %}
+                    {% if entry.unified_progress > 0 and entry.unified_progress < 100 %}{{ render_book_card(entry, integrations) }}{% endif %}
+                  {% endif %}
+                  {% endfor %}
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f"expected exactly one flat in-progress loop, found {text.count(old)}")
+          template.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          tests = Path("tests/test_dashboard_series_grouping.py")
+          text = tests.read_text(encoding="utf-8")
+          old = '        self.assertEqual(g["section_bucket"], "not_started")\n        self.assertEqual(g["next_book"]["display_title"], "Auxiliary Blade")\n'
+          new = '        self.assertEqual(g["section_bucket"], "in_progress")\n        self.assertEqual(g["next_book"]["display_title"], "Auxiliary Blade")\n'
+          if text.count(old) != 1:
+              raise SystemExit("mixed-series expectation anchor not found exactly once")
+          text = text.replace(old, new, 1)
+
+          layout_anchor = "    def test_collapsed_card_previews_its_books_inside_the_clickable_header(self):\n"
+          layout_regression = '''    def test_in_progress_section_renders_series_groups_and_can_flatten_children(self):
+              source = (Path(__file__).parent.parent / "templates" / "index.html").read_text(
+                  encoding="utf-8"
+              )
+              grid_start = source.index('<div class="book-grid" id="in-progress-grid">')
+              grid_end = source.index("</div>", grid_start)
+              grid = source[grid_start:grid_end]
+              self.assertIn("{% for entry in grouped_mappings %}", grid)
+              self.assertIn("entry.section_bucket == 'in_progress'", grid)
+              self.assertNotIn("{% for m in mappings %}", grid)
+
+              flatten_start = source.index("function flattenSeriesGroups()")
+              flatten_end = source.index("function restoreSeriesGroups()", flatten_start)
+              flatten = source[flatten_start:flatten_end]
+              self.assertIn(
+                  "if (progress > 0 && progress < 100) target = inProgressGrid;",
+                  flatten,
+              )
+              self.assertIn("else if (progress >= 100) target = finishedGrid;", flatten)
+              self.assertIn("else target = notStartedGridEl;", flatten)
+
+          '''
+          if layout_anchor not in text:
+              raise SystemExit("layout regression anchor not found")
+          text = text.replace(layout_anchor, layout_regression + layout_anchor, 1)
+
+          grouping_anchor = "    def test_all_finished_group_lands_in_finished(self):\n"
+          grouping_regression = '''    def test_any_partial_child_puts_mixed_series_in_progress(self):
+              flat = [
+                  _make_mapping(abs_id="a", series_name="Mixed", series_sequence=1.0, unified_progress=100),
+                  _make_mapping(abs_id="b", series_name="Mixed", series_sequence=2.0, unified_progress=42),
+                  _make_mapping(abs_id="c", series_name="Mixed", series_sequence=3.0, unified_progress=0),
+              ]
+              result = self.group(flat)
+              self.assertEqual(result[0]["section_bucket"], "in_progress")
+
+          '''
+          if grouping_anchor not in text:
+              raise SystemExit("grouping regression anchor not found")
+          tests.write_text(text.replace(grouping_anchor, grouping_regression + grouping_anchor, 1), encoding="utf-8")
+          PY
+
+      - name: Focused validation
+        run: |
+          python -m py_compile src/web_server.py
+          pytest tests/test_dashboard_series_grouping.py -q
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          git diff --check
+
+      - name: Squash to one clean feature commit
+        shell: bash
+        env:
+          BASE_SHA: d38ef8c64ac83649ef12f661097fa6b1b6efeedc
+        run: |
+          rm .github/workflows/_temp-issue-432.yml
+          git config user.name "Kyomorie"
+          git config user.email "246901271+Kyomorie@users.noreply.github.com"
+          git add -A
+          git reset --soft "$BASE_SHA"
+          git commit -m "Fix mixed-progress series library bucket"
+          git push --force-with-lease origin HEAD:fix/432-mixed-series-bucket
+
+  validate:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/432-mixed-series-bucket
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
+          python -m pip install --upgrade pip
+          pip install flake8 pytest pytest-cov
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Validate final branch head
+        run: |
+          echo "Validating $(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "d38ef8c64ac83649ef12f661097fa6b1b6efeedc"
+          test ! -e .github/workflows/_temp-issue-432.yml
+          python -m py_compile src/web_server.py
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          pytest tests/test_dashboard_series_grouping.py -q
+          pytest tests/ --cov=src --cov-report=term-missing --cov-report=xml
+          git diff --check d38ef8c64ac83649ef12f661097fa6b1b6efeedc..HEAD
