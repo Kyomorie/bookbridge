@@ -8,6 +8,32 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **Keep word-level audio timing during alignment (#426).** Built-in Whisper and
+  compatible HTTP servers now supply word timestamps, and Storyteller re-alignment
+  retains its existing word timing. Audio-part offsets and transcript caches preserve
+  those timestamps through to EPUB matching. Segment-only transcripts keep their
+  existing fallback. Existing books need fresh transcription/re-alignment to benefit;
+  a temporary excerpt comparison script helps evaluate the change before replacing maps.
+
+- **Optional CTC forced alignment (#426).** A new alignment backend aligns the
+  audiobook **directly against the ebook text** (Meta's MMS model via torchaudio),
+  instead of transcribing the audio and matching the transcript back. That removes two
+  approximations — invented per-word timings and sparse n-gram anchors — for denser,
+  more accurate positions on char-precise readers (BookOrbit, ABS ebook, Grimmory).
+  It's **opt-in**: enable *Use CTC forced alignment* under Settings → Transcription and
+  run the new <code>-ctc</code> image (it bundles the heavier torch/torchaudio; the
+  standard image is unchanged and CTC stays inert there). When on, CTC becomes the
+  preferred backend and the Whisper/lexical pipeline remains the automatic fallback.
+  Existing books adopt it via **Remap**.
+
+- **"Remap" a book's audio alignment from the dashboard (#426).** The Clear-Progress
+  button on each book is now a small menu with two choices: **Clear position** (the old
+  behaviour — reset progress everywhere) and **Remap alignment**, which rebuilds only
+  the audio↔ebook map, leaving your reading position untouched. Remap picks the best
+  backend automatically: an older, estimated map is rebuilt with word-level timing (its
+  cached transcript is dropped so it re-transcribes with word timestamps), and a map
+  that is already word-accurate is left alone. It runs through the normal rebuild queue.
+
 - **Sort your library by author or by series.** The dashboard could sort by title,
   progress, status, last sync, date added and rating — but not by who wrote a book or
   where it sits in a series. Both are now in the Sort by menu. Series sort puts each
@@ -42,6 +68,15 @@ All notable changes to BookBridge will be documented in this file.
   volume of is listed like any other.
 
 ### Fixed
+
+- **CTC remaps finish on the selected GPU (#426).** Emissions and target tokens now
+  stay on the same device through forced alignment. Oversized CPU runs fall back
+  before entering torchaudio's unsafe back-pointer loop, and phase logs show decode,
+  emission and alignment progress. When an existing lexical map covers the narration,
+  its matched EPUB chapters bound the remap so unnarrated bonus excerpts do not get
+  squeezed into the audiobook; saved offsets still refer to the complete EPUB.
+- **Reset menus stay above neighboring book cards (#426).** The popup escapes card
+  clipping, stays within the viewport, and both actions retain valid click handlers.
 
 - **A book that fails to download no longer takes the copy you already had with it.**
   BridgeSync replaced a book on your reader by deleting the old file first and moving

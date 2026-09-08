@@ -4002,6 +4002,7 @@ def settings():
             'OLLAMA_EBOOK_TEXT_FALLBACK',
             'DIAGNOSTICS_OPT_IN',
             'WHISPER_CPP_SEND_ORIGINAL',
+            'CTC_ENABLED',
             'SHARE_ALL_BOOKS_WITH_ALL_USERS',
             'REMOTE_AUTH_ENABLED',
         ]
@@ -9002,6 +9003,80 @@ def clear_progress(abs_id):
     return redirect(url_for('index'))
 
 
+def remap_alignment(abs_id):
+    """Rebuild a book's audio↔text alignment with the best available backend.
+
+    Unlike Clear Position, Remap never touches the reader's saved progress — it only
+    rebuilds the audio↔ebook map:
+      - CTC configured and the current map is not already CTC -> rebuild with CTC.
+      - otherwise an estimated map (no measured word timings) -> force a fresh
+        word-timestamped transcription and re-anchor.
+      - a map already at the best available backend -> nothing to do.
+
+    The rebuild runs through the normal pending -> forge pipeline, exactly like
+    ``/api/alignments/realign`` (single scope).
+    """
+    book = database_service.get_book(abs_id)
+    if not book:
+        return jsonify({"success": False, "error": "Book not found"}), 404
+
+    user = current_user()
+    if not _user_may_modify_book(user, abs_id):
+        return _forbidden_book_response(json_response=True)
+
+    # Audio→text alignment only exists for mappings that have an audiobook side.
+    if getattr(book, "sync_mode", "audiobook") == "ebook_only":
+        return jsonify({
+            "success": False,
+            "error": "This mapping has no audiobook to align.",
+        }), 400
+
+    # None = no stored map; "" = map with unrecorded (legacy) method.
+    current_method = database_service.get_alignment_method(abs_id)
+    ctc_available = env_truthy("CTC_ENABLED")
+
+    # Methods that are already word-accurate and need no word-level rebuild. Coarse
+    # fallbacks ('lexical', 'linear', 'llm_anchor', 'storyteller[_linear]', legacy '')
+    # are all improvable, so they are deliberately absent here.
+    _word_accurate = ("ctc", "lexical_timed")
+
+    target = None
+    if ctc_available and current_method != "ctc":
+        target = "ctc"
+    elif (current_method or "") not in _word_accurate:
+        target = "word_level"
+
+    if target is None:
+        return jsonify({
+            "success": False,
+            "status": "up_to_date",
+            "message": "Alignment already uses the best available backend.",
+        })
+
+    # A rebuild reuses the cached transcript to skip Whisper; a transcript captured
+    # before word-level timing has no per-word times, so drop it to force a fresh,
+    # word-timestamped transcription. (CTC ignores the transcript entirely.)
+    if target == "word_level":
+        transcriber = getattr(manager, "transcriber", None) if manager else None
+        if transcriber is not None:
+            try:
+                transcriber.invalidate_transcript_cache(abs_id)
+            except Exception as e:
+                logger.warning(
+                    f"⚠️ Remap: could not invalidate transcript for '{abs_id}': {e}",
+                    exc_info=True,
+                )
+
+    if not database_service.set_book_status(abs_id, "pending"):
+        return jsonify({"success": False, "error": "Could not queue remap."}), 500
+
+    logger.info(
+        f"🔁 Remap queued for {sanitize_log_data(book.abs_title or abs_id)} "
+        f"(backend='{target}', from='{current_method or 'none'}')"
+    )
+    return jsonify({"success": True, "backend": target})
+
+
 
 def sync_now(abs_id):
     book = database_service.get_book(abs_id)
@@ -12327,6 +12402,7 @@ def create_app(test_container=None):
     app.add_url_rule('/suggestions', 'suggestions', suggestions_page, methods=['GET', 'POST'])
     app.add_url_rule('/delete/<abs_id>', 'delete_mapping', delete_mapping, methods=['POST'])
     app.add_url_rule('/clear-progress/<abs_id>', 'clear_progress', clear_progress, methods=['POST'])
+    app.add_url_rule('/api/remap-alignment/<abs_id>', 'remap_alignment', remap_alignment, methods=['POST'])
     app.add_url_rule('/api/sync-now/<abs_id>', 'sync_now', sync_now, methods=['POST'])
     app.add_url_rule('/api/mark-complete/<abs_id>', 'mark_complete', mark_complete, methods=['POST'])
     app.add_url_rule('/api/me/kosync-documents', 'api_me_kosync_documents', api_me_kosync_documents, methods=['GET'])

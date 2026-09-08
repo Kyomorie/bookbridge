@@ -360,10 +360,17 @@
                     <button type="button" class="action-btn"
                         onclick='markComplete({{ mapping.abs_id|tojson }}, {{ mapping.abs_title|tojson }})'
                         title="Mark Complete">✅</button>
-                    <form method="POST" action="/clear-progress/{{ mapping.abs_id }}">
-                        <button type="submit" class="action-btn warning" aria-label="Clear Progress"
-                            title="Clear progress" onclick="return confirm('Clear all progress for this book?')">🔄</button>
-                    </form>
+                    <div class="reset-menu">
+                        <button type="button" class="action-btn warning" aria-haspopup="true"
+                            aria-expanded="false" aria-label="Reset options"
+                            title="Reset / remap" onclick="toggleResetMenu(event, this)">🔄</button>
+                        <div class="reset-menu-dropdown" role="menu" hidden>
+                            <button type="button" role="menuitem" class="reset-menu-item"
+                                onclick='clearPosition({{ mapping.abs_id|tojson }})'>🧹 Clear position</button>
+                            <button type="button" role="menuitem" class="reset-menu-item"
+                                onclick='remapAlignment({{ mapping.abs_id|tojson }}, this)'>🎯 Remap alignment</button>
+                        </div>
+                    </div>
                     <form method="POST" action="/delete/{{ mapping.abs_id }}">
                         <button type="submit" class="action-btn danger" aria-label="Delete Mapping"
                             title="Delete mapping" onclick="return confirm('Delete this mapping?')">🗑️</button>
@@ -1026,6 +1033,34 @@
         .action-btn.warning:hover {
             background: rgba(255, 209, 102, 0.25);
         }
+
+        .reset-menu { position: relative; display: inline-block; }
+        /* Portaled to <body> and positioned in JS (position:fixed) so the card's
+           overflow:hidden and hover transform can neither clip it nor paint over it. */
+        .reset-menu-dropdown {
+            position: fixed;
+            z-index: 1000;
+            min-width: 180px;
+            padding: 4px;
+            text-align: left;
+            background: var(--card-bg, #1e1e2e);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+        }
+        .reset-menu-item {
+            display: block;
+            width: 100%;
+            padding: 8px 10px;
+            background: none;
+            border: none;
+            color: inherit;
+            font-size: 13px;
+            text-align: left;
+            cursor: pointer;
+            border-radius: 6px;
+        }
+        .reset-menu-item:hover { background: rgba(255, 255, 255, 0.08); }
 
         /* Empty State: base centering/padding comes from app.css's shared .empty-state */
         .empty-state-icon {
@@ -3360,6 +3395,92 @@
                             btn.innerHTML = originalText;
                             btn.disabled = false;
                         }, 2000);
+                    });
+            }
+
+            function _positionResetMenu(btn, menu) {
+                const r = btn.getBoundingClientRect();
+                const mw = menu.offsetWidth || 190;
+                const mh = menu.offsetHeight || 88;
+                let left = Math.max(8, Math.min(r.right - mw, window.innerWidth - mw - 8));
+                let top = r.bottom + 4;
+                if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4);
+                menu.style.left = left + 'px';
+                menu.style.top = top + 'px';
+            }
+
+            function _closeResetMenu(btn, menu) {
+                menu.hidden = true;
+                if (btn) btn.setAttribute('aria-expanded', 'false');
+                if (menu._home && menu.parentElement !== menu._home) menu._home.appendChild(menu);
+                if (menu._cleanup) { menu._cleanup(); menu._cleanup = null; }
+            }
+
+            function toggleResetMenu(event, btn) {
+                event.stopPropagation();
+                const menu = btn._menu || btn.parentElement.querySelector('.reset-menu-dropdown');
+                if (!menu) return;
+                btn._menu = menu;
+                if (!menu.hidden) { _closeResetMenu(btn, menu); return; }
+                // Close any other open reset menus first.
+                document.querySelectorAll('.reset-menu-dropdown').forEach(m => {
+                    if (m !== menu && !m.hidden && m._ownerBtn) _closeResetMenu(m._ownerBtn, m);
+                });
+                // Portal to <body> so the card's overflow/transform can't clip or cover it.
+                if (menu.parentElement !== document.body) {
+                    menu._home = menu.parentElement;
+                    document.body.appendChild(menu);
+                }
+                menu._ownerBtn = btn;
+                menu.hidden = false;
+                btn.setAttribute('aria-expanded', 'true');
+                _positionResetMenu(btn, menu);
+                const onDoc = (e) => { if (!menu.contains(e.target) && e.target !== btn) _closeResetMenu(btn, menu); };
+                const onMove = () => _closeResetMenu(btn, menu);
+                menu._cleanup = () => {
+                    document.removeEventListener('click', onDoc);
+                    window.removeEventListener('scroll', onMove, true);
+                    window.removeEventListener('resize', onMove);
+                };
+                setTimeout(() => document.addEventListener('click', onDoc), 0);
+                window.addEventListener('scroll', onMove, true);
+                window.addEventListener('resize', onMove);
+            }
+
+            function clearPosition(absId) {
+                if (!confirm('Clear all progress for this book?')) {
+                    return;
+                }
+                // Preserve the original redirect-to-home behaviour of the POST form.
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = '/clear-progress/' + absId;
+                document.body.appendChild(form);
+                form.submit();
+            }
+
+            function remapAlignment(absId, btn) {
+                btn.disabled = true;
+                const originalText = btn.innerHTML;
+                btn.innerHTML = '⏳ Remapping…';
+                fetch('/api/remap-alignment/' + absId, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                }).then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            const label = data.backend === 'ctc' ? 'CTC forced alignment' : 'word-level alignment';
+                            btn.innerHTML = '✅ Queued (' + label + ')';
+                        } else if (data.status === 'up_to_date') {
+                            btn.innerHTML = 'ℹ️ Already optimal';
+                        } else {
+                            btn.innerHTML = '❌ ' + (data.error || 'Failed');
+                        }
+                        setTimeout(() => { btn.innerHTML = originalText; btn.disabled = false; }, 3000);
+                    }).catch(error => {
+                        console.error('Remap error:', error);
+                        btn.innerHTML = '❌ Failed';
+                        setTimeout(() => { btn.innerHTML = originalText; btn.disabled = false; }, 3000);
                     });
             }
 

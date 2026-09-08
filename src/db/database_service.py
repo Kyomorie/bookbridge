@@ -637,6 +637,27 @@ class DatabaseService:
             except (TypeError, ValueError):
                 return None
 
+    def get_alignment_method(self, abs_id: str) -> Optional[str]:
+        """How a book's stored alignment map was built, or None if it has no map.
+
+        Returns the ``align_method`` string (e.g. 'lexical', 'lexical_timed',
+        'llm_anchor', 'linear', 'ctc', 'storyteller', 'storyteller_linear'). A stored
+        map with a NULL method (built before provenance tracking) returns the empty
+        string so callers can distinguish "no map" (None) from "map, unknown method".
+        Selects the scalar only, never the map blob.
+        """
+        if not abs_id:
+            return None
+        with self.get_session() as session:
+            row = (
+                session.query(BookAlignment.align_method)
+                .filter(BookAlignment.abs_id == abs_id)
+                .first()
+            )
+            if row is None:
+                return None
+            return row[0] or ""
+
     def set_alignment_total_chars_if_missing(self, abs_id: str, total_chars: int) -> bool:
         """Record an ebook length on a map that has none. Returns whether it wrote.
 

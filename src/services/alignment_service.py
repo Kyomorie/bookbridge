@@ -7,6 +7,7 @@ and storing the results in the database.
 import bisect
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -36,6 +37,9 @@ class AlignmentService:
         # Ebook lengths keyed by abs_id. Tiny scalars, unlike the map blobs, so a
         # plain dict is fine; invalidated alongside the map in _save_alignment.
         self._total_chars_cache: Dict[str, Optional[int]] = {}
+        # Lazily-built CTC forced aligner (holds a heavy cached model). Only ever
+        # instantiated on the -ctc image when CTC alignment is requested.
+        self._forced_aligner = None
 
     def _ollama_ready(self) -> bool:
         client = self.ollama_client
@@ -128,38 +132,91 @@ class AlignmentService:
         self._save_alignment(abs_id, alignment_map, align_method, total_chars=ebook_len)
         return True
 
+    @staticmethod
+    def ctc_enabled() -> bool:
+        """Whether CTC forced alignment is switched on (read per call)."""
+        return AlignmentService._env_true("CTC_ENABLED", "false")
+
+    @time_execution
+    def align_forced_and_store(self, abs_id: str, audio_path: str, ebook_text: str,
+                               spine_chapters: Optional[List[Dict]] = None) -> bool:
+        """Build an alignment map by CTC forced alignment (issue #426, method 'ctc').
+
+        Aligns the audio directly against ``ebook_text`` — no transcript — and stores
+        a dense ``{char, ts}`` map. Returns False on any failure (missing deps, decode
+        error, empty/short map) so the caller falls back to the lexical pipeline.
+        """
+        if not ebook_text:
+            return False
+
+        from src.utils.forced_aligner import ForcedAligner
+        if not ForcedAligner.is_available():
+            logger.warning(
+                "⚠️ CTC alignment requested but torch/torchaudio are unavailable "
+                "(use the -ctc image); falling back to the lexical pipeline"
+            )
+            return False
+
+        if self._forced_aligner is None:
+            self._forced_aligner = ForcedAligner()
+
+        text_range = self._ctc_text_range(abs_id, ebook_text, spine_chapters)
+        alignment_map = self._forced_aligner.align(audio_path, ebook_text, text_range=text_range)
+        if not alignment_map or len(alignment_map) < 2:
+            logger.warning(f"⚠️ CTC alignment produced no usable map for {abs_id}")
+            return False
+
+        self._save_alignment(abs_id, alignment_map, "ctc", total_chars=len(ebook_text))
+        logger.info(
+            f"AlignmentService: CTC forced-alignment map stored for {abs_id} "
+            f"({len(alignment_map)} anchors)"
+        )
+        return True
+
+    def _ctc_text_range(self, abs_id: str, ebook_text: str,
+                        spine_chapters: Optional[List[Dict]]) -> Optional[Tuple[int, int]]:
+        """Reuse a well-covered lexical map to exclude unnarrated outer chapters."""
+        if not spine_chapters:
+            return None
+        previous = self._get_alignment(abs_id)
+        if not previous:
+            return None
+        total_chars = self._get_alignment_total_chars(abs_id) or self._point_char(previous[-1])
+        if total_chars != len(ebook_text):
+            return None
+        # t_idx marks an actual transcript match; synthetic head/tail anchors do
+        # not prove that front matter or a bonus excerpt was narrated.
+        matched = [point for point in previous if 't_idx' in point]
+        duration = float(previous[-1]['ts'])
+        if len(matched) < 2 or duration <= 0:
+            return None
+        if float(matched[-1]['ts']) - float(matched[0]['ts']) < 0.9 * duration:
+            return None
+        first_char, last_char = self._point_char(matched[0]), self._point_char(matched[-1])
+        chapters = [chapter for chapter in spine_chapters
+                    if chapter['end'] > first_char and chapter['start'] <= last_char]
+        if not chapters:
+            return None
+        start, end = chapters[0]['start'], chapters[-1]['end']
+        if not 0 <= start < end <= len(ebook_text):
+            return None
+        logger.info(
+            "⚙️ CTC: using narrated EPUB chapters from existing lexical matches "
+            "(chars %s:%s of %s)", start, end, len(ebook_text),
+        )
+        return start, end
+
     @time_execution
     def align_storyteller_and_store(self, abs_id: str, storyteller_transcript, ebook_text: str = None) -> bool:
         """
         Build a chapter-aware alignment map directly from Storyteller wordTimeline data,
         anchored to the actual EPUB text to prevent global offset drifts.
         """
-        raw_segments = []
-        for point in storyteller_transcript.iter_alignment_points():
-            pass
-
-        for chapter_index, meta in enumerate(storyteller_transcript.chapters):
-            try:
-                chapter = storyteller_transcript._load_chapter(chapter_index)
-                chapter_start = float(meta.get("start", 0.0) or 0.0)
-                
-                for word_data in chapter.get("word_timeline", []):
-                    text = word_data.get('text')
-                    if not text:
-                         start_utf16 = word_data.get('startOffsetUtf16', 0)
-                         length_utf16 = word_data.get('lengthUtf16', 0)
-                         pass
-            except Exception:
-                pass
-
         if ebook_text:
             logger.info(f"AlignmentService: Anchoring Storyteller transcript for {abs_id} to {len(ebook_text)} chars of text...")
             
             segments = []
             
-            for point in storyteller_transcript.iter_alignment_points():
-                pass
-
             # iter_alignment_points yields only timestamps/offsets; build text segments from chapter transcripts.
             for chapter_index, meta in enumerate(storyteller_transcript.chapters):
                 try:
@@ -170,9 +227,11 @@ class AlignmentService:
                     
                     if not timeline or not transcript_text: continue
                     
-                    # Group words into ~5s segments
+                    # Keep small text windows for fallback matching, carrying
+                    # the original word timings through EPUB re-anchoring.
                     seg_start = chapter_start + float(timeline[0].get("startTime", 0.0))
                     seg_text_words = []
+                    seg_words = []
                     
                     for i, w in enumerate(timeline):
                         ts = float(w.get("startTime", 0.0)) + chapter_start
@@ -186,16 +245,24 @@ class AlignmentService:
                             word_text = transcript_text[py_start:py_end]
                             
                         seg_text_words.append(word_text.strip())
+                        seg_words.append({
+                            "word": word_text.strip(),
+                            "start": ts,
+                            "end": chapter_start + float(w.get("endTime", ts - chapter_start + 0.5)),
+                        })
                         
                         # Break segment every ~15 seconds or on last word
                         if ts - seg_start > 15.0 or i == len(timeline) - 1:
                             segments.append({
                                 "start": seg_start,
-                                "end": ts + 0.5, # +0.5s minimum duration for final word
-                                "text": " ".join(seg_text_words)
+                                "end": max(ts, seg_words[-1]["end"]),
+                                "text": " ".join(seg_text_words),
+                                "words": seg_words,
                             })
-                            seg_start = ts
+                            if i + 1 < len(timeline):
+                                seg_start = chapter_start + float(timeline[i + 1].get("startTime", 0.0))
                             seg_text_words = []
+                            seg_words = []
                 except Exception as e:
                     logger.warning(f"Error reading Storyteller chapter {chapter_index}: {e}", exc_info=True)
                     
@@ -213,7 +280,7 @@ class AlignmentService:
         if ebook_text:
             clean_map = [
                 {"char": 0, "ts": 0.0},
-                {"char": len(ebook_text), "ts": storyteller_transcript.get_duration()},
+                {"char": len(ebook_text), "ts": storyteller_transcript.get_global_duration()},
             ]
             self._save_alignment(abs_id, clean_map, "storyteller_linear", total_chars=len(ebook_text))
             logger.info(f"AlignmentService: Linear fallback map stored for {abs_id} ({len(clean_map)} points)")
@@ -433,6 +500,33 @@ class AlignmentService:
         alignment_map, _method = self._generate_alignment_map_with_method(segments, full_text)
         return alignment_map
 
+    def _timed_segment_tokens(self, segment: Dict) -> List[Dict]:
+        """Use word timing only when it covers the segment text in order."""
+        words = segment.get('words')
+        if not isinstance(words, list) or not words:
+            return []
+        tokens = []
+        previous_start = float(segment['start'])
+        try:
+            for word in words:
+                start, end = float(word['start']), float(word['end'])
+                if (not math.isfinite(start) or not math.isfinite(end)
+                        or start < previous_start or end < start
+                        or end > float(segment['end'])):
+                    return []
+                previous_start = start
+                raw_words = word['word'].split()
+                for raw in raw_words:
+                    norm = self.polisher.normalize(raw)
+                    if norm:
+                        tokens.append({'word': norm, 'ts': start})
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return []
+        expected = [self.polisher.normalize(w) for w in segment['text'].split()]
+        if [t['word'] for t in tokens] != [w for w in expected if w]:
+            return []
+        return tokens
+
     def _generate_alignment_map_with_method(self, segments: List[Dict], full_text: str) -> Tuple[List[Dict], str]:
         """
         Core Anchored Alignment Algorithm (Two-Pass), returning (map, method).
@@ -468,7 +562,14 @@ class AlignmentService:
 
         # 1. Tokenize Transcript
         transcript_words = []
+        timed_word_count = 0
         for seg in segments:
+            timed_tokens = self._timed_segment_tokens(seg)
+            if timed_tokens:
+                for token in timed_tokens:
+                    transcript_words.append({**token, 'orig_index': len(transcript_words)})
+                timed_word_count += len(timed_tokens)
+                continue
             raw_words = seg['text'].split()
             if not raw_words: continue
             
@@ -483,6 +584,9 @@ class AlignmentService:
                     "ts": seg['start'] + (i * per_word),
                     "orig_index": len(transcript_words) # Keep track for slicing
                 })
+
+        logger.info("   Word timing: %s measured, %s estimated tokens",
+                    timed_word_count, len(transcript_words) - timed_word_count)
 
         # 2. Tokenize Book
         book_words = []
@@ -591,7 +695,15 @@ class AlignmentService:
 
         logger.info(f"   ⚓ Anchored Alignment: Found {len(valid_anchors)} anchors (Total).")
 
-        return final_map, "lexical"
+        # Provenance: a map anchored on measured per-word timings ('lexical_timed')
+        # is already word-accurate, so Remap must not offer to rebuild it as an
+        # upgrade. Require a measured majority so a stray timed segment on an
+        # otherwise estimated transcript does not mislabel the map.
+        method = "lexical"
+        if transcript_words and timed_word_count >= 0.5 * len(transcript_words):
+            method = "lexical_timed"
+
+        return final_map, method
 
     # --- Embedding-assisted alignment (optional, gated; fires only when lexical fails) ---
 

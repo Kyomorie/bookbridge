@@ -2791,6 +2791,42 @@
                             <div class="help-text">Use int8 for CPU, float16 for GPU.</div>
                         </div>
                     </div>
+
+                    <!-- CTC forced alignment (opt-in; needs the CTC image with torch/torchaudio) -->
+                    <div class="form-group full-width">
+                        <label class="toggle-label">
+                            <input type="checkbox" name="CTC_ENABLED"
+                                onchange="toggleSection('ctc_body', this.checked)"
+                                {% if get_bool('CTC_ENABLED') %}checked{% endif %}>
+                            Use CTC forced alignment
+                        </label>
+                        <div class="help-text">Aligns the audiobook directly against the known ebook text
+                            (per-word), instead of transcribing and matching back. More accurate for
+                            char-precise readers (BookOrbit, ABS ebook, Grimmory). <strong>Requires the
+                            <code>-ctc</code> image</strong> (bundles torch/torchaudio); it is inert on the
+                            standard image. Leave off to keep the Whisper/lexical pipeline.</div>
+                    </div>
+                    <div id="ctc_body" class="dynamic-group full-width section-body {% if not get_bool('CTC_ENABLED') %}collapsed{% endif %}" style="display:contents;">
+                        <div class="form-group">
+                            <label>CTC Model</label>
+                            <input type="text" name="CTC_MODEL" value="{{ get_val('CTC_MODEL', 'mms_fa') }}"
+                                placeholder="mms_fa" autocomplete="off">
+                            <div class="help-text">Forced-alignment model bundle. <code>mms_fa</code> (Meta MMS,
+                                ~1000 languages) is the only supported value today.</div>
+                        </div>
+                        <div class="form-group">
+                            <label>CTC Device</label>
+                            <select name="CTC_DEVICE">
+                                <option value="auto" {% if get_val('CTC_DEVICE')=='auto' %}selected{% endif %}>Auto
+                                    (detect GPU)</option>
+                                <option value="cpu" {% if get_val('CTC_DEVICE')=='cpu' %}selected{% endif %}>CPU</option>
+                                <option value="cuda" {% if get_val('CTC_DEVICE')=='cuda' %}selected{% endif %}>GPU
+                                    (NVIDIA)</option>
+                            </select>
+                            <div class="help-text">Auto uses an NVIDIA GPU when available, otherwise CPU. CTC on CPU
+                                is workable but slow for long audiobooks.</div>
+                        </div>
+                    </div>
                 </div>
             </div>
 

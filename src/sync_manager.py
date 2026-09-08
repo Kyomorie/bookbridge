@@ -2337,7 +2337,9 @@ class SyncManager:
 
             raw_transcript = None
             transcript_source = None
-            storyteller_aligned = False
+            # A direct alignment map (Storyteller or CTC) was already stored — when
+            # set, transcription (SMIL/Whisper) and lexical anchoring are skipped.
+            direct_aligned = False
 
             # [MOVED UP] Fetch item details to get chapters (for time alignment) and for Ebook Acquisition
             # item_details = self.abs_client.get_item_details(abs_id) # Already fetched above
@@ -2348,7 +2350,7 @@ class SyncManager:
             
             # Pre-fetch book text for validation and alignment.
             # We need this for Validating SMIL OR for Aligning Whisper
-            book_text, _ = self.ebook_parser.extract_text_and_map(epub_path)
+            book_text, spine_chapters = self.ebook_parser.extract_text_and_map(epub_path)
 
             if (
                 self.alignment_service
@@ -2388,10 +2390,10 @@ class SyncManager:
                 if storyteller_manifest:
                     try:
                         storyteller_transcript = StorytellerTranscript(storyteller_manifest)
-                        storyteller_aligned = self.alignment_service.align_storyteller_and_store(
+                        direct_aligned = self.alignment_service.align_storyteller_and_store(
                             abs_id, storyteller_transcript, ebook_text=book_text
                         )
-                        if storyteller_aligned:
+                        if direct_aligned:
                             transcript_source = "storyteller"
                             update_progress(1.0, 2)
                             logger.info(f"Storyteller alignment map generated for '{sanitize_log_data(abs_title)}'")
@@ -2402,8 +2404,35 @@ class SyncManager:
                 else:
                     logger.info(f"Storyteller manifest unavailable for '{abs_id}', falling back to SMIL/Whisper")
 
+            # CTC forced alignment (issue #426): align the audio directly against the
+            # ebook text — no transcript. Preferred when enabled; falls back to
+            # SMIL/Whisper on any failure, or when the audio is not fully local (CTC
+            # needs local files to decode).
+            if not direct_aligned and AlignmentService.ctc_enabled():
+                try:
+                    if not audio_adapter:
+                        logger.info(f"CTC enabled but no audio adapter for '{abs_id}'; using SMIL/Whisper")
+                    else:
+                        ctc_audio = audio_adapter.get_audio_files(audio_source_id, bridge_key=abs_id)
+                        local_paths = [f.get('local_path') for f in (ctc_audio or []) if f.get('local_path')]
+                        if ctc_audio and len(local_paths) == len(ctc_audio):
+                            ensure_active()
+                            if self.alignment_service.align_forced_and_store(
+                                abs_id, local_paths, book_text, spine_chapters=spine_chapters,
+                            ):
+                                direct_aligned = True
+                                transcript_source = "ctc"
+                                update_progress(1.0, 2)
+                                logger.info(f"CTC forced-alignment map generated for '{sanitize_log_data(abs_title)}'")
+                        else:
+                            logger.info(f"CTC enabled but audio for '{abs_id}' is not fully local; using SMIL/Whisper")
+                except TranscriptionCancelled:
+                    raise
+                except Exception as ctc_err:
+                    logger.warning(f"CTC alignment failed for '{abs_id}': {ctc_err}", exc_info=True)
+
             # Attempt SMIL extraction
-            if not storyteller_aligned and hasattr(self.transcriber, 'transcribe_from_smil'):
+            if not direct_aligned and hasattr(self.transcriber, 'transcribe_from_smil'):
                   raw_transcript = self.transcriber.transcribe_from_smil(
                       abs_id, epub_path, chapters,
                       full_book_text=book_text,
@@ -2413,7 +2442,7 @@ class SyncManager:
                       transcript_source = "smil"
 
             # Step 3: Fallback to Whisper (Slow Path) - Only runs if SMIL failed
-            if not storyteller_aligned and not raw_transcript:
+            if not direct_aligned and not raw_transcript:
                 logger.info("🔄 SMIL extraction skipped/failed, falling back to Whisper transcription")
                 
                 if not audio_adapter:
@@ -2430,11 +2459,11 @@ class SyncManager:
                 )
                 if raw_transcript:
                     transcript_source = "whisper"
-            elif not storyteller_aligned:
+            elif not direct_aligned:
                 # If SMIL worked, it's already done with transcribing phase
                 update_progress(1.0, 2)
 
-            if not storyteller_aligned and not raw_transcript:
+            if not direct_aligned and not raw_transcript:
                 raise Exception("Failed to generate transcript from both SMIL and Whisper.")
 
             # Step 4: Parse EPUB - ebook_parser caches result, so repeating is cheap.
@@ -2442,13 +2471,13 @@ class SyncManager:
             
             # Align and store using AlignmentService.
             # This is where we commit the result to the DB
-            if not storyteller_aligned:
+            if not direct_aligned:
                 logger.info(f"🧠 Aligning transcript ({transcript_source}) using Anchored Alignment...")
             
             # Update progress to show we are working on alignment (Start of Phase 3 = 90%)
             update_progress(0.1, 3) # 91%
             
-            if storyteller_aligned:
+            if direct_aligned:
                 success = True
             else:
                 ensure_active()

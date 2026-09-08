@@ -55,6 +55,27 @@ class AudioTranscriber:
         self.smil_extractor = smil_extractor
         self.polisher = polisher
 
+    def invalidate_transcript_cache(self, abs_id: str) -> bool:
+        """Delete a book's persisted Whisper transcript so the next run re-transcribes.
+
+        The completed transcript is cached in ``_progress.json`` and reused to skip
+        Whisper on a rebuild. A transcript captured before word-level timing shipped
+        holds no per-word times, so Remap-to-word-level must drop it to force a fresh,
+        word-timestamped transcription. Returns True if a cached transcript was removed.
+        """
+        progress_file = self.cache_root / str(abs_id) / "_progress.json"
+        try:
+            removed = progress_file.exists()
+            progress_file.unlink(missing_ok=True)
+            if removed:
+                logger.info(f"🗑️ Invalidated cached transcript for {abs_id} (Remap)")
+            return removed
+        except OSError as e:
+            logger.warning(
+                f"⚠️ Could not invalidate transcript cache for {abs_id}: {e}", exc_info=True
+            )
+            return False
+
     @property
     def split_duration(self) -> int:
         """Local audio chunk length in seconds (lower for smaller GPUs).
@@ -777,11 +798,19 @@ class AudioTranscriber:
                     raise_if_cancelled()
                     
                     for segment in segments:
-                        full_transcript.append({
+                        timed_segment = {
                             "start": segment["start"] + cumulative_duration,
                             "end": segment["end"] + cumulative_duration,
                             "text": segment["text"]
-                        })
+                        }
+                        if segment.get("words"):
+                            timed_segment["words"] = [
+                                {**word,
+                                 "start": word["start"] + cumulative_duration,
+                                 "end": word["end"] + cumulative_duration}
+                                for word in segment["words"]
+                            ]
+                        full_transcript.append(timed_segment)
 
                 except TranscriptionCancelled:
                     raise
