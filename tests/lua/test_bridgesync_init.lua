@@ -642,4 +642,108 @@ assert(bridge.session_upload_attempts["still-queued"] == 2,
 assert(bridge.session_upload_attempts["gone"] == nil,
     "pruning kept the counter for a session that is no longer queued")
 
+-- Drive the real manifest sweep: failed publication must keep the old file,
+-- its progress sidecar and its tracked entry, and leave the revision retryable.
+local function file_bytes(path)
+    local handle = io.open(path, "rb")
+    if not handle then return nil end
+    local bytes = handle:read("*a")
+    handle:close()
+    return bytes
+end
+local function write_bytes(path, bytes)
+    local handle = assert(io.open(path, "wb"))
+    handle:write(bytes)
+    handle:close()
+end
+for _, failure in ipairs({ "missing", "empty", "size", "hash", "rename", "rename_eexist", "success" }) do
+    local target = settings_dir .. "/replacement.epub"
+    local temp_path = target .. ".part"
+    local backup_path = target .. ".bak"
+    write_bytes(target, "old-good-book")
+    local previous = { local_path = target, filename = "replacement.epub", content_hash = "old-good-book" }
+    local items = { replacement = previous }
+    local sidecar_removed = false
+    local saved_revision
+    local sync = BridgeSync:new{
+        download_dir = settings_dir,
+        _ensureDirectory = function() return true end,
+        _getStateScalar = function() return "old-revision" end,
+        _loadStateItems = function() return items end,
+        _buildHashIndex = function() return {} end,
+        _fileExists = function(_, path) return file_bytes(path) ~= nil end,
+        _calculateBookHash = function(_, path) return file_bytes(path) end,
+        _safeRemove = function(_, path) os.remove(path) end,
+        _removeTree = function() sidecar_removed = true end,
+        _updateCollections = function() end,
+        _saveState = function(_, saved, revision) items = saved; saved_revision = revision end,
+        logInfo = function() end,
+        logWarn = function() end,
+        api = {
+            getManifest = function() return true, { revision = "new-revision", books = {
+                { abs_id = "replacement", filename = "replacement.epub", content_hash = "new-book",
+                  size = 8, download_path = "/book" },
+            } } end,
+            downloadBook = function(_, _, path)
+                if failure ~= "missing" then
+                    write_bytes(path, failure == "empty" and "" or failure == "size" and "short"
+                        or failure == "hash" and "bad-book" or "new-book")
+                end
+                return true
+            end,
+        },
+    }
+    local real_rename = os.rename
+    -- The retry after a Windows EEXIST fallback moves the destination aside
+    -- and republishes it, so the "previous good file" guarantee only holds
+    -- for the FIRST publication attempt on a given book, not every rename
+    -- call - the move-aside and restore calls are distinguished by path,
+    -- not counted as publication attempts.
+    local first_publish_attempt = true
+    os.rename = function(src, dst)
+        if src == target and dst == backup_path then
+            -- The fallback's move-aside: let it actually happen so the
+            -- retry (and a possible restore) have a real backup to work
+            -- with.
+            return real_rename(src, dst)
+        end
+        if src == backup_path and dst == target then
+            -- The fallback's restore after a failed retry.
+            return real_rename(src, dst)
+        end
+        local is_first_call = first_publish_attempt
+        first_publish_attempt = false
+        if is_first_call then
+            assert(file_bytes(dst) == "old-good-book", "publication deleted the previous good file")
+        end
+        if failure == "rename" then return nil, "No such file or directory" end
+        if failure == "rename_eexist" and is_first_call then
+            -- os.rename is C rename(): on Windows it fails with EEXIST when
+            -- the destination already exists, instead of POSIX's atomic
+            -- replace-on-rename.
+            return nil, "EEXIST: file already exists"
+        end
+        -- Model KOReader's POSIX replace on Windows too (or the retry once
+        -- the fallback has moved the destination aside).
+        os.remove(dst)
+        return real_rename(src, dst)
+    end
+    local ok, result = pcall(function() return sync:_runSync() end)
+    os.rename = real_rename
+    assert(ok, result)
+    if failure == "success" or failure == "rename_eexist" then
+        assert(result.downloaded == 1 and result.errors == 0)
+        assert(file_bytes(target) == "new-book" and items.replacement.content_hash == "new-book")
+        assert(sidecar_removed and saved_revision == "new-revision")
+    else
+        assert(result.errors == 1 and result.downloaded == 0, failure .. " must fail closed")
+        assert(file_bytes(target) == "old-good-book", failure .. " lost the previous book")
+        assert(items.replacement == previous and not sidecar_removed, failure .. " lost progress state")
+        assert(saved_revision == "", failure .. " must remain retryable")
+    end
+    assert(file_bytes(target .. ".part") == nil, "partial file leaked")
+    assert(file_bytes(backup_path) == nil, "backup file leaked")
+    os.remove(target)
+end
+
 print("BridgeSync Lua init regression test passed")

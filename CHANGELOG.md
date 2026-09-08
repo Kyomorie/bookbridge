@@ -43,6 +43,54 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **A book that fails to download no longer takes the copy you already had with it.**
+  BridgeSync replaced a book on your reader by deleting the old file first and moving
+  the new one into place afterwards. If the download had produced nothing, or the move
+  failed, you were left with no book at all — and with the reading position sidecar
+  beside it gone too. The downloaded file is now checked for size and contents before
+  anything on the device is touched, and only replaces the book you have once it is
+  known good. A download that arrives missing, empty, the wrong size, or with the wrong
+  contents is discarded and simply retried on the next sync, with your existing copy
+  and its progress still sitting there. Requires the updated **BridgeSync 0.6.9**
+  plugin on the device.
+
+- **Two things touching the Storyteller cache at once no longer empty it.**
+  BookBridge keeps a slim, narration-free copy of a Storyteller book to work reading
+  positions out from. Every caller wrote that copy through the same two temporary
+  filenames, so a re-strip and a download running together — or two of either — could
+  pull the file out from under one another, leaving `FileNotFoundError` in the log and
+  no cached copy. Each operation now works in its own private staging folder and swaps
+  the finished book into place in one step, and one that fails leaves the last good
+  cached copy exactly where it was instead of deleting it.
+
+- **Matching the same audiobook twice at once no longer fails with a database error.**
+  Two matches for one book arriving together — a batch match overlapping a manual one,
+  or two people matching in a multi-user install — could both find the book absent and
+  both try to create it, and the second one died with
+  `UNIQUE constraint failed: books.abs_id`. The second match now adopts the entry the
+  first one created instead of failing. The original creator keeps the book, and it
+  lands in both people's libraries.
+
+- **Grimmory highlight sync no longer retries the same highlight forever.**
+  When a highlight already existed on Grimmory but BookBridge had no record of its id —
+  after a restore, or when Grimmory's own reader had created it — BookBridge tried to
+  create it again on every cycle, Grimmory refused the duplicate, and the highlight
+  stayed unsynced indefinitely. BookBridge now looks for a highlight already sitting at
+  the same place in the same book and adopts it, syncing its note and colour onto it
+  rather than making a second one. A refusal it cannot match to an existing highlight is
+  still left pending rather than assumed away, and nothing on Grimmory is deleted.
+
+- **A Storyteller book that has not been narrated yet is reported as such instead of
+  erroring.** Asking for the read-along copy of a book Storyteller had not finished
+  processing crashed the download with an internal error and logged it as a failure.
+  BookBridge now reports the book as not available yet and moves on, so it picks the
+  book up on its own once Storyteller has produced the narration.
+
+- **Cancelling a transcription no longer logs it as a failure.** Deleting a match while
+  its audiobook was being transcribed did stop the work, but the clean stop was recorded
+  as `Transcription failed` with a full traceback, which made an ordinary cancellation
+  look like a bug in the diagnostics.
+
 - **A continuous listen is now one reading session instead of dozens (#429).**
   A 45-minute audiobook stretch used to land in Grimmory and BookOrbit as ~40
   separate 60-second sessions, with gaps and overlaps between them, because a

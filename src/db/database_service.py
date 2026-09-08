@@ -830,8 +830,32 @@ class DatabaseService:
 
     def save_book(self, book: Book) -> Book:
         """Save or update a book model."""
+        from sqlalchemy.exc import IntegrityError
+
         with self.get_session() as session:
             existing = session.query(Book).filter(Book.abs_id == book.abs_id).first()
+
+            if existing is None:
+                # Keep the first creator, but claim the mapping for both requests
+                # when concurrent matches race to insert the same ABS id.
+                creator_uid = book.user_id if getattr(book, "user_id", None) is not None else self._resolve_uid(None)
+                book.user_id = creator_uid
+                session.add(book)
+                try:
+                    session.flush()
+                except IntegrityError as exc:
+                    session.rollback()
+                    if "UNIQUE constraint failed: books.abs_id" not in str(exc.orig):
+                        raise
+                    existing = session.query(Book).filter(Book.abs_id == book.abs_id).first()
+                    if existing is None:
+                        raise
+                if creator_uid is not None:
+                    exists = session.query(UserBook).filter(
+                        UserBook.user_id == creator_uid, UserBook.abs_id == book.abs_id
+                    ).first()
+                    if not exists:
+                        session.add(UserBook(user_id=creator_uid, abs_id=book.abs_id))
 
             if existing:
                 # Update existing book
@@ -851,21 +875,6 @@ class DatabaseService:
                 session.expunge(existing)
                 saved = existing
             else:
-                # Create new book — stamp the creator from the ambient user context
-                # (the matching request, the kosync device user, or the running
-                # sync cycle), falling back to the default admin. user_id is the
-                # original creator (set on insert only); visibility is governed by
-                # the per-user `user_books` links, so also claim it for the creator.
-                creator_uid = book.user_id if getattr(book, "user_id", None) is not None else self._resolve_uid(None)
-                book.user_id = creator_uid
-                session.add(book)
-                session.flush()
-                if creator_uid is not None:
-                    exists = session.query(UserBook).filter(
-                        UserBook.user_id == creator_uid, UserBook.abs_id == book.abs_id
-                    ).first()
-                    if not exists:
-                        session.add(UserBook(user_id=creator_uid, abs_id=book.abs_id))
                 session.refresh(book)
                 session.expunge(book)
                 catalog_changed = True

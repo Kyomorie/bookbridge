@@ -783,6 +783,8 @@ class AudioTranscriber:
                             "text": segment["text"]
                         })
 
+                except TranscriptionCancelled:
+                    raise
                 except Exception as e:
                     # Raw-audio providers get stream URLs (plain strings) here, not Paths.
                     source_label = getattr(local_path, 'name', local_path)

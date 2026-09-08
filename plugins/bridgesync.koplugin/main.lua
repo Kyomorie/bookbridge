@@ -1756,14 +1756,40 @@ function BridgeSync:_runSync()
                     errors = errors + 1
                     self:_safeRemove(temp_path)
                 else
-                    local downloaded_hash = self:_calculateBookHash(temp_path)
-                    if downloaded_hash and downloaded_hash ~= book.content_hash then
-                        self:logWarn("Hash mismatch for", book.abs_id, downloaded_hash, book.content_hash)
+                    local downloaded_size = tonumber((lfs.attributes(temp_path, "size"))) or 0
+                    local expected_size = tonumber(book.size) or 0
+                    local downloaded_hash = downloaded_size > 0 and self:_calculateBookHash(temp_path) or nil
+                    if downloaded_size <= 0 or (expected_size > 0 and downloaded_size ~= expected_size)
+                        or not downloaded_hash or downloaded_hash ~= book.content_hash
+                    then
+                        self:logWarn("Hash mismatch for", book.abs_id, downloaded_hash or "unavailable", book.content_hash)
                         errors = errors + 1
                         self:_safeRemove(temp_path)
                     else
-                        self:_safeRemove(target_path)
                         local move_ok, move_err = os.rename(temp_path, target_path)
+                        if not move_ok and self:_fileExists(target_path) then
+                            -- Same atomic-install idiom as _installPluginZip, sized down
+                            -- to a single file: os.rename is C rename(), which fails with
+                            -- EEXIST on Windows when the destination already exists
+                            -- (POSIX replaces it atomically instead). Verification has
+                            -- already passed, so move the previous good book aside
+                            -- rather than deleting it, retry the publish once, and
+                            -- restore the backup if that retry also fails - a broken
+                            -- publication must never cost the reader the copy they
+                            -- already had. The backup is a sibling of the target so both
+                            -- renames stay on one filesystem.
+                            local backup_path = target_path .. ".bak"
+                            self:_safeRemove(backup_path)
+                            local moved_aside = os.rename(target_path, backup_path)
+                            if moved_aside then
+                                move_ok, move_err = os.rename(temp_path, target_path)
+                                if move_ok then
+                                    self:_safeRemove(backup_path)
+                                else
+                                    os.rename(backup_path, target_path)
+                                end
+                            end
+                        end
                         if not move_ok then
                             self:logWarn("Rename failed for", book.abs_id, move_err or "")
                             errors = errors + 1

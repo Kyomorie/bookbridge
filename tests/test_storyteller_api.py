@@ -283,7 +283,9 @@ class TestStorytellerSlimReadaloudEpub(unittest.TestCase):
 
             self.assertTrue(ok)
             # The full artifact may only ever land on the transient .full.tmp.
-            self.assertEqual(Path(mock_dl.call_args[0][1]).name, dest.name + ".full.tmp")
+            self.assertEqual(Path(mock_dl.call_args[0][1]).name, "full.tmp")
+            self.assertEqual(Path(mock_dl.call_args[0][1]).parent.parent, dest.parent)
+            self.assertFalse(Path(mock_dl.call_args[0][1]).parent.exists())
             self.assertFalse(dest.with_name(dest.name + ".full.tmp").exists())
             self.assertFalse(self.client._epub_has_embedded_audio(dest))
             with zipfile.ZipFile(dest, "r") as z:
