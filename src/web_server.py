@@ -2403,6 +2403,28 @@ def _preserve_or_reset_mapping_status(
     target_book.status = "pending"
 
 
+def _adopt_kosync_progress_for_book(abs_id: str, kosync_doc_id: str) -> None:
+    """Link an already-known KoSync document hash to a freshly mapped book.
+
+    KOReader stores progress under a document hash before the book is mapped. The
+    resolution path reaches that progress by joining KosyncDocument.linked_abs_id, so
+    an unlinked row stays invisible to sync and the book reads as unstarted even
+    though the position is durable and the hashes match exactly (#431). Add Book
+    already computes the same hash, so adopt it here rather than leaving the reader
+    to link it by hand.
+    """
+    if not abs_id or not isinstance(kosync_doc_id, str) or not kosync_doc_id.strip():
+        return
+    try:
+        if database_service.ensure_linked_kosync_document(kosync_doc_id.strip(), abs_id):
+            logger.info(
+                "🔗 Adopted existing KoSync document '%s' for '%s'",
+                sanitize_log_data(kosync_doc_id), sanitize_log_data(abs_id),
+            )
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to adopt KoSync document for '{abs_id}': {e}", exc_info=True)
+
+
 def _upsert_storyteller_mapping(
     *,
     mode_hint,
@@ -2684,6 +2706,7 @@ def _upsert_storyteller_mapping(
     database_service.dismiss_suggestion(saved_book.abs_id)
     if isinstance(saved_book.kosync_doc_id, str) and saved_book.kosync_doc_id.strip():
         database_service.dismiss_suggestion(saved_book.kosync_doc_id)
+    _adopt_kosync_progress_for_book(saved_book.abs_id, saved_book.kosync_doc_id)
 
     return saved_book, None, None
 
@@ -3481,8 +3504,11 @@ def _create_or_update_library_audio_mapping(
         if audio_source == "BookOrbit"
         else f"/api/booklore/audiobook-cover/{audio_source_id}"
     )
+    # An existing mapping keeps the id it was stored under. `get_book_by_audio_source`
+    # can return a row whose abs_id is not the bridge key, and re-keying it here would
+    # strand the states, annotations and per-user claims filed against the old id.
+    # Consolidating a genuine duplicate is `absorb_duplicate_mapping`'s job, below.
     target_book = existing_book or Book(abs_id=bridge_key, sync_mode="audiobook")
-    target_book.abs_id = bridge_key
     target_book.abs_title = audio_title or target_book.abs_title or bridge_key
     _preserve_or_reset_mapping_status(
         target_book,
@@ -3550,6 +3576,7 @@ def _create_or_update_library_audio_mapping(
     database_service.dismiss_suggestion(saved_book.abs_id)
     if isinstance(saved_book.kosync_doc_id, str) and saved_book.kosync_doc_id.strip():
         database_service.dismiss_suggestion(saved_book.kosync_doc_id)
+    _adopt_kosync_progress_for_book(saved_book.abs_id, saved_book.kosync_doc_id)
 
     return saved_book, None, None
 
@@ -6448,6 +6475,21 @@ def match():
             or preserved_transcript_source
         )
         transcript_file = storyteller_manifest or preserved_transcript_file
+        # The replacement Book below overwrites the stored mapping wholesale, so the
+        # guard has to weigh the identity it is about to lose while it is still on
+        # disk. Without this, re-matching an already-aligned book queued it for
+        # transcription again — the exact regression the guard was written to stop.
+        resolved_status = "pending"
+        if current_book_entry is not None:
+            _preserve_or_reset_mapping_status(
+                current_book_entry,
+                kosync_doc_id=kosync_doc_id,
+                ebook_filename=ebook_filename,
+                audio_source_id=abs_id,
+                storyteller_uuid=effective_storyteller_uuid,
+                ebook_source_id=ebook_source_id,
+            )
+            resolved_status = current_book_entry.status or "pending"
         book = Book(
             abs_id=abs_id,
             abs_title=abs_title,
@@ -6460,7 +6502,7 @@ def match():
             ebook_filename=ebook_filename,
             kosync_doc_id=kosync_doc_id,
             transcript_file=transcript_file,
-            status="pending",
+            status=resolved_status,
             duration=manager.get_duration(selected_ab),
             transcript_source=transcript_source,
             storyteller_uuid=effective_storyteller_uuid,
@@ -6509,6 +6551,7 @@ def match():
         # Need to dismiss by BOTH abs_id (audiobook-triggered) and kosync_doc_id (ebook-triggered)
         database_service.dismiss_suggestion(abs_id)
         database_service.dismiss_suggestion(kosync_doc_id)
+        _adopt_kosync_progress_for_book(abs_id, kosync_doc_id)
         
         # Check for a different hash for this filename, such as one reported by a device.
         try:
@@ -6516,6 +6559,13 @@ def match():
             if device_doc and device_doc.document_hash != kosync_doc_id:
                 logger.info(f"🔄 Dismissing additional suggestion/hash for '{ebook_filename}': '{device_doc.document_hash}'")
                 database_service.dismiss_suggestion(device_doc.document_hash)
+                if not device_doc.linked_abs_id:
+                    # A device-served build of the same book carries its own hash and its
+                    # own stored progress, so adopt it as a durable sibling. Only when it
+                    # is unclaimed -- a hash already pointing at another book is never
+                    # re-pointed from here.
+                    database_service.link_kosync_document(device_doc.document_hash, abs_id)
+                    logger.info(f"🔗 Linked device hash '{device_doc.document_hash}' to '{abs_id}'")
         except Exception as e:
             logger.warning(f"⚠️ Failed to check/dismiss device hash: {e}", exc_info=True)
 

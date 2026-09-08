@@ -1317,6 +1317,10 @@ def kosync_get_progress(doc_id):
     if book:
         if not _kosync_user_may_access_book(book):
             return _defer_kosync_book_access(doc_id, book, source="get")
+        # The book names this hash but an existing document row may still be unlinked,
+        # which hides its stored per-user progress from _respond_from_book_states (#431).
+        # Register it the way Step 3 does so the pairing heals on this read.
+        _register_hash_for_book(doc_id, book)
         return _respond_from_book_states(doc_id, book)
 
     # Step 3: Sibling hash resolution — find the book via other linked hashes.

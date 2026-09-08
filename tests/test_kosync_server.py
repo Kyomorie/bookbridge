@@ -496,6 +496,34 @@ class TestKosyncEndpoints(unittest.TestCase):
         self.assertEqual(data['device_id'], 'KINDLE456')
         self.assertIn('timestamp', data)
 
+    def test_get_progress_adopts_an_unlinked_document_its_book_already_names(self):
+        """A book naming a hash must adopt that document row on read (#431).
+
+        Add Book could leave an existing kosync_documents row unlinked while the book
+        carried the byte-identical hash, which hides the reader's stored progress from
+        the linked-book resolution path. Step 3 already self-healed a sibling hash;
+        the book's own hash must heal the same way.
+        """
+        from src import web_server
+
+        svc = web_server.database_service
+        admin_id = svc._default_user_id()
+        doc_hash = "b" * 32
+        svc.save_book(Book(
+            abs_id="adopt-regression",
+            abs_title="Orphaned Progress",
+            ebook_filename="orphaned.epub",
+            kosync_doc_id=doc_hash,
+            status="active",
+            user_id=admin_id,
+        ))
+        svc.save_kosync_document(KosyncDocument(document_hash=doc_hash))
+        self.assertIsNone(svc.get_kosync_document(doc_hash).linked_abs_id)
+
+        self.client.get(f"/syncs/progress/{doc_hash}", headers=self.auth_headers)
+
+        self.assertEqual(svc.get_kosync_document(doc_hash).linked_abs_id, "adopt-regression")
+
     def test_linked_book_get_pulls_behind_device_forward_to_synced_state(self):
         """A device that is BEHIND the bridge-synced position must be pulled forward.
 
