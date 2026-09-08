@@ -161,7 +161,18 @@ class AlignmentService:
             self._forced_aligner = ForcedAligner()
 
         text_range = self._ctc_text_range(abs_id, ebook_text, spine_chapters)
-        alignment_map = self._forced_aligner.align(audio_path, ebook_text, text_range=text_range)
+        # An existing lexical map lets the aligner chunk a long book (its char->ts
+        # anchors bound each chunk's audio window). Only trust it when it was built
+        # against this exact text length, so the char spaces line up.
+        boundaries = None
+        prior = self._get_alignment(abs_id)
+        if prior and len(prior) >= 2:
+            total = self._get_alignment_total_chars(abs_id)
+            if total is not None and total == len(ebook_text):
+                boundaries = prior
+        alignment_map = self._forced_aligner.align(
+            audio_path, ebook_text, text_range=text_range, boundaries=boundaries,
+        )
         if not alignment_map or len(alignment_map) < 2:
             logger.warning(f"⚠️ CTC alignment produced no usable map for {abs_id}")
             return False

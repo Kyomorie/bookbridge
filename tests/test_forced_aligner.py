@@ -157,6 +157,63 @@ def test_align_returns_none_when_no_alignable_words():
     assert aligner.align(["/fake.m4b"], "1984 —— \U0001f4da") is None
 
 
+def test_chunked_align_covers_whole_book_via_boundaries():
+    """A book too big for one pass is aligned in lexical-map-bounded chunks."""
+    torch = pytest.importorskip("torch")
+    torchaudio = pytest.importorskip("torchaudio")
+    import torch.nn.functional as NN
+
+    letters = list("abcdefghijklmnopqrstuvwxyz")
+    full_text = " ".join(letters)          # word i at char 2*i; len 51
+    d = torchaudio.pipelines.MMS_FA.get_dict()
+    per = 4
+    n_frames = len(letters) * per          # 104 frames; word i occupies frames [4i, 4i+3]
+    emis = torch.full((1, n_frames, len(d)), -10.0)
+    emis[0, :, 0] = -1.0                    # blank likely everywhere (as in a real emission)
+    for i, ch in enumerate(letters):
+        for f in range(per):
+            emis[0, i * per + f, d[ch]] = 0.0
+    emission = NN.log_softmax(emis, dim=-1)
+
+    aligner = ForcedAligner()
+    cursor = 0
+
+    def fake_model(piece):
+        nonlocal cursor
+        cnt = piece.size(1) // 1600
+        chunk = emission[:, cursor:cursor + cnt]
+        cursor += cnt
+        return chunk, None
+
+    def fake_load(self):
+        self._model = fake_model
+        self._dict = d
+        self._device = "cpu"
+        self._sample_rate = 16000
+
+    waveform = torch.zeros(1, n_frames * 1600)   # 0.1 s/frame
+    boundaries = [{"char": 0, "ts": 0.0}, {"char": len(full_text), "ts": n_frames * 0.1}]
+
+    with patch.object(ForcedAligner, "_load", fake_load), \
+         patch.object(ForcedAligner, "_load_audio", return_value=waveform), \
+         patch("src.utils.forced_aligner._EMIT_WINDOW_SECONDS", 1), \
+         patch.object(ForcedAligner, "_single_pass_fits", return_value=False), \
+         patch.object(ForcedAligner, "_MAX_CHUNK_TOKENS", 8), \
+         patch.object(ForcedAligner, "_CHUNK_MARGIN_SECONDS", 0.6):
+        amap = aligner.align(["/a.m4b"], full_text, boundaries=boundaries)
+
+    assert amap is not None
+    assert cursor == n_frames                          # emissions built once over the whole audio
+    ts = [p["ts"] for p in amap]
+    assert ts == sorted(ts)                            # monotonic across chunk seams
+    got = {p["char"]: p["ts"] for p in amap}
+    # Every word covered, each near its true start (frame 4i -> 0.4i s), within a
+    # small tolerance for chunk-boundary slack.
+    assert set(2 * i for i in range(len(letters))) <= set(got)
+    for i in range(len(letters)):
+        assert abs(got[2 * i] - 0.4 * i) <= 0.25, (i, got[2 * i])
+
+
 def test_full_book_cpu_alignment_falls_back_before_native_overflow(caplog):
     torch = pytest.importorskip("torch")
     torchaudio = pytest.importorskip("torchaudio")
@@ -236,7 +293,13 @@ def test_remap_uses_narrated_chapters_without_bonus_excerpt(service, coverage, r
     with patch.object(ForcedAligner, "is_available", return_value=True), \
          patch.object(ForcedAligner, "align", return_value=fake_map) as align:
         assert service.align_forced_and_store("bonus-book", ["/a.m4b"], text, chapters)
-    align.assert_called_once_with(["/a.m4b"], text, text_range=(10, 50) if trim else None)
+    align.assert_called_once()
+    call_args, call_kwargs = align.call_args
+    assert call_args == (["/a.m4b"], text)
+    assert call_kwargs["text_range"] == ((10, 50) if trim else None)
+    # The prior lexical map is handed over as chunk boundaries only when it was built
+    # against this exact text length (so the char spaces line up).
+    assert (call_kwargs.get("boundaries") is not None) == (recorded_chars == 1000)
     assert service.database_service.get_alignment_total_chars("bonus-book") == 1000
     assert service.get_char_for_time("bonus-book", 99) == 50
 

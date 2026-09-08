@@ -22,6 +22,7 @@ linear interpolation absorb.
 
 from __future__ import annotations
 
+import bisect
 import logging
 import os
 import re
@@ -213,8 +214,14 @@ class ForcedAligner:
                 pass
 
     def align(self, audio_paths, full_text: str,
-              text_range: Optional[Tuple[int, int]] = None) -> Optional[List[Dict]]:
+              text_range: Optional[Tuple[int, int]] = None,
+              boundaries: Optional[List[Dict]] = None) -> Optional[List[Dict]]:
         """Force-align audio (one path or a list of parts) to ``full_text``.
+
+        A single forced_align pass costs ~frames x tokens and only fits short books.
+        When ``boundaries`` (an existing ``[{char, ts}]`` lexical map) is supplied and
+        a single pass would be too large, the book is aligned in text-partitioned
+        chunks whose audio windows come from those boundaries — so any length fits.
 
         Returns a ``{char, ts}`` map, or ``None`` on any failure (missing deps,
         decode error, empty text) so the caller can fall back to the lexical pipeline.
@@ -234,18 +241,17 @@ class ForcedAligner:
 
             self._load()
 
-            targets: List[int] = []
-            word_token_counts: List[int] = []
+            word_tokens: List[List[int]] = []
             kept: List[Tuple[str, int]] = []
             for word, char in entries:
                 ids = [self._dict[c] for c in word if c in self._dict]
                 if not ids:
                     continue
-                targets.extend(ids)
-                word_token_counts.append(len(ids))
+                word_tokens.append(ids)
                 kept.append((word, char))
-            if not targets:
+            if not word_tokens:
                 return None
+            num_targets = sum(len(ids) for ids in word_tokens)
 
             logger.info("⚙️ CTC: decoding audio at %s Hz", self._sample_rate)
             waveform = self._load_audio(audio_paths)
@@ -260,61 +266,56 @@ class ForcedAligner:
             # forced_align allocates a work buffer that grows ~with frames x tokens.
             # An oversized single pass does not raise a catchable error — it aborts
             # the whole process (CPU: 32-bit back-pointer overflow; GPU: the CUDA
-            # kernel exceeds device memory and aborts, taking the container down,
-            # #426). Guard BOTH devices and fall back to lexical instead.
-            cost = num_frames * (2 * len(targets) + 1)
-            if emission.device.type == "cpu":
-                if cost > 2**31 - 1:
+            # kernel exceeds device memory and aborts, taking the container down, #426).
+            if self._single_pass_fits(emission, num_frames, num_targets):
+                logger.info(
+                    "⚙️ CTC: forced_align on %s (%s frames, %s tokens)",
+                    emission.device, num_frames, num_targets,
+                )
+                word_times = self._segment_word_times(
+                    F, torch, emission, word_tokens, seconds_per_frame,
+                )
+                if word_times is None:
+                    return None
+                char_times = [(kept[i][1], word_times[i]) for i in range(len(kept))]
+            elif boundaries and len(boundaries) >= 2:
+                logger.info(
+                    "⚙️ CTC: chunked forced_align (%s frames, %s tokens, %s words) against "
+                    "%s lexical boundary points",
+                    num_frames, num_targets, len(kept), len(boundaries),
+                )
+                char_times = self._chunked_word_times(
+                    F, torch, emission, kept, word_tokens, seconds_per_frame, boundaries,
+                )
+            else:
+                # Too large for one pass and no prior map to chunk against.
+                if emission.device.type == "cpu":
                     logger.warning(
                         "⚠️ CTC: CPU alignment exceeds the safe back-pointer limit "
                         "(%s frames, %s tokens); falling back to lexical alignment",
-                        num_frames, len(targets),
+                        num_frames, num_targets,
                     )
-                    return None
-            else:
-                try:
-                    free_bytes, _total = torch.cuda.mem_get_info(emission.device)
-                except Exception:
-                    free_bytes = 0
-                # ~0.6 B per frame*token observed on a 12 GB card (Buy a Bullet ~2e10
-                # fit; a 5.7 h book ~5e11 aborted); keep a safety margin.
-                if not (free_bytes and cost * 0.6 < free_bytes * 0.7):
+                else:
                     logger.warning(
-                        "⚠️ CTC: alignment too large for a single GPU pass "
-                        "(%s frames, %s tokens, %.1f GB free); falling back to lexical. "
-                        "Long books need chunked CTC.",
-                        num_frames, len(targets), free_bytes / 1e9,
+                        "⚠️ CTC: alignment too large for a single GPU pass and no prior "
+                        "map to chunk against (%s frames, %s tokens); falling back to lexical",
+                        num_frames, num_targets,
                     )
-                    return None
-
-            targets_t = torch.tensor([targets], dtype=torch.int32, device=emission.device)
-            logger.info(
-                "⚙️ CTC: forced_align on %s (%s frames, %s tokens)",
-                emission.device, num_frames, len(targets),
-            )
-            aligned, scores = F.forced_align(emission, targets_t, blank=0)
-            # Span reduction is a Python loop; transfer once after the GPU align
-            # instead of synchronizing CUDA for every token's mean score.
-            spans = F.merge_tokens(aligned[0].cpu(), scores[0].cpu(), blank=0)
-            if len(spans) != len(targets):
-                logger.warning(
-                    f"⚠️ CTC: token/span mismatch ({len(spans)} vs {len(targets)}); "
-                    "skipping to fall back to lexical alignment"
-                )
                 return None
 
-            word_start_times: List[float] = []
-            cursor = 0
-            for count in word_token_counts:
-                start_frame = spans[cursor].start
-                word_start_times.append(start_frame * seconds_per_frame)
-                cursor += count
-
+            anchors = self._stitch_char_times(char_times)
+            if len(anchors) < 2:
+                logger.warning("⚠️ CTC: too few aligned anchors; falling back to lexical")
+                return None
             # Keep canonical EPUB offsets, but do not map the end of narration to
             # the end of an unnarrated bonus excerpt.
-            alignment_map = self._build_map(kept, word_start_times, full_text[:end])
+            alignment_map = self._build_map(
+                [(None, ch) for ch, _ts in anchors],
+                [ts for _ch, ts in anchors],
+                full_text[:end],
+            )
             logger.info(
-                f"🎯 CTC: forced-aligned {len(kept)} words -> {len(alignment_map)} anchors "
+                f"🎯 CTC: forced-aligned {len(anchors)} words -> {len(alignment_map)} anchors "
                 f"({num_frames} frames, {seconds_per_frame * num_frames:.0f}s audio)"
             )
             return alignment_map or None
@@ -324,3 +325,122 @@ class ForcedAligner:
             return None
         finally:
             self._cleanup_tmp_audio()
+
+    # -- single-pass sizing + chunked alignment ------------------------------ #
+
+    # Text is partitioned into chunks of at most this many CTC tokens; each chunk's
+    # forced_align then costs ~chunk_frames x chunk_tokens, tiny regardless of book
+    # length. ~8000 chars of a normal narration is a few minutes of audio.
+    _MAX_CHUNK_TOKENS = 8000
+    # Extra audio kept on each side of a chunk so a slightly-off lexical boundary
+    # still contains the chunk's true speech (edge audio is absorbed by forced_align).
+    _CHUNK_MARGIN_SECONDS = 15.0
+
+    def _single_pass_fits(self, emission, num_frames: int, num_targets: int) -> bool:
+        """Whether one forced_align over the whole book is safe on this device."""
+        import torch
+        cost = num_frames * (2 * num_targets + 1)
+        if emission.device.type == "cpu":
+            return cost <= 2**31 - 1  # torchaudio's CPU back-pointer index is int32
+        try:
+            free_bytes, _total = torch.cuda.mem_get_info(emission.device)
+        except Exception:
+            free_bytes = 0
+        # ~0.6 B per frame*token observed on a 12 GB card (Buy a Bullet ~2e10 fit; a
+        # 5.7 h book ~5e11 aborted); keep a safety margin.
+        return bool(free_bytes and cost * 0.6 < free_bytes * 0.7)
+
+    def _segment_word_times(self, F, torch, emission, word_tokens: List[List[int]],
+                            seconds_per_frame: float, frame_offset: int = 0):
+        """forced_align one emission (slice) against ``word_tokens``.
+
+        Returns per-word start times (parallel to ``word_tokens``, offset by
+        ``frame_offset`` frames), or None if the token/span counts disagree.
+        """
+        targets = [tok for ids in word_tokens for tok in ids]
+        if not targets:
+            return None
+        targets_t = torch.tensor([targets], dtype=torch.int32, device=emission.device)
+        aligned, scores = F.forced_align(emission, targets_t, blank=0)
+        # merge_tokens is a Python loop; move the small per-frame tensors to CPU once.
+        spans = F.merge_tokens(aligned[0].cpu(), scores[0].cpu(), blank=0)
+        if len(spans) != len(targets):
+            logger.warning("⚠️ CTC: token/span mismatch (%s vs %s)", len(spans), len(targets))
+            return None
+        times: List[float] = []
+        cursor = 0
+        for ids in word_tokens:
+            times.append((frame_offset + spans[cursor].start) * seconds_per_frame)
+            cursor += len(ids)
+        return times
+
+    @staticmethod
+    def _interp_ts(boundaries: List[Dict], char: int) -> float:
+        """Linear-interpolate a timestamp at ``char`` from a ``[{char, ts}]`` map."""
+        chars = [b.get("char", b.get("global_char", 0)) for b in boundaries]
+        ts = [b["ts"] for b in boundaries]
+        i = bisect.bisect_right(chars, char) - 1
+        i = max(0, min(i, len(boundaries) - 2))
+        c0, c1, t0, t1 = chars[i], chars[i + 1], ts[i], ts[i + 1]
+        if c1 == c0:
+            return float(t0)
+        return float(t0 + (t1 - t0) * (char - c0) / (c1 - c0))
+
+    def _chunked_word_times(self, F, torch, emission, kept: List[Tuple[str, int]],
+                            word_tokens: List[List[int]], seconds_per_frame: float,
+                            boundaries: List[Dict]):
+        """Align text-partitioned chunks whose audio windows come from ``boundaries``.
+
+        Each chunk holds a disjoint slice of words (so every word gets exactly one
+        time); the audio window per chunk overlaps its neighbours by a margin so the
+        chunk's true speech is fully contained. Returns ``[(char, ts)]`` for the words
+        that aligned (failed chunks are skipped and covered by interpolation).
+        """
+        total_frames = emission.size(1)
+        margin = max(1, int(round(self._CHUNK_MARGIN_SECONDS / seconds_per_frame)))
+        end_char = boundaries[-1].get("char", boundaries[-1].get("global_char", 0))
+        results: List[Tuple[int, float]] = []
+        n = len(kept)
+        i = 0
+        while i < n:
+            j, tok = i, 0
+            while j < n and tok + len(word_tokens[j]) <= self._MAX_CHUNK_TOKENS:
+                tok += len(word_tokens[j])
+                j += 1
+            if j == i:
+                j = i + 1
+            last_chunk = j >= n
+            char_lo = kept[i][1]
+            char_hi = kept[n - 1][1] if last_chunk else kept[j][1]
+            f_lo = max(0, int(self._interp_ts(boundaries, char_lo) / seconds_per_frame) - margin)
+            tail_margin = margin * 2 if last_chunk else margin
+            f_hi = min(total_frames,
+                       int(self._interp_ts(boundaries, char_hi) / seconds_per_frame) + tail_margin)
+            seg_tokens = sum(len(word_tokens[k]) for k in range(i, j))
+            if f_hi - f_lo <= seg_tokens:
+                logger.warning("⚠️ CTC: chunk words[%s:%s] has too few frames (%s) for %s "
+                               "tokens; skipping", i, j, f_hi - f_lo, seg_tokens)
+                i = j
+                continue
+            times = self._segment_word_times(
+                F, torch, emission[:, f_lo:f_hi], word_tokens[i:j], seconds_per_frame,
+                frame_offset=f_lo,
+            )
+            if times is not None:
+                for k, ts in enumerate(times):
+                    results.append((kept[i + k][1], ts))
+            else:
+                logger.warning("⚠️ CTC: chunk words[%s:%s] failed; leaving a gap", i, j)
+            i = j
+        return results
+
+    @staticmethod
+    def _stitch_char_times(char_times: List[Tuple[int, float]]) -> List[Tuple[int, float]]:
+        """Order by char and drop timestamp inversions at chunk seams (monotonic)."""
+        out: List[Tuple[int, float]] = []
+        last_ts = -1.0
+        for ch, ts in sorted(char_times, key=lambda ct: ct[0]):
+            if ts >= last_ts:
+                out.append((int(ch), float(ts)))
+                last_ts = ts
+        return out
