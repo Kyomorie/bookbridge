@@ -486,6 +486,9 @@
             cursor: pointer;
             -webkit-user-select: none;
             user-select: none;
+            display: flex;
+            justify-content: flex-start;
+            gap: 12px;
         }
 
         .section-chevron {
@@ -2133,6 +2136,17 @@
           {% if m.unified_progress == 0 %}{% set section_flags.has_not_started = true %}{% endif %}
           {% if m.unified_progress >= 100 %}{% set section_flags.has_finished = true %}{% endif %}
         {% endfor %}
+        {# The flags above come from the flat list, but Not Started and Finished render from
+           the grouped one, so a group can be assigned to a section no flat book asked for:
+           a part-read series buckets to 'not_started' while none of its volumes sits at 0%.
+           Every bucket a group can name must emit its section, or the group -- and every
+           volume nested in it -- never enters the DOM at all. #}
+        {% for entry in grouped_mappings %}
+          {% if entry.is_series_group %}
+            {% if entry.section_bucket == 'not_started' %}{% set section_flags.has_not_started = true %}{% endif %}
+            {% if entry.section_bucket == 'finished' %}{% set section_flags.has_finished = true %}{% endif %}
+          {% endif %}
+        {% endfor %}
         {# Distinct series in the library, for the series filter. Includes a series
            whose only owned volume renders as a flat card, since it is still a series. #}
         {% set series_options = mappings | map(attribute='series_name') | reject('none') | unique | sort(case_sensitive=False) %}
@@ -2253,7 +2267,17 @@
             <div class="book-grid" id="finished-grid">
                 {% for entry in grouped_mappings %}
                 {% if entry.is_series_group %}
-                  {% if entry.section_bucket == 'finished' %}{{ render_series_card(entry, integrations) }}{% endif %}
+                  {% if entry.section_bucket == 'finished' %}{{ render_series_card(entry, integrations) }}
+                  {% else %}
+                  {# A finished volume of a part-read series stays reachable here as well as
+                     inside its stack -- the same deliberate cross-section duplication the In
+                     Progress section relies on, which distinctBookCards() collapses by abs id.
+                     Finished-bucketed groups are excluded: their stack already renders here,
+                     so their children would sit beside their own stack in one grid. #}
+                    {% for child in entry.children %}
+                      {% if child.unified_progress >= 100 %}{{ render_book_card(child, integrations) }}{% endif %}
+                    {% endfor %}
+                  {% endif %}
                 {% else %}
                   {% if entry.unified_progress >= 100 %}{{ render_book_card(entry, integrations) }}{% endif %}
                 {% endif %}
@@ -3296,7 +3320,7 @@
                 {% endif %}
             </span>
             {% if update_available %}
-            <a href="https://github.com/cporcellijr/bookbridge/releases/latest" target="_blank"
+            <a href="https://github.com/cporcellijr/bookbridge/releases/latest" target="_blank" rel="noopener noreferrer"
                 style="font-size: 11px; color: var(--accent); text-decoration: none; background: rgba(102,126,234,0.15); border: 1px solid rgba(102,126,234,0.3); border-radius: 4px; padding: 3px 8px; white-space: nowrap; transition: all 0.2s; font-weight: 600;"
                 onmouseover="this.style.background='rgba(102,126,234,0.25)'"
                 onmouseout="this.style.background='rgba(102,126,234,0.15)'">
