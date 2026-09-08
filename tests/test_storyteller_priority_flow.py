@@ -307,3 +307,35 @@ def test_cancelled_worker_removes_deferred_audio_cache(tmp_path):
     assert not cache_dir.exists()
     transcriber.process_audio.assert_not_called()
     db.update_book_if_exists.assert_not_called()
+
+
+def test_new_book_upgrades_to_ctc_after_transcription(tmp_path, monkeypatch):
+    """A new long book (no prior map) transcribes, then upgrades to CTC using the
+    fresh lexical map as chunk boundaries — no manual Remap, no Storyteller needed."""
+    monkeypatch.setenv("CTC_ENABLED", "true")
+    manager, _db, _abs, transcriber, alignment_service = _build_manager(tmp_path)
+
+    transcriber.transcribe_from_smil.return_value = None        # force the Whisper path
+    transcriber.process_audio.return_value = [{"start": 0.0, "end": 1.0, "text": "x"}]
+    alignment_service.align_and_store.return_value = True
+    # First CTC attempt fails (no boundaries yet); the post-transcript upgrade succeeds.
+    alignment_service.align_forced_and_store.side_effect = [False, True]
+
+    audio = tmp_path / "a.m4b"
+    audio.write_text("x", encoding="utf-8")
+    adapter = MagicMock()
+    adapter.get_audio_files.return_value = [{"local_path": str(audio)}]
+    adapter.get_chapters.return_value = [{"start": 0.0, "end": 12.0}]
+    manager.audio_source_adapters = {"BookOrbit": adapter}
+
+    book = Book(
+        abs_id="new-ctc-1", abs_title="New Long Book", ebook_filename="book.epub",
+        kosync_doc_id="h", status="pending", duration=12.0,
+        audio_source="BookOrbit", audio_source_id="5961", sync_mode="audiobook",
+    )
+    manager._run_background_job(book)
+
+    assert alignment_service.align_and_store.call_count == 1
+    assert alignment_service.align_forced_and_store.call_count == 2   # first attempt + upgrade
+    transcriber.process_audio.assert_called_once()
+    assert book.transcript_source == "ctc"

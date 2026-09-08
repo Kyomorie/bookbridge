@@ -433,6 +433,20 @@ class SyncManager:
             return None
         return self.active_audio_source_adapters.get(source)
 
+    def _ctc_local_audio_paths(self, audio_adapter, audio_source_id, abs_id):
+        """Local audio file paths for CTC, or None unless every part is local.
+
+        CTC decodes files with ffmpeg, so it needs on-disk parts. get_audio_files
+        downloads/caches them (and re-downloads if a prior part was pruned).
+        """
+        if not audio_adapter:
+            return None
+        files = audio_adapter.get_audio_files(audio_source_id, bridge_key=abs_id)
+        paths = [f.get("local_path") for f in (files or []) if f.get("local_path")]
+        if files and len(paths) == len(files):
+            return paths
+        return None
+
     @staticmethod
     def _freshness_guards_enabled() -> bool:
         """Kill switch for the Phase 2 freshness guards (staleness suppression +
@@ -2340,6 +2354,9 @@ class SyncManager:
             # A direct alignment map (Storyteller or CTC) was already stored — when
             # set, transcription (SMIL/Whisper) and lexical anchoring are skipped.
             direct_aligned = False
+            # Local audio paths for CTC, resolved once and reused for the post-transcript
+            # CTC upgrade (new long books have no prior map to chunk against up front).
+            ctc_local_paths = None
 
             # [MOVED UP] Fetch item details to get chapters (for time alignment) and for Ebook Acquisition
             # item_details = self.abs_client.get_item_details(abs_id) # Already fetched above
@@ -2410,22 +2427,21 @@ class SyncManager:
             # needs local files to decode).
             if not direct_aligned and AlignmentService.ctc_enabled():
                 try:
-                    if not audio_adapter:
-                        logger.info(f"CTC enabled but no audio adapter for '{abs_id}'; using SMIL/Whisper")
+                    ctc_local_paths = self._ctc_local_audio_paths(audio_adapter, audio_source_id, abs_id)
+                    if ctc_local_paths:
+                        # First pass: succeeds directly for short books, and for a Remap
+                        # (existing map -> chunk boundaries). A new long book has no prior
+                        # map yet, so this falls back and CTC is applied after transcription.
+                        ensure_active()
+                        if self.alignment_service.align_forced_and_store(
+                            abs_id, ctc_local_paths, book_text, spine_chapters=spine_chapters,
+                        ):
+                            direct_aligned = True
+                            transcript_source = "ctc"
+                            update_progress(1.0, 2)
+                            logger.info(f"CTC forced-alignment map generated for '{sanitize_log_data(abs_title)}'")
                     else:
-                        ctc_audio = audio_adapter.get_audio_files(audio_source_id, bridge_key=abs_id)
-                        local_paths = [f.get('local_path') for f in (ctc_audio or []) if f.get('local_path')]
-                        if ctc_audio and len(local_paths) == len(ctc_audio):
-                            ensure_active()
-                            if self.alignment_service.align_forced_and_store(
-                                abs_id, local_paths, book_text, spine_chapters=spine_chapters,
-                            ):
-                                direct_aligned = True
-                                transcript_source = "ctc"
-                                update_progress(1.0, 2)
-                                logger.info(f"CTC forced-alignment map generated for '{sanitize_log_data(abs_title)}'")
-                        else:
-                            logger.info(f"CTC enabled but audio for '{abs_id}' is not fully local; using SMIL/Whisper")
+                        logger.info(f"CTC enabled but audio for '{abs_id}' is not fully local; using SMIL/Whisper")
                 except TranscriptionCancelled:
                     raise
                 except Exception as ctc_err:
@@ -2484,7 +2500,30 @@ class SyncManager:
                 success = self.alignment_service.align_and_store(
                     abs_id, raw_transcript, book_text, chapters
                 )
-            
+                # A new book has no prior map, so the CTC attempt above could not chunk a
+                # long book. Now that transcription built a lexical map, reuse it as chunk
+                # boundaries to upgrade to CTC (issue #426) — new long books get CTC on
+                # first mapping (not only via a manual Remap), regardless of Storyteller.
+                if success and AlignmentService.ctc_enabled():
+                    upgrade_paths = ctc_local_paths
+                    if not (upgrade_paths and all(os.path.exists(p) for p in upgrade_paths)):
+                        upgrade_paths = self._ctc_local_audio_paths(audio_adapter, audio_source_id, abs_id)
+                    if upgrade_paths:
+                        try:
+                            ensure_active()
+                            if self.alignment_service.align_forced_and_store(
+                                abs_id, upgrade_paths, book_text, spine_chapters=spine_chapters,
+                            ):
+                                transcript_source = "ctc"
+                                logger.info(
+                                    "CTC forced-alignment map generated for "
+                                    f"'{sanitize_log_data(abs_title)}' (from transcript boundaries)"
+                                )
+                        except TranscriptionCancelled:
+                            raise
+                        except Exception as ctc_err:
+                            logger.warning(f"CTC upgrade failed for '{abs_id}': {ctc_err}", exc_info=True)
+
             # Alignment done
             update_progress(0.5, 3) # 95%
             
