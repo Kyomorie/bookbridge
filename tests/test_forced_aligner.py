@@ -227,10 +227,13 @@ def test_full_book_cpu_alignment_falls_back_before_native_overflow(caplog):
     waveform.size.return_value = 2220 * 16000
     with patch.object(aligner, "_load"), \
          patch.object(aligner, "_load_audio", return_value=waveform), \
-         patch.object(aligner, "_emissions", return_value=emission), \
+         patch.object(aligner, "_emissions", return_value=emission) as emissions, \
          patch.object(torchaudio.functional, "forced_align") as forced:
         assert aligner.align("/full-book.m4b", "a " * 92000) is None
     forced.assert_not_called()
+    # The doomed pass is rejected from the decoded sample count (~320 samples/frame),
+    # before the expensive emissions forward — so a new long book wastes only a decode.
+    emissions.assert_not_called()
     assert "CPU alignment exceeds the safe back-pointer limit" in caplog.text
 
 

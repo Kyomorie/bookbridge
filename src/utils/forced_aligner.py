@@ -255,6 +255,28 @@ class ForcedAligner:
 
             logger.info("⚙️ CTC: decoding audio at %s Hz", self._sample_rate)
             waveform = self._load_audio(audio_paths)
+
+            # Skip the expensive emissions pass when a single forced_align could not fit
+            # anyway and there is no prior map to chunk against (a new long book on its
+            # first attempt): estimate frames from the sample count (MMS/wav2vec2 downsample
+            # ~320 samples/frame) so the doomed pass costs only a decode, not a GPU forward.
+            est_frames = max(1, waveform.size(1) // 320)
+            can_chunk = bool(boundaries and len(boundaries) >= 2)
+            if not can_chunk and not self._single_pass_fits(self._device, est_frames, num_targets):
+                if getattr(self._device, "type", self._device) == "cpu":
+                    logger.warning(
+                        "⚠️ CTC: CPU alignment exceeds the safe back-pointer limit "
+                        "(~%s frames, %s tokens); falling back to lexical alignment",
+                        est_frames, num_targets,
+                    )
+                else:
+                    logger.warning(
+                        "⚠️ CTC: alignment too large for a single GPU pass and no prior map "
+                        "to chunk against (~%s frames, %s tokens); falling back to lexical",
+                        est_frames, num_targets,
+                    )
+                return None
+
             logger.info(
                 "⚙️ CTC: decoded %.0fs audio; computing emissions on %s",
                 waveform.size(1) / self._sample_rate, self._device,
@@ -267,7 +289,7 @@ class ForcedAligner:
             # An oversized single pass does not raise a catchable error — it aborts
             # the whole process (CPU: 32-bit back-pointer overflow; GPU: the CUDA
             # kernel exceeds device memory and aborts, taking the container down, #426).
-            if self._single_pass_fits(emission, num_frames, num_targets):
+            if self._single_pass_fits(emission.device, num_frames, num_targets):
                 logger.info(
                     "⚙️ CTC: forced_align on %s (%s frames, %s tokens)",
                     emission.device, num_frames, num_targets,
@@ -336,14 +358,14 @@ class ForcedAligner:
     # still contains the chunk's true speech (edge audio is absorbed by forced_align).
     _CHUNK_MARGIN_SECONDS = 15.0
 
-    def _single_pass_fits(self, emission, num_frames: int, num_targets: int) -> bool:
+    def _single_pass_fits(self, device, num_frames: int, num_targets: int) -> bool:
         """Whether one forced_align over the whole book is safe on this device."""
         import torch
         cost = num_frames * (2 * num_targets + 1)
-        if emission.device.type == "cpu":
+        if getattr(device, "type", device) == "cpu":
             return cost <= 2**31 - 1  # torchaudio's CPU back-pointer index is int32
         try:
-            free_bytes, _total = torch.cuda.mem_get_info(emission.device)
+            free_bytes, _total = torch.cuda.mem_get_info()
         except Exception:
             free_bytes = 0
         # ~0.6 B per frame*token observed on a 12 GB card (Buy a Bullet ~2e10 fit; a
