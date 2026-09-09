@@ -16,7 +16,7 @@ from typing import List, Dict, Optional, Tuple
 
 from src.utils.time_utils import utcnow
 
-from src.db.models import BookAlignment
+from src.db.models import BookAlignment, BookAlignmentBackup
 from src.utils.ebook_utils import LRUCache
 from src.utils.polisher import Polisher
 from src.utils.logging_utils import time_execution
@@ -27,6 +27,18 @@ class AlignmentService:
     # Max chars of a window sent to the embedder (~1000 tokens, safely under
     # nomic-embed-text's 2048-token context).
     _EMBED_WINDOW_MAX_CHARS = 4000
+
+    # CTC acceptance gate (issue #426). A CTC map is only as good as its densest
+    # coverage: the largest run of text with no anchor is interpolated linearly, so
+    # a big gap is a big positional error. A degenerate near-linear map has one gap
+    # spanning the whole book. Reject a new map whose worst gap exceeds this fraction
+    # of the covered text...
+    _CTC_MAX_GAP_FRACTION = 0.25
+    # ...and, so a remap never replaces a better map with a worse one, reject a map
+    # whose worst gap is more than this much larger than the map it would replace
+    # (methods in _CTC_REPLACEABLE_METHODS are always safe to replace).
+    _CTC_GAP_REGRESSION_MARGIN = 0.05
+    _CTC_REPLACEABLE_METHODS = frozenset({"linear", "storyteller_linear"})
 
     def __init__(self, database_service, polisher: Polisher, ollama_client=None):
         self.database_service = database_service
@@ -177,6 +189,11 @@ class AlignmentService:
             logger.warning(f"⚠️ CTC alignment produced no usable map for {abs_id}")
             return False
 
+        if not self._ctc_map_accepted(abs_id, alignment_map, prior):
+            return False
+
+        # Preserve the map we are about to replace so a bad remap is reversible.
+        self._backup_alignment(abs_id)
         self._save_alignment(abs_id, alignment_map, "ctc", total_chars=len(ebook_text))
         logger.info(
             f"AlignmentService: CTC forced-alignment map stored for {abs_id} "
@@ -216,6 +233,52 @@ class AlignmentService:
             "(chars %s:%s of %s)", start, end, len(ebook_text),
         )
         return start, end
+
+    def _ctc_map_accepted(self, abs_id: str, new_map: List[Dict],
+                          prior_map: Optional[List[Dict]]) -> bool:
+        """Whether a freshly built CTC map is good enough to store (issue #426).
+
+        A CTC map is only as good as its densest coverage: the largest run of text
+        with no anchor is interpolated linearly, so a big gap is a big positional
+        error. This rejects a degenerate/near-linear map (one gap spanning the whole
+        book) and refuses to replace an existing map with one that leaves a materially
+        larger gap — so a remap can only keep or improve a book's alignment, never
+        quietly worsen it. A prior linear/storyteller-linear map is always replaceable.
+        """
+        new_gap = self._max_gap_fraction(new_map)
+        if new_gap > self._CTC_MAX_GAP_FRACTION:
+            logger.warning(
+                "🚫 CTC: rejecting map for %s — largest interpolated gap is %.0f%% of the "
+                "narrated text (> %.0f%%); keeping the existing map",
+                abs_id, new_gap * 100, self._CTC_MAX_GAP_FRACTION * 100,
+            )
+            return False
+        if prior_map and len(prior_map) >= 2:
+            prior_method = self.database_service.get_alignment_method(abs_id) or ""
+            if prior_method not in self._CTC_REPLACEABLE_METHODS:
+                prior_gap = self._max_gap_fraction(prior_map)
+                if new_gap > prior_gap + self._CTC_GAP_REGRESSION_MARGIN:
+                    logger.warning(
+                        "🚫 CTC: rejecting map for %s — its worst interpolated gap %.0f%% is "
+                        "worse than the existing %s map's %.0f%%; keeping the existing map",
+                        abs_id, new_gap * 100, prior_method or "existing", prior_gap * 100,
+                    )
+                    return False
+        return True
+
+    @staticmethod
+    def _max_gap_fraction(alignment_map: List[Dict]) -> float:
+        """Largest char span between consecutive anchors, as a fraction of the map's
+        covered range. Returns 1.0 for a map too small to judge (degenerate)."""
+        if not alignment_map or len(alignment_map) < 2:
+            return 1.0
+        chars = sorted(int(point.get("char", point.get("global_char", 0)))
+                       for point in alignment_map)
+        span = chars[-1] - chars[0]
+        if span <= 0:
+            return 1.0
+        max_gap = max(chars[i + 1] - chars[i] for i in range(len(chars) - 1))
+        return max_gap / span
 
     @time_execution
     def align_storyteller_and_store(self, abs_id: str, storyteller_transcript, ebook_text: str = None) -> bool:
@@ -908,6 +971,59 @@ class AlignmentService:
             logger.info(f"   💾 Saved alignment for {abs_id} to DB.")
         self._alignment_cache.delete(abs_id)
         self._total_chars_cache.pop(abs_id, None)
+
+    def _backup_alignment(self, abs_id: str) -> bool:
+        """Copy a book's current stored map into the backup table before it is
+        overwritten (issue #426). No-op (returns False) when it has no map yet."""
+        with self.database_service.get_session() as session:
+            current = session.query(BookAlignment).filter_by(abs_id=abs_id).first()
+            if not current:
+                return False
+            backup = session.query(BookAlignmentBackup).filter_by(abs_id=abs_id).first()
+            if backup:
+                backup.alignment_map_json = current.alignment_map_json
+                backup.align_method = current.align_method
+                backup.total_chars = current.total_chars
+                backup.backed_up_at = utcnow()
+            else:
+                session.add(BookAlignmentBackup(
+                    abs_id=abs_id,
+                    alignment_map_json=current.alignment_map_json,
+                    align_method=current.align_method,
+                    total_chars=current.total_chars,
+                ))
+        return True
+
+    def restore_previous_alignment(self, abs_id: str) -> bool:
+        """Restore the map replaced by the last CTC overwrite (issue #426).
+
+        Copies the backup map back over the current one; the backup is kept so a
+        restore can be repeated. Returns False when there is nothing to restore.
+        """
+        with self.database_service.get_session() as session:
+            backup = session.query(BookAlignmentBackup).filter_by(abs_id=abs_id).first()
+            if not backup:
+                return False
+            method = backup.align_method
+            current = session.query(BookAlignment).filter_by(abs_id=abs_id).first()
+            if current:
+                current.alignment_map_json = backup.alignment_map_json
+                current.align_method = backup.align_method
+                current.total_chars = backup.total_chars
+                current.last_updated = utcnow()
+            else:
+                session.add(BookAlignment(
+                    abs_id=abs_id,
+                    alignment_map_json=backup.alignment_map_json,
+                    align_method=backup.align_method,
+                    total_chars=backup.total_chars,
+                ))
+        self._alignment_cache.delete(abs_id)
+        self._total_chars_cache.pop(abs_id, None)
+        logger.info(
+            "↩️ Restored previous alignment for %s (method '%s')", abs_id, method or "unknown",
+        )
+        return True
 
     def _get_alignment_total_chars(self, abs_id: str) -> Optional[int]:
         """Cached ebook length for a book's map; None when the map predates it.

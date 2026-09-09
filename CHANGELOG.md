@@ -74,6 +74,13 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **A remap never downgrades a book's alignment, and a bad remap can be undone (#426).**
+  A CTC remap now has to clear a quality bar before it replaces the existing map: a
+  degenerate result (one big interpolated stretch of text with no anchor), or one that
+  leaves a larger gap than the map it would replace, is rejected and the previous map is
+  kept — so the CTC badge can't appear on a map that is actually worse than what you had.
+  When a remap is accepted, the map it replaced is saved first, so a remap that turns out
+  worse can be rolled back to exactly what was there before.
 - **CTC remaps finish on the selected GPU (#426).** Emissions and target tokens now
   stay on the same device through forced alignment. Oversized CPU runs fall back
   before entering torchaudio's unsafe back-pointer loop, and phase logs show decode,

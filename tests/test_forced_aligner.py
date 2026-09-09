@@ -272,7 +272,9 @@ def service(tmp_path):
 
 
 def test_align_forced_and_store_persists_ctc_method(service):
-    fake_map = [{"char": 0, "ts": 0.0}, {"char": 50, "ts": 12.0}]
+    # A real CTC map is dense; a near-linear map (few points, one big gap) is now
+    # rejected by the acceptance gate, so the store contract is tested with a dense one.
+    fake_map = [{"char": c, "ts": c / 10.0} for c in range(0, 101, 10)]
     with patch("src.utils.forced_aligner.ForcedAligner.is_available", return_value=True), \
          patch("src.utils.forced_aligner.ForcedAligner.align", return_value=fake_map):
         ok = service.align_forced_and_store("ctc-book", ["/a.m4b"], "x" * 100)
@@ -292,7 +294,8 @@ def test_remap_uses_narrated_chapters_without_bonus_excerpt(service, coverage, r
     ]
     service._save_alignment("bonus-book", previous, "lexical", total_chars=recorded_chars)
     chapters = [{"start": 0, "end": 9}, {"start": 10, "end": 50}, {"start": 51, "end": 1000}]
-    fake_map = [{"char": 10, "ts": 2.0}, {"char": 50, "ts": 98.0}]
+    # Dense enough to clear the acceptance gate; still spans chars 10..50 at ts 2..98.
+    fake_map = [{"char": c, "ts": 2.0 + (c - 10) * 2.4} for c in range(10, 51, 8)]
     with patch.object(ForcedAligner, "is_available", return_value=True), \
          patch.object(ForcedAligner, "align", return_value=fake_map) as align:
         assert service.align_forced_and_store("bonus-book", ["/a.m4b"], text, chapters)
