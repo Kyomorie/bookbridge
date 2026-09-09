@@ -74,6 +74,12 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Books with a malformed EPUB manifest now parse instead of failing.** Some EPUBs
+  list a file in their manifest (e.g. an Adobe `page-template.xpgt`) that isn't actually
+  in the archive, which aborted parsing of the whole book — so it couldn't be matched,
+  aligned, or synced. BookBridge now parses a repaired copy with the missing manifest
+  entries dropped, and the book's text extracts normally.
+
 - **Keep large unspoken passages from displacing CTC word timings (#426).**
   Well-covered lexical maps can now identify large interior ebook-only gaps and
   align the surrounding narration separately. Matched phrases are preserved,
