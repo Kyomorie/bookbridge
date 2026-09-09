@@ -410,3 +410,144 @@ def test_ctc_enabled_reads_env():
         assert AlignmentService.ctc_enabled() is True
     finally:
         os.environ.pop("CTC_ENABLED", None)
+
+
+# ============================================================================
+# Phase 2 recovery tests (Option C)
+# ============================================================================
+
+def test_recovery_recovers_compressed_region_via_bracketing_anchors():
+    """A region with compressed lexical timing is recovered via Phase 2."""
+    torch = pytest.importorskip("torch")
+    torchaudio = pytest.importorskip("torchaudio")
+    import torch.nn.functional as NN
+
+    letters = list("abcdefghijklmnopqrstuvwxyz")
+    full_text = " ".join(letters)
+    d = torchaudio.pipelines.MMS_FA.get_dict()
+    per = 4
+    n_frames = len(letters) * per
+    emis = torch.full((1, n_frames, len(d)), -10.0)
+    emis[0, :, 0] = -1.0
+    for i, ch in enumerate(letters):
+        for f in range(per):
+            emis[0, i * per + f, d[ch]] = 0.0
+    emission = NN.log_softmax(emis, dim=-1)
+
+    aligner = ForcedAligner()
+    cursor = 0
+
+    def fake_model(piece):
+        nonlocal cursor
+        cnt = piece.size(1) // 1600
+        chunk = emission[:, cursor:cursor + cnt]
+        cursor += cnt
+        return chunk, None
+
+    def fake_load(self):
+        self._model = fake_model
+        self._dict = d
+        self._device = "cpu"
+        self._sample_rate = 16000
+
+    waveform = torch.zeros(1, n_frames * 1600)
+    # Boundaries: correct times for a-f and q-z, but COMPRESSED times for g-p
+    # (middle 10 letters squeezed into 0.4s instead of 4.0s).
+    boundaries = [
+        {"char": 0, "ts": 0.0},
+        {"char": 2, "ts": 0.4},   # a
+        {"char": 4, "ts": 0.8},   # b
+        {"char": 6, "ts": 1.2},   # c
+        {"char": 8, "ts": 1.6},   # d
+        {"char": 10, "ts": 2.0},  # e
+        {"char": 12, "ts": 2.4},  # f
+        # Compressed: g-p in 0.4s (should be 4.0s)
+        {"char": 14, "ts": 2.8},  # g (late start of compression)
+        {"char": 32, "ts": 3.2},  # p (end of compression, 0.4s later)
+        # Back to normal: q-z
+        {"char": 34, "ts": 7.2},  # q
+        {"char": 36, "ts": 7.6},  # r
+        {"char": 38, "ts": 8.0},  # s
+        {"char": 40, "ts": 8.4},  # t
+        {"char": 42, "ts": 8.8},  # u
+        {"char": 44, "ts": 9.2},  # v
+        {"char": 46, "ts": 9.6},  # w
+        {"char": 48, "ts": 10.0}, # x
+        {"char": 50, "ts": 10.4}, # y
+        {"char": 52, "ts": 10.8}, # z
+    ]
+
+    with patch.object(ForcedAligner, "_load", fake_load), \
+         patch.object(ForcedAligner, "_load_audio", return_value=waveform), \
+         patch.object(ForcedAligner, "_MAX_CHUNK_TOKENS", 2):  # Force small chunks.
+        result = aligner.align(
+            ["/fake.m4b"], full_text, boundaries=boundaries, exclude_spans=[]
+        )
+
+    assert result is not None
+    # The middle region (g-p, chars 14-32) should now be recovered, not skipped.
+    result_chars = [p["char"] for p in result]
+    assert 14 in result_chars, "Recovery should have aligned 'g'"
+    assert 32 in result_chars, "Recovery should have aligned 'p'"
+    # All letters should be present (no gaps due to recovery).
+    for i, letter in enumerate(letters):
+        expected_char = i * 2 if i > 0 else 0
+        assert expected_char in result_chars, f"Letter {letter} (char {expected_char}) should be in result"
+    # Monotonic ts.
+    ts = [p["ts"] for p in result]
+    assert ts == sorted(ts), "Result should be monotonic"
+
+
+def test_recovery_noop_when_no_skips():
+    """When no chunks are skipped, recovery has no effect and word_ts is unchanged."""
+    torch = pytest.importorskip("torch")
+    torchaudio = pytest.importorskip("torchaudio")
+    import torch.nn.functional as NN
+
+    letters = list("abc")
+    full_text = " ".join(letters)
+    d = torchaudio.pipelines.MMS_FA.get_dict()
+    per = 4
+    n_frames = len(letters) * per
+    emis = torch.full((1, n_frames, len(d)), -10.0)
+    emis[0, :, 0] = -1.0
+    for i, ch in enumerate(letters):
+        for f in range(per):
+            emis[0, i * per + f, d[ch]] = 0.0
+    emission = NN.log_softmax(emis, dim=-1)
+
+    aligner = ForcedAligner()
+    cursor = 0
+
+    def fake_model(piece):
+        nonlocal cursor
+        cnt = piece.size(1) // 1600
+        chunk = emission[:, cursor:cursor + cnt]
+        cursor += cnt
+        return chunk, None
+
+    def fake_load(self):
+        self._model = fake_model
+        self._dict = d
+        self._device = "cpu"
+        self._sample_rate = 16000
+
+    waveform = torch.zeros(1, n_frames * 1600)
+    boundaries = [
+        {"char": 0, "ts": 0.0},
+        {"char": 2, "ts": 0.4},
+        {"char": 4, "ts": 0.8},
+        {"char": 6, "ts": 1.2},
+    ]
+
+    with patch.object(ForcedAligner, "_load", fake_load), \
+         patch.object(ForcedAligner, "_load_audio", return_value=waveform):
+        result = aligner.align(["/fake.m4b"], full_text, boundaries=boundaries, exclude_spans=[])
+
+    # All words should align; recovery has no work to do.
+    assert result is not None
+    # Check that the three letters are in the result.
+    result_chars = sorted([p["char"] for p in result if p["char"] in [0, 2, 4]])
+    assert 0 in result_chars, "'a' should be in result"
+    assert 2 in result_chars, "'b' should be in result"
+    assert 4 in result_chars, "'c' should be in result"
