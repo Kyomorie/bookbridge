@@ -2792,7 +2792,11 @@
                         </div>
                     </div>
 
-                    <!-- CTC forced alignment (opt-in; needs the CTC image with torch/torchaudio) -->
+                    <!-- CTC forced alignment: experimental/advanced, hidden behind a disclosure.
+                         Not in any published image (needs a local INSTALL_CTC=true build) and
+                         effectively needs a GPU — see the note below. -->
+                    <details class="advanced-sub full-width" {% if get_bool('CTC_ENABLED') %}open{% endif %}>
+                        <summary>Advanced · Experimental — CTC forced alignment (needs a custom build + a GPU)</summary>
                     <div class="form-group full-width">
                         <label class="toggle-label">
                             <input type="checkbox" name="CTC_ENABLED"
@@ -2800,11 +2804,15 @@
                                 {% if get_bool('CTC_ENABLED') %}checked{% endif %}>
                             Use CTC forced alignment
                         </label>
-                        <div class="help-text">Aligns the audiobook directly against the known ebook text
-                            (per-word), instead of transcribing and matching back. More accurate for
-                            char-precise readers (BookOrbit, ABS ebook, Grimmory). <strong>Requires the
-                            <code>-ctc</code> image</strong> (bundles torch/torchaudio); it is inert on the
-                            standard image. Leave off to keep the Whisper/lexical pipeline.</div>
+                        <div class="help-text"><strong>Experimental &amp; advanced — leave off unless you
+                            know you want it.</strong> Aligns the audiobook directly against the known ebook
+                            text (per-word) instead of transcribing and matching back — more accurate for
+                            char-precise readers (BookOrbit, ABS ebook, Grimmory). <strong>Not included in any
+                            published image:</strong> it requires a custom <code>-ctc</code> build
+                            (<code>INSTALL_CTC=true</code>, which bundles torch/torchaudio) and is inert on the
+                            standard and <code>-cuda</code> images. <strong>Effectively requires an NVIDIA
+                            GPU</strong> — on CPU it works only for short books and is very slow on full-length
+                            audiobooks. Leave off to keep the Whisper/lexical pipeline (the default).</div>
                     </div>
                     <div id="ctc_body" class="dynamic-group full-width section-body {% if not get_bool('CTC_ENABLED') %}collapsed{% endif %}" style="display:contents;">
                         <div class="form-group">
@@ -2827,6 +2835,7 @@
                                 is workable but slow for long audiobooks.</div>
                         </div>
                     </div>
+                    </details>
                 </div>
             </div>
 
