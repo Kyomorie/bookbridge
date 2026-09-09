@@ -22,6 +22,7 @@ import re
 import time
 import logging
 import threading
+from tempfile import NamedTemporaryFile
 from pathlib import Path
 from typing import Optional
 from difflib import SequenceMatcher
@@ -1064,7 +1065,8 @@ class BookOrbitClient:
         if not token:
             return False
         url = f"{self._get_base_url()}/api/v1/books/files/{file_id}/download"
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {"Authorization": f"Bearer {token}", "Accept-Encoding": "identity"}
+        temporary_path = None
         try:
             with self.session.get(url, headers=headers, stream=True, timeout=300) as resp:
                 if resp.status_code != 200:
@@ -1075,14 +1077,29 @@ class BookOrbitClient:
                     return False
                 output_path = Path(output_path)
                 output_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(output_path, "wb") as handle:
+                # Publish only complete downloads; interrupted writes must never
+                # look like reusable audio to the cache or concurrent readers.
+                with NamedTemporaryFile(dir=output_path.parent, prefix=output_path.name,
+                                        suffix=".part", delete=False) as handle:
+                    temporary_path = Path(handle.name)
                     for chunk in resp.iter_content(chunk_size=8192):
                         if chunk:
                             handle.write(chunk)
+                actual_size = temporary_path.stat().st_size
+                declared_size = str(resp.headers.get("Content-Length") or "").strip()
+                if not actual_size or (declared_size.isdigit() and actual_size != int(declared_size)):
+                    raise ValueError(
+                        f"Incomplete BookOrbit download: got {actual_size} bytes, "
+                        f"expected {declared_size or 'non-empty file'}"
+                    )
+                temporary_path.replace(output_path)
                 return True
         except Exception as e:
             logger.error("BookOrbit file download error: file_id=%s: %s", file_id, e, exc_info=True)
             return False
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     def get_cover_bytes(self, book_id) -> tuple:
         """Fetch a book's cover image. Returns (bytes, content_type) or (None, None)."""

@@ -74,6 +74,11 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Recover from incomplete BookOrbit audiobook downloads.** Downloads are written
+  to temporary files and checked against the response size before becoming usable.
+  Cached tracks are also checked against BookOrbit's file size and re-downloaded
+  when incomplete, preventing repeated mapping failures on the same partial audio.
+
 - **A remap never downgrades a book's alignment, and a bad remap can be undone (#426).**
   A CTC remap now has to clear a quality bar before it replaces the existing map: a
   degenerate result (one big interpolated stretch of text with no anchor), or one that

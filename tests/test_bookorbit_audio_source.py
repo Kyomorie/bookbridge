@@ -200,6 +200,100 @@ def test_adapter_get_audio_files_raises_on_failed_download(tmp_path):
         adapter.get_audio_files("7")
 
 
+@pytest.fixture
+def streaming_client():
+    client = BookOrbitClient()
+    client._get_fresh_token = MagicMock(return_value="test-token")
+    response = MagicMock()
+    response.status_code = 200
+    response.headers = {"Content-Length": "12"}
+    response.__enter__.return_value = response
+    client.session.get = MagicMock(return_value=response)
+    return client, response
+
+
+def test_mob_sorcery_partial_cache_recovers_on_retry(tmp_path, streaming_client, caplog):
+    """A nonempty partial M4B must not poison every subsequent mapping attempt."""
+    client, response = streaming_client
+    client.get_audiobook_info = MagicMock(return_value={"tracks": [{
+        "id": 11, "format": "m4b", "duration_seconds": 74412, "size_bytes": 12,
+    }]})
+    adapter = BookOrbitAudioSourceAdapter(client, tmp_path)
+    cached = tmp_path / "audio_cache/bookorbit_5542/source_tracks/track_000.m4b"
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(b"partial")
+
+    def interrupted():
+        yield b"part"
+        raise ConnectionError("download interrupted")
+
+    response.iter_content.side_effect = lambda **_: interrupted()
+    with pytest.raises(RuntimeError, match="BookOrbit track download failed"):
+        adapter.get_audio_files("5542", bridge_key="bookorbit:5542")
+    assert cached.read_bytes() == b"partial"
+    assert list(cached.parent.glob("*.part")) == []
+
+    response.iter_content.side_effect = lambda **_: iter([b"full", b" audio!!"])
+    files = adapter.get_audio_files("5542", bridge_key="bookorbit:5542")
+    assert Path(files[0]["local_path"]).read_bytes() == b"full audio!!"
+    assert "cached=7 expected=12; re-downloading" in caplog.text
+    client.session.get.reset_mock()
+    adapter.get_audio_files("5542", bridge_key="bookorbit:5542")
+    client.session.get.assert_not_called()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("failure", ["interrupted", "short", "empty"])
+def test_download_never_publishes_incomplete_file(tmp_path, streaming_client, existing, failure):
+    client, response = streaming_client
+    target = tmp_path / "track.m4b"
+    if existing:
+        target.write_bytes(b"original")
+
+    def chunks():
+        if failure != "empty":
+            yield b"partial"
+        if failure == "interrupted":
+            raise ConnectionError("download interrupted")
+
+    response.iter_content.side_effect = lambda **_: chunks()
+    assert client.download_file_to_path(11, target) is False
+    assert target.read_bytes() == b"original" if existing else not target.exists()
+    assert list(tmp_path.glob("*.part")) == []
+
+
+@pytest.mark.parametrize("headers", [{"Content-Length": "12"}, {}, {"Content-Length": "unknown"}])
+def test_download_publishes_complete_file_atomically(tmp_path, streaming_client, headers):
+    client, response = streaming_client
+    response.headers = headers
+    target = tmp_path / "track.m4b"
+    target.write_bytes(b"original")
+
+    def chunks():
+        yield b"full"
+        assert target.read_bytes() == b"original"
+        yield b" audio!!"
+        assert target.read_bytes() == b"original"
+
+    response.iter_content.side_effect = lambda **_: chunks()
+    assert client.download_file_to_path(11, target) is True
+    assert target.read_bytes() == b"full audio!!"
+    assert list(tmp_path.glob("*.part")) == []
+
+
+def test_adapter_rejects_short_download_without_content_length(tmp_path, streaming_client):
+    client, response = streaming_client
+    response.headers = {}
+    response.iter_content.return_value = [b"partial"]
+    client.get_audiobook_info = MagicMock(return_value={"tracks": [{
+        "id": 11, "format": "m4b", "size_bytes": 12,
+    }]})
+    adapter = BookOrbitAudioSourceAdapter(client, tmp_path)
+    with pytest.raises(RuntimeError, match="got 7 bytes, expected 12"):
+        adapter.get_audio_files("5542", bridge_key="bookorbit:5542")
+    assert not (tmp_path / "audio_cache/bookorbit_5542/source_tracks/track_000.m4b").exists()
+
+
 # ---------------------------------------------------------------------------
 # ForgeService staging + Whisper inputs
 # ---------------------------------------------------------------------------
