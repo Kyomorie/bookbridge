@@ -74,6 +74,12 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Keep large unspoken passages from displacing CTC word timings (#426).**
+  Well-covered lexical maps can now identify large interior ebook-only gaps and
+  align the surrounding narration separately. Matched phrases are preserved,
+  compressed transcript timestamps cannot justify exclusions, and deliberate
+  gaps do not trip the acceptance gate. Existing maps need re-alignment to benefit.
+
 - **Recover from incomplete BookOrbit audiobook downloads.** Downloads are written
   to temporary files and checked against the response size before becoming usable.
   Cached tracks are also checked against BookOrbit's file size and re-downloaded

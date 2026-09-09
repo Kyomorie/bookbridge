@@ -214,6 +214,78 @@ def test_chunked_align_covers_whole_book_via_boundaries():
         assert abs(got[2 * i] - 0.4 * i) <= 0.25, (i, got[2 * i])
 
 
+@pytest.mark.parametrize("excluded", [None, [], [(9999, 10000)], "interior"])
+@pytest.mark.parametrize("max_tokens", [8, 1000])
+def test_exclusions_split_targets_and_preserve_exact_narrated_frames(excluded, max_tokens):
+    """Unspoken paragraphs never enter forced_align; empty exclusions are identical."""
+    import json
+
+    torch = pytest.importorskip("torch")
+    torchaudio = pytest.importorskip("torchaudio")
+    letters = list("abcdefghijklmnopqrstuvwxyz")
+    dictionary = torchaudio.pipelines.MMS_FA.get_dict()
+    emission = torch.full((1, 104, len(dictionary)), -10.0)
+    emission[0, :, 0] = -1.0
+    for i, letter in enumerate(letters):
+        emission[0, i * 4:(i + 1) * 4, dictionary[letter]] = 0.0
+    emission = torch.log_softmax(emission, dim=-1)
+    aligner = ForcedAligner()
+    aligner._dict = dictionary
+    aligner._device = "cpu"
+    text = " ".join(letters)
+    spans = excluded
+    if excluded == "interior":
+        gap = "note " * 400
+        text = text[:16] + gap + text[16:36] + gap + text[36:]
+        # Deliberately unsorted and overlapping to exercise normalization.
+        spans = [(2036, 4036), (17, 2000), (16, 2016)]
+    entries = aligner._book_words(text)
+    narrated = [(word, char) for word, char in entries if word in letters]
+    boundaries = [{"char": char, "ts": i * 0.4} for i, (_word, char) in enumerate(narrated)]
+    boundaries.append({"char": len(text), "ts": 10.4})
+    with patch.object(aligner, "_load"), \
+         patch.object(aligner, "_load_audio", return_value=torch.zeros(1, 104 * 1600)), \
+         patch.object(aligner, "_emissions", return_value=emission), \
+         patch.object(aligner, "_MAX_CHUNK_TOKENS", max_tokens), \
+         patch.object(torchaudio.functional, "forced_align", wraps=torchaudio.functional.forced_align) as forced:
+        result = aligner.align("/fake.m4b", text, boundaries=boundaries, exclude_spans=spans)
+    expected = [{"char": char, "ts": round(i * 0.4, 3)} for i, (_word, char) in enumerate(narrated)]
+    expected.append({"char": len(text), "ts": 10.0})
+    assert json.dumps(result) == json.dumps(expected)
+    if excluded == "interior":
+        assert forced.call_count >= 3
+        got_tokens = []
+        for call in forced.call_args_list:
+            targets = call.args[1][0].tolist()
+            got_tokens += targets
+            assert not (dictionary["h"] in targets and dictionary["i"] in targets)
+            assert not (dictionary["r"] in targets and dictionary["s"] in targets)
+            # The 15s audio margins must also stop at the gap, otherwise real
+            # speech in the overlap drags the last left words past the seam.
+            segment = call.args[0]
+            if targets[0] == dictionary['a']:
+                assert torch.equal(segment, emission[:, :32])
+            if targets[0] == dictionary['i']:
+                assert torch.equal(segment, emission[:, 32:72])
+        assert got_tokens == [dictionary[letter] for letter in letters]
+        for lo, hi in [(16, 2016), (2036, 4036)]:
+            assert not any(lo <= p["char"] < hi for p in result)
+            left = ForcedAligner._interp_ts(result, lo)
+            middle = ForcedAligner._interp_ts(result, (lo + hi) // 2)
+            right = ForcedAligner._interp_ts(result, hi)
+            assert left <= middle <= right
+    else:
+        assert forced.call_count == 1
+
+
+def test_exclusions_without_boundaries_fail_before_loading_audio():
+    aligner = ForcedAligner()
+    with patch.object(aligner, "is_available", return_value=True), \
+         patch.object(aligner, "_load_audio") as decode:
+        assert aligner.align("/fake.m4b", "alpha note beta", exclude_spans=[(6, 11)]) is None
+    decode.assert_not_called()
+
+
 def test_full_book_cpu_alignment_falls_back_before_native_overflow(caplog):
     torch = pytest.importorskip("torch")
     torchaudio = pytest.importorskip("torchaudio")

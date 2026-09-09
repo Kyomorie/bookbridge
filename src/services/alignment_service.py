@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 from pathlib import Path
+from statistics import median
 from typing import List, Dict, Optional, Tuple
 
 from src.utils.time_utils import utcnow
@@ -22,6 +23,13 @@ from src.utils.polisher import Polisher
 from src.utils.logging_utils import time_execution
 
 logger = logging.getLogger(__name__)
+
+_CTC_UNNARRATED_DENSITY_MULTIPLIER = 4.0
+_CTC_UNNARRATED_MIN_SPAN_CHARS = 1500
+_CTC_UNNARRATED_MIN_TIMING_RATIO = 0.25
+# Slack over the audio-shortfall budget, for density-estimate error.
+_CTC_UNNARRATED_BUDGET_MARGIN = 1.5
+_LEXICAL_ANCHOR_WORDS = 12
 
 class AlignmentService:
     # Max chars of a window sent to the embedder (~1000 tokens, safely under
@@ -182,14 +190,23 @@ class AlignmentService:
             total = self._get_alignment_total_chars(abs_id)
             if total is not None and total == len(ebook_text):
                 boundaries = prior
+        exclude_spans = self._detect_unnarrated_spans(boundaries, ebook_text)
+        if text_range:
+            exclude_spans = [(max(lo, text_range[0]), min(hi, text_range[1]))
+                             for lo, hi in exclude_spans
+                             if lo < text_range[1] and hi > text_range[0]]
+        if exclude_spans:
+            logger.info("⚙️ CTC: excluding likely unnarrated interior text for %s: %s",
+                        abs_id, exclude_spans)
         alignment_map = self._forced_aligner.align(
             audio_path, ebook_text, text_range=text_range, boundaries=boundaries,
+            exclude_spans=exclude_spans,
         )
         if not alignment_map or len(alignment_map) < 2:
             logger.warning(f"⚠️ CTC alignment produced no usable map for {abs_id}")
             return False
 
-        if not self._ctc_map_accepted(abs_id, alignment_map, prior):
+        if not self._ctc_map_accepted(abs_id, alignment_map, prior, exclude_spans):
             return False
 
         # Preserve the map we are about to replace so a bad remap is reversible.
@@ -212,13 +229,8 @@ class AlignmentService:
         total_chars = self._get_alignment_total_chars(abs_id) or self._point_char(previous[-1])
         if total_chars != len(ebook_text):
             return None
-        # t_idx marks an actual transcript match; synthetic head/tail anchors do
-        # not prove that front matter or a bonus excerpt was narrated.
-        matched = [point for point in previous if 't_idx' in point]
-        duration = float(previous[-1]['ts'])
-        if len(matched) < 2 or duration <= 0:
-            return None
-        if float(matched[-1]['ts']) - float(matched[0]['ts']) < 0.9 * duration:
+        matched = self._ctc_matched_anchors(previous)
+        if not matched:
             return None
         first_char, last_char = self._point_char(matched[0]), self._point_char(matched[-1])
         chapters = [chapter for chapter in spine_chapters
@@ -234,8 +246,89 @@ class AlignmentService:
         )
         return start, end
 
+    @classmethod
+    def _ctc_matched_anchors(cls, prior_map: Optional[List[Dict]]) -> List[Dict]:
+        """Return ordered transcript matches only when they cover 90% of the audio."""
+        if not prior_map:
+            return []
+        matched = sorted((p for p in prior_map if 't_idx' in p), key=cls._point_char)
+        duration = max(float(p['ts']) for p in prior_map)
+        if len(matched) < 2 or not math.isfinite(duration) or duration <= 0:
+            return []
+        times = [float(p['ts']) for p in matched]
+        if (any(not math.isfinite(t) or t < 0 for t in times)
+                or any(b < a for a, b in zip(times, times[1:]))
+                or times[-1] - times[0] < 0.9 * duration):
+            return []
+        return matched
+
+    @classmethod
+    def _detect_unnarrated_spans(cls, prior_map: Optional[List[Dict]],
+                                ebook_text: str) -> List[Tuple[int, int]]:
+        """Find large interior text jumps over little audio, preserving matched words."""
+        matched = cls._ctc_matched_anchors(prior_map)
+        pairs = [(cls._point_char(a), cls._point_char(b), float(b['ts']) - float(a['ts']),
+                  int(b['t_idx']) - int(a['t_idx']))
+                 for a, b in zip(matched, matched[1:])]
+        densities = [(hi - lo) / seconds for lo, hi, seconds, _words in pairs
+                     if 0 <= lo < hi < len(ebook_text) and seconds > 0]
+        word_durations = [seconds / words for _lo, _hi, seconds, words in pairs
+                          if seconds > 0 and words > 0]
+        if not densities or not word_durations:
+            return []
+        median_density = median(densities)
+        threshold = _CTC_UNNARRATED_DENSITY_MULTIPLIER * median_density
+        min_word_duration = _CTC_UNNARRATED_MIN_TIMING_RATIO * median(word_durations)
+        polisher = Polisher()
+        spans: List[Tuple[int, int]] = []
+        for lo, hi, seconds, words in pairs:
+            if not 0 <= lo < hi < len(ebook_text):
+                continue
+            # Density (text with far too little audio) is the signal; a normal
+            # per-word timing distinguishes a true gap from compressed-transcript
+            # windows that merely squeeze real narration into a tiny jump. Anchors
+            # are 12-gram starts, so the pair's Δts always spans ~12 narrated words
+            # (several seconds) — an absolute seconds cap would suppress real gaps.
+            if (hi - lo < _CTC_UNNARRATED_MIN_SPAN_CHARS
+                    or words <= 0 or seconds <= 0 or seconds / words < min_word_duration
+                    or (hi - lo) / seconds < threshold):
+                continue
+            # Anchors mark the START of a matching n-gram, not its last word.
+            # Preserve the whole phrase (conservatively also for N=6 backfill).
+            # Never merge across another match, even when flagged gaps are close.
+            count = 0
+            for word in re.finditer(r'\S+', ebook_text[lo:hi]):
+                if polisher.normalize(word.group()):
+                    count += 1
+                if count == _LEXICAL_ANCHOR_WORDS:
+                    lo += word.end()
+                    break
+            else:
+                continue
+            if hi - lo >= _CTC_UNNARRATED_MIN_SPAN_CHARS:
+                spans.append((lo, hi))
+        if not spans:
+            return []
+        # A gap is only real when the audio is too short to have narrated the text.
+        # Local lexical-timing errors can spike density even on a fully-narrated book,
+        # so cap total exclusions by the book's audio shortfall: if the flagged text
+        # exceeds what the missing audio could account for, the map is unreliable for
+        # exclusion and nothing is dropped.
+        audio_seconds = max((float(p['ts']) for p in prior_map), default=0.0)
+        budget = (len(ebook_text) - audio_seconds * median_density) * _CTC_UNNARRATED_BUDGET_MARGIN
+        flagged = sum(hi - lo for lo, hi in spans)
+        if flagged > budget:
+            logger.info(
+                "⚙️ CTC: %d flagged unnarrated chars exceed the %d-char audio-shortfall "
+                "budget; lexical map unreliable for exclusion, dropping none",
+                flagged, max(0, int(budget)),
+            )
+            return []
+        return spans
+
     def _ctc_map_accepted(self, abs_id: str, new_map: List[Dict],
-                          prior_map: Optional[List[Dict]]) -> bool:
+                          prior_map: Optional[List[Dict]],
+                          exclude_spans: Optional[List[Tuple[int, int]]] = None) -> bool:
         """Whether a freshly built CTC map is good enough to store (issue #426).
 
         A CTC map is only as good as its densest coverage: the largest run of text
@@ -245,7 +338,7 @@ class AlignmentService:
         larger gap — so a remap can only keep or improve a book's alignment, never
         quietly worsen it. A prior linear/storyteller-linear map is always replaceable.
         """
-        new_gap = self._max_gap_fraction(new_map)
+        new_gap = self._max_gap_fraction(new_map, exclude_spans)
         if new_gap > self._CTC_MAX_GAP_FRACTION:
             logger.warning(
                 "🚫 CTC: rejecting map for %s — largest interpolated gap is %.0f%% of the "
@@ -256,7 +349,7 @@ class AlignmentService:
         if prior_map and len(prior_map) >= 2:
             prior_method = self.database_service.get_alignment_method(abs_id) or ""
             if prior_method not in self._CTC_REPLACEABLE_METHODS:
-                prior_gap = self._max_gap_fraction(prior_map)
+                prior_gap = self._max_gap_fraction(prior_map, exclude_spans)
                 if new_gap > prior_gap + self._CTC_GAP_REGRESSION_MARGIN:
                     logger.warning(
                         "🚫 CTC: rejecting map for %s — its worst interpolated gap %.0f%% is "
@@ -267,13 +360,31 @@ class AlignmentService:
         return True
 
     @staticmethod
-    def _max_gap_fraction(alignment_map: List[Dict]) -> float:
+    def _max_gap_fraction(alignment_map: List[Dict],
+                          exclude_spans: Optional[List[Tuple[int, int]]] = None) -> float:
         """Largest char span between consecutive anchors, as a fraction of the map's
-        covered range. Returns 1.0 for a map too small to judge (degenerate)."""
+        covered range, with intentional exclusions removed from both. Returns
+        1.0 for a map too small to judge (degenerate)."""
         if not alignment_map or len(alignment_map) < 2:
             return 1.0
         chars = sorted(int(point.get("char", point.get("global_char", 0)))
                        for point in alignment_map)
+        # Collapse the union of exclusions into a narrated-only coordinate space.
+        # A single sweep avoids multiplying dense per-word anchors by span count.
+        spans = sorted((lo, hi) for lo, hi in (exclude_spans or []) if lo < hi)
+        if spans:
+            adjusted = []
+            removed, cursor, span_idx = 0, chars[0], 0
+            for char in chars:
+                while span_idx < len(spans) and spans[span_idx][0] < char:
+                    lo, hi = spans[span_idx]
+                    removed += max(0, min(char, hi) - max(cursor, lo))
+                    cursor = max(cursor, min(char, hi))
+                    if hi > char:
+                        break
+                    span_idx += 1
+                adjusted.append(char - removed)
+            chars = adjusted
         span = chars[-1] - chars[0]
         if span <= 0:
             return 1.0
@@ -710,7 +821,7 @@ class AlignmentService:
             return found
 
         # 3. PASS 1: Global Search (N=12)
-        anchors = _find_anchors(transcript_words, book_words, n_size=12)
+        anchors = _find_anchors(transcript_words, book_words, n_size=_LEXICAL_ANCHOR_WORDS)
         
         # Sort by character position
         anchors.sort(key=lambda x: x['char'])

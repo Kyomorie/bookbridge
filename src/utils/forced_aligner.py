@@ -213,15 +213,18 @@ class ForcedAligner:
             except OSError:
                 pass
 
-    def align(self, audio_paths, full_text: str,
+    def align(self, audio_paths: str | os.PathLike | List[str | os.PathLike], full_text: str,
               text_range: Optional[Tuple[int, int]] = None,
-              boundaries: Optional[List[Dict]] = None) -> Optional[List[Dict]]:
+              boundaries: Optional[List[Dict]] = None,
+              exclude_spans: Optional[List[Tuple[int, int]]] = None) -> Optional[List[Dict]]:
         """Force-align audio (one path or a list of parts) to ``full_text``.
 
         A single forced_align pass costs ~frames x tokens and only fits short books.
         When ``boundaries`` (an existing ``[{char, ts}]`` lexical map) is supplied and
         a single pass would be too large, the book is aligned in text-partitioned
         chunks whose audio windows come from those boundaries — so any length fits.
+        Half-open ``exclude_spans`` contain unnarrated text: omit their words and
+        break chunks at each gap, leaving the final map to interpolate across it.
 
         Returns a ``{char, ts}`` map, or ``None`` on any failure (missing deps,
         decode error, empty text) so the caller can fall back to the lexical pipeline.
@@ -230,6 +233,18 @@ class ForcedAligner:
             return None
         start, end = text_range if text_range is not None else (0, len(full_text))
         if not 0 <= start < end <= len(full_text):
+            return None
+        spans: List[Tuple[int, int]] = []
+        for lo, hi in sorted(exclude_spans or []):
+            lo, hi = max(start, lo), min(end, hi)
+            if lo >= hi:
+                continue
+            if spans and lo <= spans[-1][1]:
+                spans[-1] = (spans[-1][0], max(spans[-1][1], hi))
+            else:
+                spans.append((lo, hi))
+        if spans and (not boundaries or len(boundaries) < 2):
+            logger.warning("⚠️ CTC: unnarrated spans require lexical boundaries; falling back to lexical")
             return None
         entries = [(word, char + start) for word, char in self._book_words(full_text[start:end])]
         if not entries:
@@ -243,7 +258,12 @@ class ForcedAligner:
 
             word_tokens: List[List[int]] = []
             kept: List[Tuple[str, int]] = []
+            span_idx = 0
             for word, char in entries:
+                while span_idx < len(spans) and spans[span_idx][1] <= char:
+                    span_idx += 1
+                if span_idx < len(spans) and spans[span_idx][0] <= char < spans[span_idx][1]:
+                    continue
                 ids = [self._dict[c] for c in word if c in self._dict]
                 if not ids:
                     continue
@@ -289,7 +309,7 @@ class ForcedAligner:
             # An oversized single pass does not raise a catchable error — it aborts
             # the whole process (CPU: 32-bit back-pointer overflow; GPU: the CUDA
             # kernel exceeds device memory and aborts, taking the container down, #426).
-            if self._single_pass_fits(emission.device, num_frames, num_targets):
+            if not spans and self._single_pass_fits(emission.device, num_frames, num_targets):
                 logger.info(
                     "⚙️ CTC: forced_align on %s (%s frames, %s tokens)",
                     emission.device, num_frames, num_targets,
@@ -308,6 +328,7 @@ class ForcedAligner:
                 )
                 char_times = self._chunked_word_times(
                     F, torch, emission, kept, word_tokens, seconds_per_frame, boundaries,
+                    exclude_spans=spans,
                 )
             else:
                 # Too large for one pass and no prior map to chunk against.
@@ -410,7 +431,8 @@ class ForcedAligner:
 
     def _chunked_word_times(self, F, torch, emission, kept: List[Tuple[str, int]],
                             word_tokens: List[List[int]], seconds_per_frame: float,
-                            boundaries: List[Dict]):
+                            boundaries: List[Dict],
+                            exclude_spans: Optional[List[Tuple[int, int]]] = None):
         """Align text-partitioned chunks whose audio windows come from ``boundaries``.
 
         Each chunk holds a disjoint slice of words (so every word gets exactly one
@@ -420,13 +442,19 @@ class ForcedAligner:
         """
         total_frames = emission.size(1)
         margin = max(1, int(round(self._CHUNK_MARGIN_SECONDS / seconds_per_frame)))
-        end_char = boundaries[-1].get("char", boundaries[-1].get("global_char", 0))
+        kept_chars = [char for _word, char in kept]
+        breaks = {bisect.bisect_left(kept_chars, lo): hi for lo, hi in (exclude_spans or [])}
+        break_indices = sorted(index for index in breaks if 0 < index < len(kept))
+        break_frames = [int(self._interp_ts(boundaries, breaks[index]) / seconds_per_frame)
+                        for index in break_indices]
         results: List[Tuple[int, float]] = []
         n = len(kept)
         i = 0
         while i < n:
             j, tok = i, 0
             while j < n and tok + len(word_tokens[j]) <= self._MAX_CHUNK_TOKENS:
+                if j > i and j in breaks:
+                    break
                 tok += len(word_tokens[j])
                 j += 1
             if j == i:
@@ -434,10 +462,21 @@ class ForcedAligner:
             last_chunk = j >= n
             char_lo = kept[i][1]
             char_hi = kept[n - 1][1] if last_chunk else kept[j][1]
+            if j in breaks:
+                char_hi = breaks[j]
             f_lo = max(0, int(self._interp_ts(boundaries, char_lo) / seconds_per_frame) - margin)
             tail_margin = margin * 2 if last_chunk else margin
             f_hi = min(total_frames,
                        int(self._interp_ts(boundaries, char_hi) / seconds_per_frame) + tail_margin)
+            # There is no audio for an excluded span. Meet at the right matched
+            # word's onset: the left anchor starts a whole n-gram earlier. Keeping
+            # the ordinary 15s overlap here drags the left phrase into the right
+            # narration and stitching then discards valid words at the seam.
+            region = bisect.bisect_right(break_indices, i)
+            if region:
+                f_lo = max(f_lo, break_frames[region - 1])
+            if region < len(break_frames):
+                f_hi = min(f_hi, break_frames[region])
             seg_tokens = sum(len(word_tokens[k]) for k in range(i, j))
             if f_hi - f_lo <= seg_tokens:
                 logger.warning("⚠️ CTC: chunk words[%s:%s] has too few frames (%s) for %s "
