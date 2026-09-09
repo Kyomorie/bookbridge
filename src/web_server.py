@@ -5408,6 +5408,7 @@ def _build_dashboard_mappings(
     if bookorbit_authors is None:
         bookorbit_authors = _prefetch_bookorbit_authors(books, integrations)
 
+    ctc_aligned_book_ids = database_service.get_ctc_aligned_book_ids()
     mappings = []
     total_duration = 0
     total_listened = 0
@@ -5425,6 +5426,7 @@ def _build_dashboard_mappings(
             bookfusion_by_book=bookfusion_by_book,
             bookorbit_authors=bookorbit_authors,
         )
+        mapping["ctc_aligned"] = book.abs_id in ctc_aligned_book_ids
         mappings.append(mapping)
 
         duration = mapping.get("duration", 0)
@@ -10188,11 +10190,12 @@ def api_status():
 def _build_dashboard_progress_rows(books, all_states):
     """The per-book fields the dashboard's periodic refresh actually redraws.
 
-    Deliberately derived from Book and State rows alone: no display-metadata
+    Derived from Book/State rows and scalar alignment status: no display-metadata
     resolution, no per-book service lookups, and above all no alignment map —
     which the full dashboard build loads per book to compute the drift badge
     (issue #412)."""
     states_by_book = _group_dashboard_states_by_book(all_states)
+    ctc_aligned_book_ids = database_service.get_ctc_aligned_book_ids()
     rows = []
 
     for book in books or []:
@@ -10216,6 +10219,7 @@ def _build_dashboard_progress_rows(books, all_states):
 
         rows.append({
             "abs_id": abs_id,
+            "ctc_aligned": abs_id in ctc_aligned_book_ids,
             "unified_progress": min(max_progress, 100.0),
             "last_sync": _format_dashboard_last_sync(latest_update_time),
             "last_sync_unix": latest_update_time,

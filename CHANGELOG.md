@@ -8,6 +8,11 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **See which books already use CTC alignment (#426).** A small CTC badge appears
+  beside the card's sync time. Its reset menu shows a disabled **Already using CTC**
+  action, while **Clear position** stays available. Both update on the dashboard's
+  normal refresh when an alignment finishes.
+
 - **Keep word-level audio timing during alignment (#426).** Built-in Whisper and
   compatible HTTP servers now supply word timestamps, and Storyteller re-alignment
   retains its existing word timing. Audio-part offsets and transcript caches preserve

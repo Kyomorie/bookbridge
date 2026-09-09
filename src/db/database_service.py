@@ -658,6 +658,14 @@ class DatabaseService:
                 return None
             return row[0] or ""
 
+    def get_ctc_aligned_book_ids(self) -> set[str]:
+        """Return CTC-aligned book IDs in one query without loading map blobs."""
+        with self.get_session() as session:
+            return {
+                row[0] for row in session.query(BookAlignment.abs_id)
+                .filter(BookAlignment.align_method == "ctc").all()
+            }
+
     def set_alignment_total_chars_if_missing(self, abs_id: str, total_chars: int) -> bool:
         """Record an ebook length on a map that has none. Returns whether it wrote.
 
