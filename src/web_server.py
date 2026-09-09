@@ -3548,6 +3548,29 @@ def _create_or_update_library_audio_mapping(
             storyteller_manifest,
         )
 
+    # Resolve series from the owning library so the mapping collapses into its series
+    # card immediately. The other match paths already do this (ABS metadata; the
+    # shelf-watch / book_mapping_service path), but the library-audio path (BookOrbit/
+    # Grimmory) did not, so a freshly matched book had no series until a manual
+    # backfill. One detail call per match; matches are infrequent.
+    if not target_book.series_name:
+        try:
+            resolution = resolve_series_details(
+                target_book,
+                abs_client=uc().abs_client,
+                bookorbit_client=uc().bookorbit_client,
+                booklore_client=uc().booklore_client,
+                kavita_client=uc().kavita_client,
+            )
+            if resolution.name:
+                target_book.series_name = resolution.name
+                target_book.series_sequence = resolution.sequence
+        except Exception as series_err:
+            logger.warning(
+                "Series resolve on match failed for '%s': %s",
+                sanitize_log_data(target_book.abs_title), series_err, exc_info=True,
+            )
+
     saved_book = database_service.save_book(target_book)
 
     # An ebook-only mapping for this same ebook may already exist -- adding an

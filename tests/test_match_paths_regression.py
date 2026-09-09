@@ -359,6 +359,38 @@ class TestMatchPathsRegression(unittest.TestCase):
         self.assertEqual(saved_book.abs_id, "uuid-legacy-1")
 
     @patch("src.web_server.get_kosync_id_for_ebook", return_value="1234567890abcdef1234567890abcdef")
+    def test_library_audio_match_resolves_series_on_match(self, _mock_kosync):
+        """A BookOrbit/Grimmory audio match resolves series at match time, so the book
+        collapses into its series card without a manual backfill."""
+        from src.utils.series_metadata import SeriesResolution
+
+        db = self.mock_container.mock_database_service
+        db.get_book.return_value = None
+        db.get_book_by_audio_source.return_value = None
+        db.save_book.side_effect = lambda book: book
+
+        with patch(
+            "src.web_server.resolve_series_details",
+            return_value=SeriesResolution("The Reckoning", 3.0, "bookorbit", True),
+        ) as resolve:
+            response = self.client.post(
+                "/match",
+                data={
+                    "audio_source": "BookOrbit",
+                    "audio_source_id": "5143",
+                    "ebook_filename": "b.epub",
+                    "ebook_source": "BookOrbit",
+                    "ebook_source_id": "2171",
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        resolve.assert_called_once()
+        saved_book = db.save_book.call_args[0][0]
+        self.assertEqual(saved_book.series_name, "The Reckoning")
+        self.assertEqual(saved_book.series_sequence, 3.0)
+
+    @patch("src.web_server.get_kosync_id_for_ebook", return_value="1234567890abcdef1234567890abcdef")
     def test_match_route_creates_ebook_only_mapping_from_storyteller_without_audiobook(self, _mock_kosync):
         self.mock_container.mock_storyteller_client.download_slim_book.return_value = True
         self.mock_container.mock_storyteller_client.is_configured.return_value = True
