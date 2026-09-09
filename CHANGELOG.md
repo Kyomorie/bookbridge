@@ -79,6 +79,17 @@ All notable changes to BookBridge will be documented in this file.
   Cached tracks are also checked against BookOrbit's file size and re-downloaded
   when incomplete, preventing repeated mapping failures on the same partial audio.
 
+- **An interrupted download no longer destroys the copy you already had.** Every
+  book and audiobook transfer — Audiobookshelf, Calibre-Web Automated, Grimmory,
+  BookOrbit, Storyteller and the transcription inputs — is now written beside its
+  destination and only put in place once the whole file has arrived and been
+  checked. A dropped connection, an empty reply, a short stream or a server error
+  page leaves the previous file exactly as it was instead of overwriting it with
+  something unusable, and no half-finished file is left behind for the next run to
+  pick up. Storyteller's ReadAloud EPUB is additionally opened and checksummed
+  before it is accepted. Downloads from servers that compress their responses are
+  no longer mistaken for truncated ones.
+
 - **A remap never downgrades a book's alignment, and a bad remap can be undone (#426).**
   A CTC remap now has to clear a quality bar before it replaces the existing map: a
   degenerate result (one big interpolated stretch of text with no anchor), or one that

@@ -13,11 +13,43 @@ from urllib.parse import unquote
 
 import requests
 
+from src.utils.file_transfers import (
+    IncompleteTransferError,
+    copy_file_to_path,
+    response_declares_size,
+    stream_response_to_path,
+)
 from src.sync_clients.sync_client_interface import LocatorResult
 from src.utils.logging_utils import sanitize_log_data
 from src.utils.user_config import resolve_setting
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_epub_zip(path: Path) -> None:
+    """Reject a readaloud artifact whose zip is truncated or corrupt.
+
+    A short EPUB3 can otherwise sit in the cache looking usable and fail much
+    later inside parsing, so the CRC check happens before the file is published.
+    """
+    try:
+        with zipfile.ZipFile(path) as archive:
+            broken = archive.testzip()
+            if broken is not None:
+                raise IncompleteTransferError(
+                    f"corrupt entry {broken} in downloaded EPUB {path}",
+                    actual_size=path.stat().st_size,
+                )
+            if not archive.namelist():
+                raise IncompleteTransferError(
+                    f"empty EPUB archive {path}", actual_size=path.stat().st_size
+                )
+    except zipfile.BadZipFile as e:
+        raise IncompleteTransferError(
+            f"downloaded EPUB {path} is not a valid zip: {e}",
+            actual_size=path.stat().st_size,
+        ) from e
+
 
 class StorytellerAPIClient:
     # Audio resources embedded in a ReadAloud EPUB. The bridge only needs the
@@ -732,8 +764,9 @@ class StorytellerAPIClient:
         # We need to manually construct the request to handle streaming
         token = self._get_fresh_token()
         if not token: return False
-        headers = {"Authorization": f"Bearer {token}"}
-        
+        # identity encoding keeps Content-Length comparable with the bytes written.
+        headers = {"Authorization": f"Bearer {token}", "Accept-Encoding": "identity"}
+
         # Try API Download First
         try:
             if polling:
@@ -742,9 +775,14 @@ class StorytellerAPIClient:
                 logger.info(f"⚡ Attempting download from '{url}'")
             with self.session.get(url, headers=headers, params={"format": "readaloud"}, stream=True, timeout=60) as r:
                 if r.status_code == 200:
-                    with open(output_path, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=8192): 
-                            f.write(chunk)
+                    # Publish only a complete, readable EPUB: a truncated readaloud
+                    # artifact must never replace a good one in the cache.
+                    stream_response_to_path(
+                        r,
+                        output_path,
+                        expected_size=response_declares_size(r),
+                        validator=_validate_epub_zip,
+                    )
                     logger.info(f"✅ Downloaded Storyteller artifact for '{book_uuid}' to '{output_path}'")
                     return True
                 else:
@@ -807,8 +845,7 @@ class StorytellerAPIClient:
             logger.info(f"🔄 Attempting local fallback from: '{local_path}'")
             
             if local_path.exists():
-                import shutil
-                shutil.copy2(local_path, output_path)
+                copy_file_to_path(local_path, output_path, validator=_validate_epub_zip)
                 logger.info(f"✅ Downloaded (via Local Copy) Storyteller artifact for '{book_uuid}'")
                 return True
             else:
@@ -818,7 +855,7 @@ class StorytellerAPIClient:
                  logger.error(f"❌ Local fallback file not found: '{local_path}'")
                  # Try unmapped?
                  if Path(source_path).exists():
-                     shutil.copy2(source_path, output_path)
+                     copy_file_to_path(source_path, output_path, validator=_validate_epub_zip)
                      logger.info(f"✅ Downloaded (via Direct Path) Storyteller artifact")
                      return True
                  

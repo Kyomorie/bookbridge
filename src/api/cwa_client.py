@@ -1,4 +1,3 @@
-import os
 import re
 import requests
 import logging
@@ -6,6 +5,11 @@ import base64
 from defusedxml import ElementTree as ET
 from urllib.parse import quote
 
+from src.utils.file_transfers import (
+    IncompleteTransferError,
+    response_declares_size,
+    stream_response_to_path,
+)
 from src.utils.logging_utils import get_persistent_condition_logger
 from src.utils.user_config import resolve_setting
 
@@ -411,22 +415,28 @@ class CWAClient:
             # Clear cookies manually for download too
             self.session.cookies.clear()
             
-            with self.session.get(download_url, stream=True, timeout=120) as r:
+            # identity encoding keeps Content-Length comparable with the bytes written.
+            headers = {"Accept-Encoding": "identity"}
+            with self.session.get(download_url, headers=headers, stream=True, timeout=120) as r:
                 r.raise_for_status()
-                with open(output_path, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-            
-            # Verify file size
-            if os.path.getsize(output_path) < 1024:
-                logger.warning(f"⚠️ Downloaded file is too small ({os.path.getsize(output_path)} bytes), likely failed")
-                return False
-                
-            return True
+                try:
+                    # Historical floor: smaller than 1 KiB is an error page, not an ebook.
+                    return stream_response_to_path(
+                        r,
+                        output_path,
+                        expected_size=response_declares_size(r),
+                        min_size=1023,
+                    )
+                except IncompleteTransferError as e:
+                    logger.warning(
+                        f"⚠️ Downloaded file is too small ({e.actual_size} bytes), likely failed",
+                        exc_info=True,
+                    )
+                    return False
         except Exception as e:
             logger.error(f"❌ CWA Download failed: {e}", exc_info=True)
-            if os.path.exists(output_path):
-                os.remove(output_path)
+            # A failed transfer must not destroy a previously valid destination; the
+            # staged-file publication path only replaces the final file after success.
             return False
 
     def get_book_uuid(self, calibre_id: str) -> str | None:

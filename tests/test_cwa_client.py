@@ -1,5 +1,7 @@
 import unittest
 import os
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from src.api.cwa_client import CWAClient
 
@@ -42,14 +44,19 @@ class TestCWAClient(unittest.TestCase):
 
     @patch('requests.Session.get')
     def test_download_ebook(self, mock_get):
+        # The download is staged beside the destination and published on success,
+        # so the assertion is on what lands on disk rather than on the open() call.
+        payload = b"fake content" * 100
         mock_get.return_value.__enter__.return_value.status_code = 200
-        mock_get.return_value.__enter__.return_value.iter_content.return_value = [b"fake content" * 100]
-        
-        with patch('builtins.open', unittest.mock.mock_open()) as mock_file:
-            with patch('os.path.getsize', return_value=2000): # Mock size > 1024
-                 success = self.client.download_ebook('http://url', 'test.epub')
-                 self.assertTrue(success)
-                 mock_file.assert_called_with('test.epub', 'wb')
+        mock_get.return_value.__enter__.return_value.headers = {}
+        mock_get.return_value.__enter__.return_value.iter_content.return_value = [payload]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'test.epub'
+            success = self.client.download_ebook('http://url', str(target))
+
+            self.assertTrue(success)
+            self.assertEqual(target.read_bytes(), payload)
 
     def test_get_book_by_id_rejects_missing_identifier(self):
         with patch.object(self.client.session, 'get') as mock_get:
@@ -126,3 +133,63 @@ class TestCWAClient(unittest.TestCase):
         self._mock_search(mock_get, self._SERIES_FEED)
         uuid = self.client.get_book_uuid('505')
         self.assertEqual(uuid, 'd02f40b4-873a-4d04-8c56-ffcf3033979d')
+
+
+class TestCWADownloadPublication(unittest.TestCase):
+    """A failed ebook download must never replace a good file in the cache."""
+
+    def setUp(self):
+        self.env_patcher = patch.dict('os.environ', {
+            'CWA_ENABLED': 'true',
+            'CWA_SERVER': 'http://cwa:8083',
+            'CWA_USERNAME': 'user',
+            'CWA_PASSWORD': 'pass',
+        })
+        self.env_patcher.start()
+        self.client = CWAClient()
+        self.client.session = MagicMock()
+
+    def tearDown(self):
+        self.env_patcher.stop()
+
+    def _respond(self, chunks, headers):
+        response = MagicMock()
+        response.status_code = 200
+        response.headers = headers
+        response.__enter__.return_value = response
+        response.iter_content.return_value = chunks
+        self.client.session.get.return_value = response
+
+    def test_truncated_download_preserves_existing_ebook(self):
+        self._respond([b'x' * 500], {'Content-Length': '4096'})
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'book.epub'
+            target.write_bytes(b'a previously downloaded epub')
+
+            self.assertFalse(self.client.download_ebook('http://cwa:8083/dl/1', str(target)))
+            self.assertEqual(target.read_bytes(), b'a previously downloaded epub')
+            self.assertEqual(list(Path(tmp).glob('*.part')), [])
+
+    def test_error_page_is_rejected_as_too_small(self):
+        self._respond([b'<html>Not found</html>'], {})
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'book.epub'
+
+            self.assertFalse(self.client.download_ebook('http://cwa:8083/dl/1', str(target)))
+            self.assertFalse(target.exists())
+
+    def test_complete_download_is_published(self):
+        self._respond([b'y' * 4096], {'Content-Length': '4096'})
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'book.epub'
+
+            self.assertTrue(self.client.download_ebook('http://cwa:8083/dl/1', str(target)))
+            self.assertEqual(target.stat().st_size, 4096)
+
+    def test_transparently_decoded_body_is_accepted(self):
+        self._respond([b'z' * 4096], {'Content-Length': '900', 'Content-Encoding': 'gzip'})
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'book.epub'
+
+            self.assertTrue(self.client.download_ebook('http://cwa:8083/dl/1', str(target)))
+            self.assertEqual(target.stat().st_size, 4096)

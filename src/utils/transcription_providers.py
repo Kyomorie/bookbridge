@@ -263,21 +263,33 @@ class WhisperCppServerProvider(TranscriptionProvider):
         if source_str.startswith(("http://", "https://")):
             # Raw mode with a stream URL: buffer the source to a temp file so the
             # multipart upload has a real file with a known size.
+            import shutil
             import tempfile
 
+            from src.utils.file_transfers import (
+                response_declares_size,
+                stream_response_to_path,
+            )
+
             suffix = Path(label).suffix or ".mp3"
-            tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
-            tmp_path = Path(tmp.name)
+            # A truncated buffer must never reach the transcription server, so the
+            # upload only sees a file the transfer helper accepted as complete.
+            tmp_dir = tempfile.mkdtemp(prefix="bookbridge_raw_audio_")
+            tmp_path = Path(tmp_dir) / f"raw_audio{suffix}"
             try:
-                with requests.get(source_str, stream=True, timeout=300) as r:
+                # identity encoding keeps Content-Length comparable.
+                headers = {"Accept-Encoding": "identity"}
+                with requests.get(source_str, headers=headers, stream=True, timeout=300) as r:
                     r.raise_for_status()
-                    for chunk in r.iter_content(chunk_size=1 << 20):
-                        tmp.write(chunk)
-                tmp.close()
+                    stream_response_to_path(
+                        r,
+                        tmp_path,
+                        expected_size=response_declares_size(r),
+                        chunk_size=1 << 20,
+                    )
                 return self._upload(tmp_path, label)
             finally:
-                tmp.close()
-                tmp_path.unlink(missing_ok=True)
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
         return self._upload(Path(source_str), label)
 

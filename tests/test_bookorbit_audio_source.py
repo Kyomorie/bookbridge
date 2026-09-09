@@ -2,8 +2,10 @@
 BookOrbitAudioSourceAdapter, forge staging, and sync_manager wiring."""
 
 import json
+import logging
 import os
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, PropertyMock, patch
@@ -12,6 +14,8 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from src.api.api_clients import ABSClient
+from src.api.booklore_client import BookloreClient
 from src.api.bookorbit_client import BookOrbitClient
 from src.services.audio_source_adapters import AudioResult, BookOrbitAudioSourceAdapter
 from src.services.forge_service import ForgeService
@@ -292,6 +296,128 @@ def test_adapter_rejects_short_download_without_content_length(tmp_path, streami
     with pytest.raises(RuntimeError, match="got 7 bytes, expected 12"):
         adapter.get_audio_files("5542", bridge_key="bookorbit:5542")
     assert not (tmp_path / "audio_cache/bookorbit_5542/source_tracks/track_000.m4b").exists()
+
+
+def test_abs_download_file_preserves_existing_file_on_incomplete_response(tmp_path):
+    client = ABSClient()
+    client.session = MagicMock()
+    response = MagicMock()
+    response.status_code = 200
+    response.headers = {"Content-Length": "12"}
+    response.__enter__.return_value = response
+    response.iter_content.return_value = [b"partial"]
+    client.session.get.return_value = response
+
+    target = tmp_path / "track.mp3"
+    target.write_bytes(b"original")
+
+    assert client.download_file("http://example.test/file.mp3", str(target)) is False
+    assert target.read_bytes() == b"original"
+    assert list(tmp_path.glob("*.part")) == []
+
+
+def test_booklore_track_download_preserves_existing_file_on_incomplete_response(tmp_path):
+    client = BookloreClient(database_service=MagicMock())
+    client._get_fresh_token = MagicMock(return_value="token")
+    response = MagicMock()
+    response.status_code = 200
+    response.headers = {"Content-Length": "12"}
+    response.__enter__.return_value = response
+    response.iter_content.return_value = [b"partial"]
+    client.session.get = MagicMock(return_value=response)
+
+    target = tmp_path / "track.mp3"
+    target.write_bytes(b"original")
+
+    assert client.download_audiobook_track("book-1", 0, str(target)) is False
+    assert target.read_bytes() == b"original"
+    assert list(tmp_path.glob("*.part")) == []
+
+
+def _encoded_response(payload):
+    """A gzip response: Content-Length is the wire size, iter_content is decoded."""
+    response = MagicMock()
+    response.status_code = 200
+    response.headers = {"Content-Length": "12", "Content-Encoding": "gzip"}
+    response.__enter__.return_value = response
+    response.iter_content.return_value = [payload]
+    return response
+
+
+def test_abs_download_file_accepts_a_transparently_decoded_body(tmp_path):
+    """Content-Length counts compressed bytes, so it must not reject a good download."""
+    client = ABSClient()
+    client.session = MagicMock()
+    client.session.get.return_value = _encoded_response(b"A" * 5000)
+
+    target = tmp_path / "book.epub"
+    assert client.download_file("http://example.test/book.epub", str(target)) is True
+    assert target.stat().st_size == 5000
+
+
+def test_booklore_track_download_accepts_a_transparently_decoded_body(tmp_path):
+    client = BookloreClient(database_service=MagicMock())
+    client._get_fresh_token = MagicMock(return_value="token")
+    client.session.get = MagicMock(return_value=_encoded_response(b"A" * 5000))
+
+    target = tmp_path / "track.mp3"
+    assert client.download_audiobook_track("book-1", 0, str(target)) is True
+    assert target.stat().st_size == 5000
+
+
+def test_abs_download_file_reports_truncation_with_byte_counts(caplog):
+    """The truncation diagnostic issue reporters paste back must still fire."""
+    client = ABSClient()
+    client.session = MagicMock()
+    response = MagicMock()
+    response.status_code = 200
+    response.headers = {"Content-Length": "12"}
+    response.__enter__.return_value = response
+    response.iter_content.return_value = [b"partial"]
+    client.session.get.return_value = response
+
+    with tempfile.TemporaryDirectory() as tmp:
+        with caplog.at_level(logging.ERROR):
+            assert client.download_file("http://example.test/f.mp3", str(Path(tmp) / "f.mp3")) is False
+
+    assert "❌ ABS Download truncated: got 7 bytes, expected 12" in caplog.text
+
+
+def test_abs_download_file_rejects_an_error_page_without_clobbering_the_cache(tmp_path):
+    """A complete but 1 KiB body is an error page; the cached file must survive."""
+    client = ABSClient()
+    client.session = MagicMock()
+    response = MagicMock()
+    response.status_code = 200
+    response.headers = {"Content-Length": "100"}
+    response.__enter__.return_value = response
+    response.iter_content.return_value = [b"B" * 100]
+    client.session.get.return_value = response
+
+    target = tmp_path / "book.epub"
+    target.write_bytes(b"a previously downloaded epub")
+
+    assert client.download_file("http://example.test/book.epub", str(target)) is False
+    assert target.read_bytes() == b"a previously downloaded epub"
+
+
+def test_booklore_whole_file_download_keeps_previous_file_when_stream_truncates(tmp_path):
+    """A rejected candidate endpoint must not leave a partial audiobook behind."""
+    client = BookloreClient(database_service=MagicMock())
+    client._get_fresh_token = MagicMock(return_value="token")
+    response = MagicMock()
+    response.status_code = 200
+    response.headers = {"Content-Length": "5000"}
+    response.__enter__.return_value = response
+    response.iter_content.return_value = [b"partial"]
+    client.session.get = MagicMock(return_value=response)
+
+    target = tmp_path / "book.m4b"
+    target.write_bytes(b"a previously downloaded audiobook")
+
+    assert client.download_book_to_path("book-1", str(target), expected_size=5000) is False
+    assert target.read_bytes() == b"a previously downloaded audiobook"
+    assert list(tmp_path.glob("*.part")) == []
 
 
 # ---------------------------------------------------------------------------
