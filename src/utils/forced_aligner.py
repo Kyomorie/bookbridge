@@ -378,6 +378,8 @@ class ForcedAligner:
     # Extra audio kept on each side of a chunk so a slightly-off lexical boundary
     # still contains the chunk's true speech (edge audio is absorbed by forced_align).
     _CHUNK_MARGIN_SECONDS = 15.0
+    # Bound total second-pass native work as well as each call's memory footprint.
+    _MAX_RECOVERY_CELLS = 2**38
 
     def _single_pass_fits(self, device, num_frames: int, num_targets: int) -> bool:
         """Whether one forced_align over the whole book is safe on this device."""
@@ -434,119 +436,89 @@ class ForcedAligner:
                                 boundaries: List[Dict], word_ts: List[Optional[float]],
                                 total_frames: int, exclude_spans: List[Tuple[int, int]]
                                 ) -> List[Optional[float]]:
-        """Recover skipped chunks via a second pass within bracketing anchor times.
+        """Recover missing words once, within CTC anchors and hard exclusion edges."""
+        kept_chars = [char for _word, char in kept]
+        breaks = {bisect.bisect_left(kept_chars, lo): hi for lo, hi in exclude_spans}
+        edges = [0] + sorted(index for index in breaks if 0 < index < len(kept)) + [len(kept)]
+        frames = [0] + [int(self._interp_ts(boundaries, breaks[index]) / seconds_per_frame)
+                        for index in edges[1:-1]] + [total_frames]
+        margin = max(1, int(round(self._CHUNK_MARGIN_SECONDS / seconds_per_frame)))
+        # Prefix sums keep splitting linear in the word count, even for long gaps.
+        offsets = [0]
+        for tokens in word_tokens:
+            offsets.append(offsets[-1] + len(tokens))
+        work_left = self._MAX_RECOVERY_CELLS
 
-        When Pass 1 skips a chunk (too few frames for tokens, usually due to compressed
-        lexical timing), this pass re-aligns that span's words within the time window
-        defined by its neighboring Pass 1 anchors. Only attempts recovery when:
-        - The run is bracketed by aligned words (not at book start/end).
-        - The bracketing window contains enough audio (fb - fa > T, where T is token count).
-        - The run does not lie entirely within an excluded span.
-
-        Proportionally sub-chunks the run and aligns each sub-chunk. On success,
-        updates word_ts in-place; failed sub-chunks remain None (interpolated).
-        """
-        # Find runs of consecutive None in word_ts.
-        runs = []
-        start = None
-        for k in range(len(word_ts)):
-            if word_ts[k] is None:
-                if start is None:
-                    start = k
-            else:
-                if start is not None:
-                    runs.append((start, k))
-                    start = None
-        if start is not None:
-            runs.append((start, len(word_ts)))
-
-        # Build a set of excluded char ranges (clamped to [0, len(kept))).
-        excluded_indices = set()
-        for lo, hi in exclude_spans:
-            lo_idx = bisect.bisect_left([c for _, c in kept], lo)
-            hi_idx = bisect.bisect_right([c for _, c in kept], hi)
-            for idx in range(max(0, lo_idx), min(hi_idx, len(kept))):
-                excluded_indices.add(idx)
-
-        # Attempt recovery for each run.
-        for run_start, run_end in runs:
-            # Skip if the entire run is inside an excluded span.
-            if all(idx in excluded_indices for idx in range(run_start, run_end)):
-                continue
-
-            # Find bracketing anchors: last aligned before, first aligned after.
-            a = run_start - 1
-            while a >= 0 and word_ts[a] is None:
-                a -= 1
-            b = run_end
-            while b < len(word_ts) and word_ts[b] is None:
-                b += 1
-
-            if a < 0 or b >= len(word_ts):
-                # Run touches book start or end; no recovery.
-                continue
-
-            # Compute the time window from bracketing anchors.
-            fa = word_ts[a] / seconds_per_frame
-            fb = word_ts[b] / seconds_per_frame
-            T = sum(len(word_tokens[k]) for k in range(run_start, run_end))
-
-            # Guard: no real audio in the window.
-            if fb - fa <= T:
-                continue
-
-            # Sub-chunk the run proportionally and recover within [fa, fb].
-            margin = max(1, int(round(self._CHUNK_MARGIN_SECONDS / seconds_per_frame)))
-            p = run_start
-            while p < run_end:
-                # Build a sub-chunk of up to _MAX_CHUNK_TOKENS.
-                q = p
-                sub_tok = 0
-                while q < run_end and sub_tok + len(word_tokens[q]) <= self._MAX_CHUNK_TOKENS:
-                    q += 1
-                if q == p:
-                    q = p + 1
-
-                # Compute the proportional window for this sub-chunk.
-                c0 = sum(len(word_tokens[k]) for k in range(run_start, p))
-                c1 = c0 + sum(len(word_tokens[k]) for k in range(p, q))
-                # Linear interpolation within [fa, fb].
-                wlo = fa + (fb - fa) * c0 / T - margin
-                whi = fa + (fb - fa) * c1 / T + margin
-                wlo = max(0, wlo)
-                whi = min(total_frames, whi)
-
-                # Guard: still too few frames for tokens.
-                sub_tokens = sum(len(word_tokens[k]) for k in range(p, q))
-                if whi - wlo <= sub_tokens:
-                    logger.debug(
-                        "CTC recovery: sub-chunk words[%s:%s] still too few frames (%s) for "
-                        "%s tokens in window [%.0f, %.0f]; skipping", p, q, int(whi - wlo),
-                        sub_tokens, wlo, whi,
-                    )
-                    p = q
+        for region_start, region_end, audio_lo, audio_hi in zip(
+                edges, edges[1:], frames, frames[1:]):
+            i = region_start
+            while i < region_end:
+                if word_ts[i] is not None:
+                    i += 1
+                    continue
+                j = i + 1
+                while j < region_end and word_ts[j] is None:
+                    j += 1
+                # Only an exclusion edge can substitute for a missing CTC anchor.
+                # At the book's outer edges we still leave the run interpolated.
+                if (i == 0 or j == len(kept)):
+                    i = j
+                    continue
+                fa = audio_lo if i == region_start else word_ts[i - 1] / seconds_per_frame
+                fb = audio_hi if j == region_end else word_ts[j] / seconds_per_frame
+                total_tokens = offsets[j] - offsets[i]
+                if fb - fa <= total_tokens:
+                    logger.debug("CTC recovery: words[%s:%s] have too little bracketing "
+                                 "audio (%s frames for %s tokens); leaving gap",
+                                 i, j, int(fb - fa), total_tokens)
+                    i = j
                     continue
 
-                # Attempt alignment within the proportional window.
-                times = self._segment_word_times(
-                    F, torch, emission[:, int(wlo):int(whi)], word_tokens[p:q],
-                    seconds_per_frame, frame_offset=int(wlo),
-                )
-                if times is not None:
-                    for k, ts in enumerate(times):
-                        word_ts[p + k] = ts
-                    logger.debug(
-                        "CTC recovery: recovered sub-chunk words[%s:%s] within proportional "
-                        "window [%.0f, %.0f]", p, q, wlo, whi,
-                    )
-                else:
-                    logger.debug(
-                        "CTC recovery: sub-chunk words[%s:%s] failed to align within window "
-                        "[%.0f, %.0f]; leaving gap", p, q, wlo, whi,
-                    )
-
-                p = q
-
+                p = i
+                last_ts = fa * seconds_per_frame
+                while p < j:
+                    q = p
+                    while q < j and offsets[q + 1] - offsets[p] <= self._MAX_CHUNK_TOKENS:
+                        q += 1
+                    if q == p:  # An individual word over the token limit cannot be split.
+                        p += 1
+                        continue
+                    while True:
+                        c0, c1 = offsets[p] - offsets[i], offsets[q] - offsets[i]
+                        wlo = max(audio_lo, int(fa + (fb - fa) * c0 / total_tokens) - margin)
+                        whi = min(audio_hi, int(fa + (fb - fa) * c1 / total_tokens) + margin)
+                        token_count = c1 - c0
+                        fits = (whi - wlo > token_count and
+                                self._single_pass_fits(emission.device, whi - wlo, token_count))
+                        if fits or q == p + 1:
+                            break
+                        q = p + (q - p) // 2
+                    if not fits:
+                        p = q
+                        continue
+                    cost = (whi - wlo) * (2 * token_count + 1)
+                    if cost > work_left:
+                        logger.warning("CTC recovery: work budget exhausted; leaving remaining gaps")
+                        return word_ts
+                    work_left -= cost
+                    try:
+                        times = self._segment_word_times(
+                            F, torch, emission[:, wlo:whi], word_tokens[p:q],
+                            seconds_per_frame, frame_offset=wlo,
+                        )
+                    except RuntimeError:
+                        logger.debug("CTC recovery: words[%s:%s] failed; leaving gap",
+                                     p, q, exc_info=True)
+                        times = None
+                    if times is not None:
+                        for k, ts in enumerate(times):
+                            # Overlapping windows can select an earlier occurrence.
+                            # Preserve both bracketing anchors and previous recovery.
+                            if last_ts <= ts <= fb * seconds_per_frame:
+                                word_ts[p + k] = ts
+                                last_ts = ts
+                    p = q
+                i = j
         return word_ts
 
     def _chunked_word_times(self, F, torch, emission, kept: List[Tuple[str, int]],
@@ -567,7 +539,6 @@ class ForcedAligner:
         break_indices = sorted(index for index in breaks if 0 < index < len(kept))
         break_frames = [int(self._interp_ts(boundaries, breaks[index]) / seconds_per_frame)
                         for index in break_indices]
-        # PHASE 1: Dense word_ts tracking so skipped runs are recoverable for Phase 2.
         word_ts: List[Optional[float]] = [None] * len(kept)
         n = len(kept)
         i = 0
@@ -620,21 +591,22 @@ class ForcedAligner:
                 failed_words += j - i
             i = j
 
-        # PHASE 2: Recover skipped runs using bracketing anchor times from Phase 1.
         word_ts = self._recover_skipped_spans(
             F, torch, emission, kept, word_tokens, seconds_per_frame, boundaries,
             word_ts, total_frames, exclude_spans or [],
         )
 
         if skipped_chunks or failed_chunks:
-            logger.warning(
+            remaining = sum(ts is None for ts in word_ts)
+            recovered = skipped_words + failed_words - remaining
+            logger.log(
+                logging.WARNING if remaining else logging.INFO,
                 "⚠️ CTC: %d chunk(s)/%d words skipped for too few frames and %d chunk(s)/%d "
-                "words failed to align; those spans are interpolated (usually compressed "
-                "lexical timing in the source map)",
-                skipped_chunks, skipped_words, failed_chunks, failed_words,
+                "words failed to align in first pass; recovery aligned %d words; "
+                "%d words remain interpolated (usually compressed lexical timing in the source map)",
+                skipped_chunks, skipped_words, failed_chunks, failed_words, recovered, remaining,
             )
 
-        # Build final results from word_ts, dropping None entries.
         results: List[Tuple[int, float]] = [
             (kept[k][1], word_ts[k]) for k in range(len(kept)) if word_ts[k] is not None
         ]

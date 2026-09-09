@@ -412,142 +412,168 @@ def test_ctc_enabled_reads_env():
         os.environ.pop("CTC_ENABLED", None)
 
 
-# ============================================================================
-# Phase 2 recovery tests (Option C)
-# ============================================================================
-
-def test_recovery_recovers_compressed_region_via_bracketing_anchors():
-    """A region with compressed lexical timing is recovered via Phase 2."""
+@pytest.fixture
+def recovery_book():
+    """Real CTC emissions, with lexical compression that provably skips two chunks."""
     torch = pytest.importorskip("torch")
     torchaudio = pytest.importorskip("torchaudio")
-    import torch.nn.functional as NN
-
     letters = list("abcdefghijklmnopqrstuvwxyz")
-    full_text = " ".join(letters)
-    d = torchaudio.pipelines.MMS_FA.get_dict()
-    per = 4
-    n_frames = len(letters) * per
-    emis = torch.full((1, n_frames, len(d)), -10.0)
-    emis[0, :, 0] = -1.0
-    for i, ch in enumerate(letters):
-        for f in range(per):
-            emis[0, i * per + f, d[ch]] = 0.0
-    emission = NN.log_softmax(emis, dim=-1)
-
-    aligner = ForcedAligner()
-    cursor = 0
-
-    def fake_model(piece):
-        nonlocal cursor
-        cnt = piece.size(1) // 1600
-        chunk = emission[:, cursor:cursor + cnt]
-        cursor += cnt
-        return chunk, None
-
-    def fake_load(self):
-        self._model = fake_model
-        self._dict = d
-        self._device = "cpu"
-        self._sample_rate = 16000
-
-    waveform = torch.zeros(1, n_frames * 1600)
-    # Boundaries: correct times for a-f and q-z, but COMPRESSED times for g-p
-    # (middle 10 letters squeezed into 0.4s instead of 4.0s).
-    boundaries = [
-        {"char": 0, "ts": 0.0},
-        {"char": 2, "ts": 0.4},   # a
-        {"char": 4, "ts": 0.8},   # b
-        {"char": 6, "ts": 1.2},   # c
-        {"char": 8, "ts": 1.6},   # d
-        {"char": 10, "ts": 2.0},  # e
-        {"char": 12, "ts": 2.4},  # f
-        # Compressed: g-p in 0.4s (should be 4.0s)
-        {"char": 14, "ts": 2.8},  # g (late start of compression)
-        {"char": 32, "ts": 3.2},  # p (end of compression, 0.4s later)
-        # Back to normal: q-z
-        {"char": 34, "ts": 7.2},  # q
-        {"char": 36, "ts": 7.6},  # r
-        {"char": 38, "ts": 8.0},  # s
-        {"char": 40, "ts": 8.4},  # t
-        {"char": 42, "ts": 8.8},  # u
-        {"char": 44, "ts": 9.2},  # v
-        {"char": 46, "ts": 9.6},  # w
-        {"char": 48, "ts": 10.0}, # x
-        {"char": 50, "ts": 10.4}, # y
-        {"char": 52, "ts": 10.8}, # z
-    ]
-
-    with patch.object(ForcedAligner, "_load", fake_load), \
-         patch.object(ForcedAligner, "_load_audio", return_value=waveform), \
-         patch.object(ForcedAligner, "_MAX_CHUNK_TOKENS", 2):  # Force small chunks.
-        result = aligner.align(
-            ["/fake.m4b"], full_text, boundaries=boundaries, exclude_spans=[]
-        )
-
-    assert result is not None
-    # The middle region (g-p, chars 14-32) should now be recovered, not skipped.
-    result_chars = [p["char"] for p in result]
-    assert 14 in result_chars, "Recovery should have aligned 'g'"
-    assert 32 in result_chars, "Recovery should have aligned 'p'"
-    # All letters should be present (no gaps due to recovery).
+    dictionary = torchaudio.pipelines.MMS_FA.get_dict()
+    emission = torch.full((1, 104, len(dictionary)), -10.0)
+    emission[0, :, 0] = -1.0
     for i, letter in enumerate(letters):
-        expected_char = i * 2 if i > 0 else 0
-        assert expected_char in result_chars, f"Letter {letter} (char {expected_char}) should be in result"
-    # Monotonic ts.
-    ts = [p["ts"] for p in result]
-    assert ts == sorted(ts), "Result should be monotonic"
+        emission[0, i * 4:(i + 1) * 4, dictionary[letter]] = 0.0
+    emission = torch.log_softmax(emission, dim=-1)
+
+    def run(compressed=True, exclusion_at=None, recover=True):
+        text = " ".join(letters)
+        excluded = []
+        if exclusion_at is not None:
+            char = 2 * exclusion_at
+            text = text[:char] + "note " * 40 + text[char:]
+            excluded = [(char, char + 200)]
+        aligner = ForcedAligner()
+        aligner._dict = dictionary
+        aligner._device = "cpu"
+        entries = [(word, char) for word, char in aligner._book_words(text) if word in letters]
+        boundaries = [{"char": char, "ts": i * 0.4}
+                      for i, (_word, char) in enumerate(entries)]
+        if compressed:
+            for i in range(8, 20):
+                boundaries[i]["ts"] = 3.2 + (i - 8) * 0.001
+        # Exclusion edges have known audio onsets, independent of compressed chunks.
+        if exclusion_at is not None:
+            boundaries[exclusion_at]["ts"] = exclusion_at * 0.4
+        expected = [{"char": char, "ts": round(i * 0.4, 3)}
+                    for i, (_word, char) in enumerate(entries)]
+        expected.append({"char": len(text), "ts": 10.0})
+        original = aligner._recover_skipped_spans
+        missing = []
+        calls = []
+
+        def recovery(*args):
+            missing.append(sum(ts is None for ts in args[7]))
+            return original(*args) if recover else args[7]
+
+        def segment(F, torch_module, part, targets, spf, frame_offset=0):
+            calls.append((len(targets), part.size(1), frame_offset))
+            return ForcedAligner._segment_word_times(
+                aligner, F, torch_module, part, targets, spf, frame_offset)
+
+        with patch.object(aligner, "_load"), \
+             patch.object(aligner, "_load_audio", return_value=torch.zeros(1, 104 * 1600)), \
+             patch.object(aligner, "_emissions", return_value=emission), \
+             patch.object(aligner, "_single_pass_fits", side_effect=lambda d, f, t: t <= 4), \
+             patch.object(aligner, "_MAX_CHUNK_TOKENS", 4), \
+             patch.object(aligner, "_CHUNK_MARGIN_SECONDS", 0.1), \
+             patch.object(aligner, "_recover_skipped_spans", side_effect=recovery), \
+             patch.object(aligner, "_segment_word_times", side_effect=segment):
+            result = aligner.align("/fake.m4b", text, boundaries=boundaries, exclude_spans=excluded)
+        return result, expected, missing, calls, excluded
+
+    return run
 
 
-def test_recovery_noop_when_no_skips():
-    """When no chunks are skipped, recovery has no effect and word_ts is unchanged."""
+def test_recovery_recovers_compressed_region_via_bracketing_anchors(recovery_book, caplog):
+    """Skipped middle letters recover to the same true frames as a clean map."""
+    result, expected, missing, calls, _ = recovery_book()
+    clean, *_ = recovery_book(compressed=False)
+    assert missing == [8]
+    assert result == expected == clean
+    assert max(tokens for tokens, _frames, _offset in calls) <= 4
+    # The final two native calls recover separate four-word chunks.
+    assert len(calls) == 7
+    with caplog.at_level("INFO"):
+        recovery_book()
+    assert "recovery aligned 8 words; 0 words remain interpolated" in caplog.text
+
+
+def test_recovery_noop_when_no_skips(recovery_book):
+    """No-skip chunked maps remain byte-identical to Pass 1."""
+    import json
+    result, expected, missing, calls, _ = recovery_book(compressed=False)
+    first_pass, *_ = recovery_book(compressed=False, recover=False)
+    assert missing == [0]
+    assert len(calls) == 7
+    assert json.dumps(result) == json.dumps(first_pass) == json.dumps(expected)
+
+
+@pytest.mark.parametrize("exclusion_at", [4, 12])
+def test_recovery_preserves_exclusions_and_recovers_compression(recovery_book, exclusion_at):
+    result, expected, missing, calls, excluded = recovery_book(exclusion_at=exclusion_at)
+    assert missing[0] > 0
+    assert result == expected
+    lo, hi = excluded[0]
+    assert not any(lo <= point["char"] < hi for point in result)
+    edge_frame = exclusion_at * 4
+    # No audio window, including recovery, may straddle the exclusion boundary.
+    assert all(offset + frames <= edge_frame or offset >= edge_frame
+               for _tokens, frames, offset in calls)
+
+
+@pytest.mark.parametrize("times", [[0.0, None, None, 2.0], [None, 1.0, 2.0, 3.0],
+                                   [0.0, 1.0, 2.0, None]])
+def test_recovery_leaves_no_audio_and_unbracketed_runs_unaligned(times):
     torch = pytest.importorskip("torch")
-    torchaudio = pytest.importorskip("torchaudio")
-    import torch.nn.functional as NN
-
-    letters = list("abc")
-    full_text = " ".join(letters)
-    d = torchaudio.pipelines.MMS_FA.get_dict()
-    per = 4
-    n_frames = len(letters) * per
-    emis = torch.full((1, n_frames, len(d)), -10.0)
-    emis[0, :, 0] = -1.0
-    for i, ch in enumerate(letters):
-        for f in range(per):
-            emis[0, i * per + f, d[ch]] = 0.0
-    emission = NN.log_softmax(emis, dim=-1)
-
     aligner = ForcedAligner()
-    cursor = 0
+    before = times[:]
+    with patch.object(aligner, "_segment_word_times") as segment:
+        aligner._recover_skipped_spans(None, torch, torch.zeros(1, 10, 2),
+                                      [("a", 0), ("b", 2), ("c", 4), ("d", 6)],
+                                      [[1]] * 4, 1.0, [], times, 10, [])
+    segment.assert_not_called()
+    assert times == before
 
-    def fake_model(piece):
-        nonlocal cursor
-        cnt = piece.size(1) // 1600
-        chunk = emission[:, cursor:cursor + cnt]
-        cursor += cnt
-        return chunk, None
 
-    def fake_load(self):
-        self._model = fake_model
-        self._dict = d
-        self._device = "cpu"
-        self._sample_rate = 16000
+def test_recovery_splits_for_memory_and_caps_total_work():
+    torch = pytest.importorskip("torch")
+    aligner = ForcedAligner()
+    kept = [(str(i), i * 2) for i in range(12)]
+    tokens = [[1]] * 12
+    emission = torch.zeros(1, 100, 2)
 
-    waveform = torch.zeros(1, n_frames * 1600)
-    boundaries = [
-        {"char": 0, "ts": 0.0},
-        {"char": 2, "ts": 0.4},
-        {"char": 4, "ts": 0.8},
-        {"char": 6, "ts": 1.2},
-    ]
+    def segment(F, torch_module, part, targets, spf, frame_offset=0):
+        return [float(frame_offset + i) for i in range(len(targets))]
 
-    with patch.object(ForcedAligner, "_load", fake_load), \
-         patch.object(ForcedAligner, "_load_audio", return_value=waveform):
-        result = aligner.align(["/fake.m4b"], full_text, boundaries=boundaries, exclude_spans=[])
+    with patch.object(aligner, "_MAX_CHUNK_TOKENS", 4), \
+         patch.object(aligner, "_single_pass_fits", side_effect=lambda d, f, t: t <= 2) as fits, \
+         patch.object(aligner, "_segment_word_times", side_effect=segment) as native:
+        aligner._recover_skipped_spans(None, torch, emission, kept, tokens, 1.0,
+                                      [], [10.0] + [None] * 10 + [90.0], 100, [])
+    assert fits.call_count > native.call_count > 1
+    assert all(sum(map(len, call.args[3])) <= 2 for call in native.call_args_list)
+    for fits_result, budget in [(False, 2**38), (True, 0)]:
+        times = [10.0] + [None] * 10 + [90.0]
+        with patch.object(aligner, "_single_pass_fits", return_value=fits_result), \
+             patch.object(aligner, "_MAX_RECOVERY_CELLS", budget), \
+             patch.object(aligner, "_segment_word_times") as native:
+            aligner._recover_skipped_spans(None, torch, emission, kept, tokens, 1.0,
+                                          [], times, 100, [])
+        native.assert_not_called()
+        assert times == [10.0] + [None] * 10 + [90.0]
 
-    # All words should align; recovery has no work to do.
-    assert result is not None
-    # Check that the three letters are in the result.
-    result_chars = sorted([p["char"] for p in result if p["char"] in [0, 2, 4]])
-    assert 0 in result_chars, "'a' should be in result"
-    assert 2 in result_chars, "'b' should be in result"
-    assert 4 in result_chars, "'c' should be in result"
+
+def test_recovery_keeps_first_narrated_word_at_exclusion_endpoint():
+    torch = pytest.importorskip("torch")
+    aligner = ForcedAligner()
+    times = [10.0, None, 90.0]
+    with patch.object(aligner, "_segment_word_times", return_value=[50.0]) as segment:
+        aligner._recover_skipped_spans(
+            None, torch, torch.zeros(1, 100, 2), [("a", 0), ("b", 20), ("c", 22)],
+            [[1]] * 3, 1.0, [{"char": 0, "ts": 10.0}, {"char": 20, "ts": 50.0}],
+            times, 100, [(2, 20)])
+    segment.assert_called_once()
+    assert segment.call_args.kwargs["frame_offset"] == 50
+    assert times == [10.0, 50.0, 90.0]
+
+
+def test_recovery_preserves_bracketing_anchors_when_windows_overlap():
+    torch = pytest.importorskip("torch")
+    aligner = ForcedAligner()
+    times = [10.0, None, None, None, None, 90.0]
+    with patch.object(aligner, "_MAX_CHUNK_TOKENS", 2), \
+         patch.object(aligner, "_segment_word_times", side_effect=[[11.0, 60.0], [50.0, 95.0]]):
+        aligner._recover_skipped_spans(
+            None, torch, torch.zeros(1, 100, 2), [("a", i * 2) for i in range(6)],
+            [[1]] * 6, 1.0, [], times, 100, [])
+    assert times == [10.0, 11.0, 60.0, None, None, 90.0]
