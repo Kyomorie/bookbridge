@@ -8,6 +8,14 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **Recover CTC gaps caused by compressed lexical timing (#426).** A second pass
+  aligns skipped words between the measured CTC anchors that bracket them, splitting
+  work to fit the device and preserving unnarrated-text boundaries. It only runs where
+  those anchors bound real audio, so a genuinely unnarrated stretch is still left
+  interpolated rather than crammed. Diagnostics report recovered words and remaining
+  gaps separately. Existing maps need re-alignment; the usual quality gate and
+  previous-map backup still apply.
+
 - **See which books already use CTC alignment (#426).** A small CTC badge appears
   beside the card's sync time. Its reset menu shows a disabled **Already using CTC**
   action, while **Clear position** stays available. Both update on the dashboard's
@@ -73,6 +81,14 @@ All notable changes to BookBridge will be documented in this file.
   volume of is listed like any other.
 
 ### Fixed
+
+- **A poor CTC alignment can no longer entrench itself across re-alignments (#426).**
+  A CTC pass chunks a long book by reading an existing map's timings. It was reading
+  its own previous CTC map, so any error in that map re-derived the same chunk windows
+  and reproduced itself — leaving books stuck with the same misaligned region no matter
+  how often they were re-aligned. CTC now ignores a previous CTC map as a chunking
+  source and rebuilds from transcript-derived timings first, which lets a re-alignment
+  actually correct the book.
 
 - **Books with a malformed EPUB manifest now parse instead of failing.** Some EPUBs
   list a file in their manifest (e.g. an Adobe `page-template.xpgt`) that isn't actually

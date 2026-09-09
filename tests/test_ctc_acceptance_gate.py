@@ -136,3 +136,41 @@ def test_accepted_ctc_backs_up_prior_and_is_restorable(service):
 
 def test_restore_without_backup_returns_false(service):
     assert service.restore_previous_alignment("never-aligned") is False
+
+
+# --------------------------------------------------------------------------- #
+# Chunking source: a CTC map must never window its own successor
+# --------------------------------------------------------------------------- #
+
+def test_ctc_never_windows_against_its_own_prior_map(service):
+    """A CTC pass must not take chunk boundaries from a previous CTC map (#426).
+
+    ``_chunked_word_times`` derives each chunk's audio window from ``boundaries``.
+    Handing it the map this run is about to replace makes any error in that map
+    re-derive the same windows and reproduce itself, so no remap can ever escape it
+    — Four Past Midnight rode that loop with a bit-identical gap start char across a
+    full re-alignment. A transcript-derived map is independent evidence and is still
+    trusted.
+    """
+    text = "word " * 4000
+    good = _dense_map(len(text), 50)
+    seen = []
+
+    def capture(_audio, _text, text_range=None, boundaries=None, exclude_spans=None):
+        seen.append(boundaries)
+        return good
+
+    def remap():
+        with patch("src.utils.forced_aligner.ForcedAligner.is_available", return_value=True), \
+             patch("src.utils.forced_aligner.ForcedAligner.align", side_effect=capture):
+            return service.align_forced_and_store("book", ["/a.m4b"], text)
+
+    # A lexical prior is independent of CTC, so it still bounds the chunk windows.
+    service._save_alignment("book", good, "lexical", total_chars=len(text))
+    assert remap() is True
+    assert seen[-1] == good, "a lexical prior should still bound the chunk windows"
+
+    # That store made the map 'ctc'. The next remap must not window against it.
+    assert service.database_service.get_alignment_method("book") == "ctc"
+    assert remap() is True
+    assert seen[-1] is None, "a CTC prior must not bound the chunk windows"

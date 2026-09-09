@@ -184,12 +184,27 @@ class AlignmentService:
         # An existing lexical map lets the aligner chunk a long book (its char->ts
         # anchors bound each chunk's audio window). Only trust it when it was built
         # against this exact text length, so the char spaces line up.
+        #
+        # Never window a CTC pass against a previous CTC map. The windows would come
+        # from the very map this run replaces, so any error in it re-derives the same
+        # windows and reproduces itself, with no remap able to escape. Four Past
+        # Midnight rode that loop with a bit-identical gap start char across a full
+        # re-alignment (#426). Refusing here returns None before the emissions pass
+        # on a long book, so the caller rebuilds a transcript-derived map first and
+        # CTC re-runs against that.
         boundaries = None
         prior = self._get_alignment(abs_id)
-        if prior and len(prior) >= 2:
+        prior_method = self.database_service.get_alignment_method(abs_id) or ""
+        if prior and len(prior) >= 2 and prior_method != "ctc":
             total = self._get_alignment_total_chars(abs_id)
             if total is not None and total == len(ebook_text):
                 boundaries = prior
+        elif prior_method == "ctc":
+            logger.info(
+                "⚙️ CTC: ignoring the existing CTC map for %s as a chunking source — a CTC "
+                "pass windowed against its own prior map cannot correct that map's errors",
+                abs_id,
+            )
         exclude_spans = self._detect_unnarrated_spans(boundaries, ebook_text)
         if text_range:
             exclude_spans = [(max(lo, text_range[0]), min(hi, text_range[1]))
