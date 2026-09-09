@@ -77,6 +77,11 @@ All notable changes to BookBridge will be documented in this file.
   squeezed into the audiobook; saved offsets still refer to the complete EPUB.
 - **Reset menus stay above neighboring book cards (#426).** The popup escapes card
   clipping, stays within the viewport, and both actions retain valid click handlers.
+- **Matching a BookOrbit or Grimmory audiobook now fills in its series right away.**
+  Those matches saved the mapping without looking up the book's series, so it wouldn't
+  group into its series card on the dashboard until you ran the series backfill by hand.
+  The match now resolves series from the owning library the same way the backfill and
+  the other match paths already do — no manual backfill needed.
 
 - **A book that fails to download no longer takes the copy you already had with it.**
   BridgeSync replaced a book on your reader by deleting the old file first and moving
