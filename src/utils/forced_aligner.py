@@ -450,6 +450,7 @@ class ForcedAligner:
         results: List[Tuple[int, float]] = []
         n = len(kept)
         i = 0
+        skipped_chunks = skipped_words = failed_chunks = failed_words = 0
         while i < n:
             j, tok = i, 0
             while j < n and tok + len(word_tokens[j]) <= self._MAX_CHUNK_TOKENS:
@@ -479,8 +480,10 @@ class ForcedAligner:
                 f_hi = min(f_hi, break_frames[region])
             seg_tokens = sum(len(word_tokens[k]) for k in range(i, j))
             if f_hi - f_lo <= seg_tokens:
-                logger.warning("⚠️ CTC: chunk words[%s:%s] has too few frames (%s) for %s "
-                               "tokens; skipping", i, j, f_hi - f_lo, seg_tokens)
+                logger.debug("CTC: chunk words[%s:%s] has too few frames (%s) for %s "
+                             "tokens; skipping", i, j, f_hi - f_lo, seg_tokens)
+                skipped_chunks += 1
+                skipped_words += j - i
                 i = j
                 continue
             times = self._segment_word_times(
@@ -491,8 +494,17 @@ class ForcedAligner:
                 for k, ts in enumerate(times):
                     results.append((kept[i + k][1], ts))
             else:
-                logger.warning("⚠️ CTC: chunk words[%s:%s] failed; leaving a gap", i, j)
+                logger.debug("CTC: chunk words[%s:%s] failed; leaving a gap", i, j)
+                failed_chunks += 1
+                failed_words += j - i
             i = j
+        if skipped_chunks or failed_chunks:
+            logger.warning(
+                "⚠️ CTC: %d chunk(s)/%d words skipped for too few frames and %d chunk(s)/%d "
+                "words failed to align; those spans are interpolated (usually compressed "
+                "lexical timing in the source map)",
+                skipped_chunks, skipped_words, failed_chunks, failed_words,
+            )
         return results
 
     @staticmethod
