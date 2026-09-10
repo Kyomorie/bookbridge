@@ -11,6 +11,7 @@ An alignment map is a list of ``{"char": int, "ts": float}`` points sorted by ch
 some legacy maps carry ``global_char`` instead of ``char`` (see `point_char`).
 """
 
+import bisect
 import json
 import math
 import re
@@ -288,6 +289,51 @@ _OUT_OF_ORDER_MIN_BLOCK_FRACTION = 0.05
 # kind of sparse noise the fraction threshold alone would let through.
 _OUT_OF_ORDER_MIN_BLOCK_ANCHORS = 50
 
+# A run of discarded anchors can clear both thresholds above and still not mean
+# "this text was relocated" — it can mean the retained map already covers that
+# text densely and the discarded run is just scattered duplicate/spurious
+# matches (common in a short-story collection with repeated phrasing). Live
+# measurement on "The Ladies of Grace Adieu and Other Stories" (42,716
+# candidates, 8,211 dropped, 4 blocks passing the thresholds above): the
+# char-58,919-154,526 block (26.1% of the book) contained 7,742 kept anchors
+# with a largest internal gap of only 1,551 chars; char-158,524-251,259 (25.3%)
+# contained 11,060 kept anchors, largest gap 341 chars; char-251,430-313,523
+# (16.9%) contained 6,972 kept anchors, largest gap 280 chars — all three
+# false positives over thoroughly-anchored text. Only the fourth block
+# (char-328,265-364,943, 10.0%) was genuine, with zero kept anchors inside it
+# (gap = the whole 36,678-char block). By contrast, on Four Past Midnight (the
+# real permutation this detector was built for) the LIS drops whole novellas,
+# so the reported blocks contain zero kept anchors. A block therefore also
+# needs its own char range to be substantially uncovered by `kept` — the
+# largest gap left uncovered within it (see `_largest_uncovered_gap`) must be
+# at least this fraction of the block's own char width — before it is
+# reported.
+_OUT_OF_ORDER_MIN_UNCOVERED_FRACTION = 0.5
+
+
+def _largest_uncovered_gap(char_start: int, char_end: int, kept_chars: List[int]) -> int:
+    """Largest gap left uncovered by ``kept_chars`` (sorted) within
+    ``[char_start, char_end]``.
+
+    The range's own edges bound coverage the same way a kept anchor would --
+    coverage cannot extend past them -- so the gap sequence runs over
+    ``char_start``, every entry of ``kept_chars`` that falls inside the range,
+    and ``char_end``. This is what lets a block covered densely on only part
+    of its range (e.g. the first half) register the uncovered remainder as a
+    gap, not just the space between two covered anchors. Fewer than 2 entries
+    inside the range skips straight to fully uncovered (gap = the whole
+    ``char_end - char_start`` width) rather than the two edge-to-point gaps a
+    single anchor would otherwise produce.
+    """
+    block_width = char_end - char_start
+    lo = bisect.bisect_left(kept_chars, char_start)
+    hi = bisect.bisect_right(kept_chars, char_end)
+    inside = kept_chars[lo:hi]
+    if len(inside) < 2:
+        return block_width
+    boundary_points = [char_start] + inside + [char_end]
+    return max(b - a for a, b in zip(boundary_points, boundary_points[1:]))
+
 
 def detect_out_of_order_blocks(anchors: List[Dict], kept: List[Dict],
                                total_chars: int) -> List[Dict]:
@@ -305,10 +351,12 @@ def detect_out_of_order_blocks(anchors: List[Dict], kept: List[Dict],
     across anchors would otherwise collide.
 
     The discarded anchors (still in char order) are split into maximal runs
-    whose ``ts`` is non-decreasing, and only runs clearing both
+    whose ``ts`` is non-decreasing. A run is reported only when it clears both
     `_OUT_OF_ORDER_MIN_BLOCK_FRACTION` (of ``total_chars``) and
-    `_OUT_OF_ORDER_MIN_BLOCK_ANCHORS` are reported, so this is a detector of
-    structural mismatches, not of ordinary matcher noise.
+    `_OUT_OF_ORDER_MIN_BLOCK_ANCHORS`, *and* its own char range is left
+    substantially uncovered by ``kept`` (see `_OUT_OF_ORDER_MIN_UNCOVERED_FRACTION`)
+    — a run of discarded anchors over text the retained map already covers
+    densely is duplicate/spurious matching, not a relocated section.
 
     Returns a list of ``{"char_start", "char_end", "ts_start", "ts_end",
     "anchors"}`` dicts, sorted by descending char span (``char_end -
@@ -331,10 +379,15 @@ def detect_out_of_order_blocks(anchors: List[Dict], kept: List[Dict],
             runs.append([anchor])
 
     min_span = _OUT_OF_ORDER_MIN_BLOCK_FRACTION * total_chars
+    kept_chars = sorted(point_char(anchor) for anchor in kept)
     blocks = []
     for run in runs:
         char_start, char_end = run[0]['char'], run[-1]['char']
         if (char_end - char_start) < min_span or len(run) < _OUT_OF_ORDER_MIN_BLOCK_ANCHORS:
+            continue
+        block_width = char_end - char_start
+        largest_gap = _largest_uncovered_gap(char_start, char_end, kept_chars)
+        if largest_gap < _OUT_OF_ORDER_MIN_UNCOVERED_FRACTION * block_width:
             continue
         blocks.append({
             "char_start": char_start,

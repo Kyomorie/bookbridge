@@ -170,6 +170,83 @@ class TestThresholds:
         assert detect_out_of_order_blocks(anchors, kept, self.TOTAL_CHARS) == []
 
 
+class TestCoverageRequirement:
+    """A run of discarded anchors that clears the size/count thresholds is
+    reported only when the retained (`kept`) map also leaves that char range
+    substantially uncovered (issue #426 follow-up: on "The Ladies of Grace
+    Adieu and Other Stories" — 42,716 candidates, 8,211 dropped — 3 of the 4
+    blocks the size/count thresholds alone let through were false positives:
+    a 26.1%-of-book block containing 7,742 kept anchors at a largest internal
+    gap of 1,551 chars, a 25.3% block containing 11,060 kept anchors (gap 341),
+    and a 16.9% block containing 6,972 kept anchors (gap 280) — all short
+    stories with enough repeated phrasing to form long non-decreasing runs of
+    scattered spurious matches over text the LIS already aligned densely.
+    Only the fourth, genuine block (10.0% of the book) had zero kept anchors
+    inside it, gap = the whole 36,678-char block."""
+
+    TOTAL_CHARS = 400_000
+    BLOCK_START = 60_000
+    BLOCK_SPAN = round(0.26 * TOTAL_CHARS)  # ~26%, mirrors the real false-positive block
+    BLOCK_ANCHOR_COUNT = 300
+
+    def _discarded_block(self) -> List[Dict]:
+        """A block-shaped run of discarded anchors that clears both the span
+        and anchor-count thresholds on its own, modeled on the real ~26%-of-
+        book false-positive block."""
+        return _block_anchors(self.BLOCK_START, self.BLOCK_SPAN, 0.0, 15.0,
+                              self.BLOCK_ANCHOR_COUNT)
+
+    @staticmethod
+    def _dense_kept_covering(char_start: int, width: int, count: int) -> List[Dict]:
+        """`count` kept anchors evenly spaced across `width` chars starting at
+        `char_start`, on a ts timeline far removed from the discarded block's
+        own (the LIS's retained timeline, not the block's) -- only the char
+        positions matter to the coverage check."""
+        return _block_anchors(char_start, width, 10_000.0, 20.0, count)
+
+    def test_densely_covered_block_is_not_reported(self):
+        """Load-bearing: thousands of kept anchors at small spacing across the
+        whole block char range -- the real Ladies-of-Grace-Adieu shape -- sink
+        the report even though span and anchor-count both clear their
+        thresholds. Fails against the pre-fix implementation, which never
+        looks at `kept` when deciding whether to report a run."""
+        block = self._discarded_block()
+        dense_kept = self._dense_kept_covering(self.BLOCK_START, self.BLOCK_SPAN, 3000)
+        anchors = sorted(block + dense_kept, key=lambda a: a["char"])
+
+        assert detect_out_of_order_blocks(anchors, dense_kept, self.TOTAL_CHARS) == []
+
+    def test_same_block_without_kept_coverage_is_reported(self):
+        """Same discarded run, with no kept anchors anywhere near its char
+        range: the size/ts-run logic alone still reports it, proving only the
+        coverage requirement changed -- it did not silently break the
+        existing thresholds."""
+        block = self._discarded_block()
+
+        blocks = detect_out_of_order_blocks(block, [], self.TOTAL_CHARS)
+        assert len(blocks) == 1
+        assert blocks[0]["char_start"] == block[0]["char"]
+        assert blocks[0]["char_end"] == block[-1]["char"]
+        assert blocks[0]["anchors"] == block
+
+    def test_partially_covered_block_is_still_reported(self):
+        """Kept anchors densely cover only (a little under) the first half of
+        the block's char range; the rest is left uncovered by more than half
+        the block's width, so it is still reported."""
+        block = self._discarded_block()
+        block_width = block[-1]["char"] - block[0]["char"]
+        # Deliberately a bit under half so the remaining uncovered gap clears
+        # the 0.5 threshold with margin rather than landing on the boundary.
+        covered_width = round(0.45 * block_width)
+        dense_kept = self._dense_kept_covering(self.BLOCK_START, covered_width, 1000)
+        anchors = sorted(block + dense_kept, key=lambda a: a["char"])
+
+        blocks = detect_out_of_order_blocks(anchors, dense_kept, self.TOTAL_CHARS)
+        assert len(blocks) == 1
+        assert blocks[0]["char_start"] == block[0]["char"]
+        assert blocks[0]["char_end"] == block[-1]["char"]
+
+
 class TestDegenerateInput:
 
     def test_empty_anchors_returns_empty(self):
