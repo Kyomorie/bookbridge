@@ -82,6 +82,12 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Prepare KOReader's download list when books are matched.** After a bridge
+  restart, catalog changes now start the manifest worker for installs that have
+  used device sync, instead of waiting for KOReader to connect. Rapid matches
+  share one background worker; a match arriving during a build queues another
+  pass. The refreshed list is available once the build finishes.
+
 - **A poor CTC alignment can no longer entrench itself across re-alignments (#426).**
   A CTC pass chunks a long book by reading an existing map's timings. It was reading
   its own previous CTC map, so any error in that map re-derived the same chunk windows
