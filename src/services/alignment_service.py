@@ -19,6 +19,7 @@ from src.utils.time_utils import utcnow
 
 from src.db.models import BookAlignment, BookAlignmentBackup
 from src.services import map_quality
+from src.utils.config_loader import env_truthy
 from src.utils.ebook_utils import LRUCache
 from src.utils.polisher import Polisher
 from src.utils.logging_utils import time_execution
@@ -1057,44 +1058,88 @@ class AlignmentService:
 
     def _verify_content_match(self, segments: List[Dict], full_text: str, abs_id: str = None) -> bool:
         """Content-match guard: refuse to store a map when audio and ebook are clearly
-        different content. Returns True (proceed) unless the embeddings show strong
-        divergence. No-op (True) when disabled, no client, or embeddings unavailable."""
-        if not self._env_true("OLLAMA_ALIGN_CONTENT_GUARD") or not self._ollama_ready():
+        different content. Returns True (proceed) unless the evidence shows strong
+        divergence. No-op (True) when the master switch (OLLAMA_ALIGN_CONTENT_GUARD)
+        is off, or when neither evidence path can render a verdict.
+
+        Two independent evidence paths, in preference order:
+        1. Embedding similarity (Ollama) -- used whenever a configured client is
+           available. Unchanged from before issue #426's lexical fallback: same log
+           line, same threshold (OLLAMA_ALIGN_CONTENT_MIN_SIM).
+        2. Lexical n-gram overlap (`map_quality.transcript_text_overlap`) -- the
+           non-LLM fallback used whenever the embedding path renders no verdict,
+           covering both "no client configured" and "client configured but
+           failing", gated by
+           its own CONTENT_MATCH_GUARD switch so this guard is not a permanent
+           no-op on installs without Ollama (issue #426: eight mismatched pairings
+           were silently stored as maps on this repo's own live install before this
+           existed).
+        """
+        if not self._env_true("OLLAMA_ALIGN_CONTENT_GUARD"):
             return True
         if not segments or not full_text:
             return True
 
-        min_sim = self._env_float("OLLAMA_ALIGN_CONTENT_MIN_SIM", 0.45)
         transcript_text = " ".join((s.get("text") or "").strip() for s in segments).strip()
-        t_samples = self._sample_passages(transcript_text)
-        b_samples = self._sample_passages(full_text)
-        if len(t_samples) < 1 or len(b_samples) < 1:
+
+        if self._ollama_ready():
+            min_sim = self._env_float("OLLAMA_ALIGN_CONTENT_MIN_SIM", 0.45)
+            t_samples = self._sample_passages(transcript_text)
+            b_samples = self._sample_passages(full_text)
+            vectors = None
+            if t_samples and b_samples:
+                vectors = self.ollama_client.embed(t_samples + b_samples)
+
+            # Only a path that actually produced a similarity returns a verdict.
+            # No sampleable passages, or embed() failing / returning malformed
+            # vectors, falls through to the lexical check below instead of
+            # returning True: a guard that silently disables itself whenever a
+            # service is down is the failure mode this work exists to close.
+            if vectors and len(vectors) == len(t_samples) + len(b_samples):
+                from src.api.ollama_client import cosine_similarity
+
+                t_vecs = vectors[:len(t_samples)]
+                b_vecs = vectors[len(t_samples):]
+                # Most-optimistic similarity: best book passage for the best transcript passage.
+                best_overall = 0.0
+                for t_vec in t_vecs:
+                    for b_vec in b_vecs:
+                        cos = cosine_similarity(t_vec, b_vec)
+                        if cos > best_overall:
+                            best_overall = cos
+
+                if best_overall < min_sim:
+                    logger.warning(
+                        "🚫 Content-match guard: audio/ebook content diverges for %s "
+                        "(best passage similarity %.2f < %.2f) — likely wrong edition / abridged / "
+                        "translation / mis-match. Refusing to store a misleading alignment.",
+                        abs_id or "?",
+                        best_overall,
+                        min_sim,
+                    )
+                    return False
+                return True
+
+        # Embedding path could not render a verdict -- no Ollama, no configured
+        # client, or a configured client that failed. Non-LLM lexical fallback,
+        # gated separately so a user who deliberately disabled the whole guard
+        # (OLLAMA_ALIGN_CONTENT_GUARD, checked above) keeps that behaviour.
+        # Note this covers an Ollama OUTAGE too: previously that meant no guard
+        # at all, which is the same silent-garbage-map hole by another route.
+        if not env_truthy("CONTENT_MATCH_GUARD", "true"):
             return True
 
-        vectors = self.ollama_client.embed(t_samples + b_samples)
-        if not vectors or len(vectors) != len(t_samples) + len(b_samples):
-            return True  # infra failure must not block alignment
-
-        from src.api.ollama_client import cosine_similarity
-
-        t_vecs = vectors[:len(t_samples)]
-        b_vecs = vectors[len(t_samples):]
-        # Most-optimistic similarity: best book passage for the best transcript passage.
-        best_overall = 0.0
-        for t_vec in t_vecs:
-            for b_vec in b_vecs:
-                cos = cosine_similarity(t_vec, b_vec)
-                if cos > best_overall:
-                    best_overall = cos
-
-        if best_overall < min_sim:
+        min_overlap = self._env_float("CONTENT_MATCH_MIN_OVERLAP", 0.15)
+        overlap = map_quality.transcript_text_overlap(transcript_text, full_text)
+        if overlap < min_overlap:
             logger.warning(
-                "🚫 Content-match guard: audio/ebook content diverges for %s "
-                "(best passage similarity %.2f < %.2f) — likely wrong edition / abridged / "
-                "translation / mis-match. Refusing to store a misleading alignment.",
+                "🚫 Lexical content-match guard: audio/ebook n-gram overlap too low for %s "
+                "(%.1f%% of sampled ebook n-grams found in the transcript, need %.1f%%) — "
+                "the audio and ebook do not appear to be the same work. Refusing to store "
+                "a misleading alignment.",
                 abs_id or "?",
-                best_overall,
-                min_sim,
+                overlap * 100.0,
+                min_overlap * 100.0,
             )
             return False
         return True

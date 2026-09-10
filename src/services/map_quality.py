@@ -13,6 +13,7 @@ some legacy maps carry ``global_char`` instead of ``char`` (see `point_char`).
 
 import json
 import math
+import re
 from dataclasses import dataclass
 from statistics import median
 from typing import Dict, List, Optional, Tuple
@@ -345,3 +346,93 @@ def detect_out_of_order_blocks(anchors: List[Dict], kept: List[Dict],
 
     blocks.sort(key=lambda block: block["char_end"] - block["char_start"], reverse=True)
     return blocks
+
+
+# --------------------------------------------------------------------------- #
+# Non-LLM content-match guard (issue #426)
+# --------------------------------------------------------------------------- #
+#
+# `transcript_text_overlap` is the lexical fallback `AlignmentService._verify_content_match`
+# uses when the embedding path (Ollama) is unavailable -- it is otherwise a permanent
+# no-op on any install without Ollama, which let eight mismatched audio/ebook pairings
+# on the live install get stored as maps that synced garbage positions silently.
+#
+# Tokenization: lowercase `[a-z0-9']+` word tokens.
+#
+# CALIBRATION -- measured by running THIS function (samples=200, ngram=6) over 28
+# real book/transcript pairs on the live library. These are its actual return
+# values, not a coarser probe's:
+#
+#   Prodigal Blues            0.850   |  State of Fear          0.645
+#   Toplin                    0.825   |  Jade Legacy            0.630
+#   Flowers for Algernon      0.805   |  American Elsewhere     0.610
+#   The Ferryman              0.780   |  Outer Dark             0.580
+#   Rose Madder               0.765   |  Neuromancer            0.570
+#   Hollow Kingdom            0.730   |  Megalodon In Paradise  0.555
+#   Four Past Midnight        0.710   |  Push (Unabridged)      0.300  <- floor
+#
+# Every one of those is a correct pairing, so 0.300 is the lowest legitimate value
+# observed. Note the healthy range runs well below 1.0 even for a perfect pairing:
+# ASR never reproduces the text verbatim, so most sampled 6-grams legitimately miss.
+#
+# The mismatched pairings this guard exists to catch scored 0-4% on the coarser
+# probe used to diagnose them (Nosferatu Academy, Bad Man and Mob Sorcery Book 4 at
+# literally zero matching probe points; Let the Old Dreams Die at 3.75%). They were
+# deleted before this function existed, so they could not be re-measured with it --
+# but with zero shared n-grams the value here is ~0.00 by construction.
+#
+# CONTENT_MATCH_MIN_OVERLAP therefore defaults to 0.15: half the lowest legitimate
+# value measured (0.300) and several times the highest plausible mismatch (~0.04).
+# Do not raise it toward the healthy floor without re-running that sweep -- at 0.25
+# the margin under Push is only 0.05, one bad transcript away from a false refusal.
+
+# Below this many tokens on either side, there are too few n-grams to sample
+# meaningfully -- return 1.0 ("cannot judge, do not block") rather than a noisy score.
+_MIN_TOKENS_FOR_OVERLAP = 50
+
+_WORD_TOKEN_RE = re.compile(r"[a-z0-9']+")
+
+
+def _word_tokens(text: str) -> List[str]:
+    """Lowercase word tokens, matching the probe scripts behind the calibration
+    table above."""
+    return _WORD_TOKEN_RE.findall((text or "").lower())
+
+
+def transcript_text_overlap(transcript_text: str, ebook_text: str,
+                            samples: int = 200, ngram: int = 6) -> float:
+    """Fraction of sampled ebook n-grams that also occur in the transcript.
+
+    Builds a set of every `ngram`-token window in the transcript once, then
+    samples up to `samples` `ngram`-token windows at evenly spaced token offsets
+    across the *entire* ebook -- not just the opening, since front matter is
+    often unnarrated and would skew a head-only sample -- and returns
+    matched / sampled.
+
+    Returns 1.0 (cannot judge, do not block) when either side has fewer than
+    `_MIN_TOKENS_FOR_OVERLAP` tokens.
+    """
+    transcript_tokens = _word_tokens(transcript_text)
+    ebook_tokens = _word_tokens(ebook_text)
+    if (len(transcript_tokens) < _MIN_TOKENS_FOR_OVERLAP
+            or len(ebook_tokens) < _MIN_TOKENS_FOR_OVERLAP
+            or len(transcript_tokens) < ngram or len(ebook_tokens) < ngram):
+        return 1.0
+
+    transcript_ngrams = {
+        tuple(transcript_tokens[i:i + ngram])
+        for i in range(len(transcript_tokens) - ngram + 1)
+    }
+
+    max_offset = len(ebook_tokens) - ngram
+    sample_count = min(samples, max_offset + 1)
+    if sample_count <= 1:
+        offsets = [0]
+    else:
+        offsets = [max_offset * i // (sample_count - 1) for i in range(sample_count)]
+
+    matched = sum(
+        1 for offset in offsets
+        if tuple(ebook_tokens[offset:offset + ngram]) in transcript_ngrams
+    )
+    return matched / len(offsets)

@@ -8,6 +8,20 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **Catch a wrong ebook/audiobook pairing without needing an LLM (#426).** BookBridge
+  already refused to align content that clearly didn't match, but that check ran only
+  when Ollama was configured and reachable — so on most installs it never ran at all,
+  and a book matched to the wrong audio was quietly given a map that synced nonsense
+  positions. There is now a direct check that needs no AI service: it measures how much
+  of the ebook's actual wording turns up in the transcript, and refuses the alignment
+  when almost none of it does. It also runs when Ollama is configured but *down*, so an
+  outage no longer silently leaves you unguarded. Tunable under Settings →
+  Transcription (**Content-Match Guard**, **Content-Match Min Overlap**); the default
+  threshold was calibrated against 28 real book/transcript pairs, where correct pairings
+  scored 0.30–0.85 and a different book scores near zero. On the developer's own library
+  this check would have caught eight mismatched pairings, including an audiobook matched
+  to the wrong volume of its own series.
+
 - **Spot an ebook whose sections are in a different order from the audiobook (#426).**
   Some EPUBs — collections and omnibuses especially — carry their parts in a different
   order than the narrator reads them. Alignment silently discarded every match that
