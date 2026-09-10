@@ -18,6 +18,7 @@ from typing import List, Dict, Optional, Tuple
 from src.utils.time_utils import utcnow
 
 from src.db.models import BookAlignment, BookAlignmentBackup
+from src.services import map_quality
 from src.utils.ebook_utils import LRUCache
 from src.utils.polisher import Polisher
 from src.utils.logging_utils import time_execution
@@ -40,12 +41,12 @@ class AlignmentService:
     # coverage: the largest run of text with no anchor is interpolated linearly, so
     # a big gap is a big positional error. A degenerate near-linear map has one gap
     # spanning the whole book. Reject a new map whose worst gap exceeds this fraction
-    # of the covered text...
+    # of the covered text. Regression against whatever map it would replace is a
+    # separate decision, made downstream by `_publish_map` — not here.
     _CTC_MAX_GAP_FRACTION = 0.25
-    # ...and, so a remap never replaces a better map with a worse one, reject a map
-    # whose worst gap is more than this much larger than the map it would replace
-    # (methods in _CTC_REPLACEABLE_METHODS are always safe to replace).
-    _CTC_GAP_REGRESSION_MARGIN = 0.05
+    # A prior map built with one of these methods is a placeholder, not a real
+    # alignment, so it is always safe to replace — `_publish_map` never runs its
+    # regression veto against one.
     _CTC_REPLACEABLE_METHODS = frozenset({"linear", "storyteller_linear"})
 
     def __init__(self, database_service, polisher: Polisher, ollama_client=None):
@@ -103,7 +104,8 @@ class AlignmentService:
         return int(point.get('char', 0))
 
     @time_execution
-    def align_and_store(self, abs_id: str, raw_segments: List[Dict], ebook_text: str, spine_chapters: List[Dict] = None):
+    def align_and_store(self, abs_id: str, raw_segments: List[Dict], ebook_text: str,
+                        spine_chapters: List[Dict] = None) -> bool:
         """
         Main entry point for "Unified Alignment".
         
@@ -142,14 +144,17 @@ class AlignmentService:
             return False
 
         # 3. Anchored Alignment
-        alignment_map, align_method = self._generate_alignment_map_with_method(rebuilt_segments, ebook_text)
+        alignment_map, align_method = self._generate_alignment_map_with_method(rebuilt_segments, ebook_text, abs_id=abs_id)
 
         if not alignment_map:
             logger.error("   ❌ Failed to generate alignment map.")
             return False
 
         # 4. Store to Database
-        self._save_alignment(abs_id, alignment_map, align_method, total_chars=ebook_len)
+        self._publish_map(abs_id, alignment_map, align_method, total_chars=ebook_len)
+        # A vetoed write still leaves a valid, better incumbent map in place — only a
+        # genuinely missing/invalid map is a caller-visible failure (sync_manager marks
+        # the job failed_permanent and deletes the audio cache after retries exhaust).
         return True
 
     @staticmethod
@@ -159,12 +164,19 @@ class AlignmentService:
 
     @time_execution
     def align_forced_and_store(self, abs_id: str, audio_path: str, ebook_text: str,
-                               spine_chapters: Optional[List[Dict]] = None) -> bool:
+                               spine_chapters: Optional[List[Dict]] = None,
+                               audio_duration: Optional[float] = None) -> bool:
         """Build an alignment map by CTC forced alignment (issue #426, method 'ctc').
 
         Aligns the audio directly against ``ebook_text`` — no transcript — and stores
         a dense ``{char, ts}`` map. Returns False on any failure (missing deps, decode
         error, empty/short map) so the caller falls back to the lexical pipeline.
+
+        ``audio_duration`` (seconds), when supplied, enables a decode-free pre-flight
+        (issue #426 phase 3): when there is no chunking prior, a doomed single-pass
+        attempt is refused before the audio is ever decoded, rather than only after
+        paying for a full decode inside `ForcedAligner.align`. Omit it (the default)
+        to keep every existing caller's behaviour unchanged.
         """
         if not ebook_text:
             return False
@@ -213,6 +225,22 @@ class AlignmentService:
         if exclude_spans:
             logger.info("⚙️ CTC: excluding likely unnarrated interior text for %s: %s",
                         abs_id, exclude_spans)
+
+        # Decode-free pre-flight (issue #426 phase 3): when there is no chunking
+        # prior, `align()` would decode the whole file only to then discover the
+        # pass is too large and bail — audio duration and token count are both known
+        # without decoding, so the doomed run is refused here instead. `boundaries`
+        # is the same chunking prior `align()` itself would consult below.
+        if (boundaries is None and audio_duration and audio_duration > 0
+                and not self._forced_aligner.can_single_pass(
+                    audio_duration, ebook_text, text_range=text_range, exclude_spans=exclude_spans)):
+            logger.info(
+                "⚙️ CTC: skipping the decode for %s — no chunking prior and the book is "
+                "too large for a single pass",
+                abs_id,
+            )
+            return False
+
         alignment_map = self._forced_aligner.align(
             audio_path, ebook_text, text_range=text_range, boundaries=boundaries,
             exclude_spans=exclude_spans,
@@ -221,12 +249,12 @@ class AlignmentService:
             logger.warning(f"⚠️ CTC alignment produced no usable map for {abs_id}")
             return False
 
-        if not self._ctc_map_accepted(abs_id, alignment_map, prior, exclude_spans):
+        if not self._ctc_map_accepted(abs_id, alignment_map, exclude_spans):
             return False
 
-        # Preserve the map we are about to replace so a bad remap is reversible.
-        self._backup_alignment(abs_id)
-        self._save_alignment(abs_id, alignment_map, "ctc", total_chars=len(ebook_text))
+        if not self._publish_map(abs_id, alignment_map, "ctc", total_chars=len(ebook_text),
+                                 exclude_spans=exclude_spans):
+            return False
         logger.info(
             f"AlignmentService: CTC forced-alignment map stored for {abs_id} "
             f"({len(alignment_map)} anchors)"
@@ -342,16 +370,14 @@ class AlignmentService:
         return spans
 
     def _ctc_map_accepted(self, abs_id: str, new_map: List[Dict],
-                          prior_map: Optional[List[Dict]],
                           exclude_spans: Optional[List[Tuple[int, int]]] = None) -> bool:
         """Whether a freshly built CTC map is good enough to store (issue #426).
 
         A CTC map is only as good as its densest coverage: the largest run of text
         with no anchor is interpolated linearly, so a big gap is a big positional
         error. This rejects a degenerate/near-linear map (one gap spanning the whole
-        book) and refuses to replace an existing map with one that leaves a materially
-        larger gap — so a remap can only keep or improve a book's alignment, never
-        quietly worsen it. A prior linear/storyteller-linear map is always replaceable.
+        book). Regression against whatever map it would replace is a separate
+        decision, made by `_publish_map` once this absolute gate has cleared.
         """
         new_gap = self._max_gap_fraction(new_map, exclude_spans)
         if new_gap > self._CTC_MAX_GAP_FRACTION:
@@ -361,17 +387,6 @@ class AlignmentService:
                 abs_id, new_gap * 100, self._CTC_MAX_GAP_FRACTION * 100,
             )
             return False
-        if prior_map and len(prior_map) >= 2:
-            prior_method = self.database_service.get_alignment_method(abs_id) or ""
-            if prior_method not in self._CTC_REPLACEABLE_METHODS:
-                prior_gap = self._max_gap_fraction(prior_map, exclude_spans)
-                if new_gap > prior_gap + self._CTC_GAP_REGRESSION_MARGIN:
-                    logger.warning(
-                        "🚫 CTC: rejecting map for %s — its worst interpolated gap %.0f%% is "
-                        "worse than the existing %s map's %.0f%%; keeping the existing map",
-                        abs_id, new_gap * 100, prior_method or "existing", prior_gap * 100,
-                    )
-                    return False
         return True
 
     @staticmethod
@@ -380,31 +395,7 @@ class AlignmentService:
         """Largest char span between consecutive anchors, as a fraction of the map's
         covered range, with intentional exclusions removed from both. Returns
         1.0 for a map too small to judge (degenerate)."""
-        if not alignment_map or len(alignment_map) < 2:
-            return 1.0
-        chars = sorted(int(point.get("char", point.get("global_char", 0)))
-                       for point in alignment_map)
-        # Collapse the union of exclusions into a narrated-only coordinate space.
-        # A single sweep avoids multiplying dense per-word anchors by span count.
-        spans = sorted((lo, hi) for lo, hi in (exclude_spans or []) if lo < hi)
-        if spans:
-            adjusted = []
-            removed, cursor, span_idx = 0, chars[0], 0
-            for char in chars:
-                while span_idx < len(spans) and spans[span_idx][0] < char:
-                    lo, hi = spans[span_idx]
-                    removed += max(0, min(char, hi) - max(cursor, lo))
-                    cursor = max(cursor, min(char, hi))
-                    if hi > char:
-                        break
-                    span_idx += 1
-                adjusted.append(char - removed)
-            chars = adjusted
-        span = chars[-1] - chars[0]
-        if span <= 0:
-            return 1.0
-        max_gap = max(chars[i + 1] - chars[i] for i in range(len(chars) - 1))
-        return max_gap / span
+        return map_quality.max_gap_fraction(alignment_map, exclude_spans)
 
     @time_execution
     def align_storyteller_and_store(self, abs_id: str, storyteller_transcript, ebook_text: str = None) -> bool:
@@ -468,10 +459,14 @@ class AlignmentService:
                     
             if segments:
                 rebuilt_segments = self.polisher.rebuild_fragmented_sentences(segments, ebook_text)
-                alignment_map, align_method = self._generate_alignment_map_with_method(rebuilt_segments, ebook_text)
+                alignment_map, align_method = self._generate_alignment_map_with_method(rebuilt_segments, ebook_text, abs_id=abs_id)
                 if alignment_map:
-                    self._save_alignment(abs_id, alignment_map, align_method, total_chars=len(ebook_text))
-                    logger.info(f"AlignmentService: Anchored Storyteller map stored for {abs_id} ({len(alignment_map)} points)")
+                    if self._publish_map(abs_id, alignment_map, align_method, total_chars=len(ebook_text)):
+                        logger.info(f"AlignmentService: Anchored Storyteller map stored for {abs_id} ({len(alignment_map)} points)")
+                    # A vetoed write still leaves a valid, better incumbent map in place —
+                    # only a missing map is a caller-visible failure (sync_manager marks
+                    # the job failed_permanent and deletes the audio cache after retries
+                    # exhaust).
                     return True
             
             logger.warning(f"AlignmentService: Anchored alignment failed for {abs_id}, falling back to unanchored map")
@@ -482,8 +477,10 @@ class AlignmentService:
                 {"char": 0, "ts": 0.0},
                 {"char": len(ebook_text), "ts": storyteller_transcript.get_global_duration()},
             ]
-            self._save_alignment(abs_id, clean_map, "storyteller_linear", total_chars=len(ebook_text))
-            logger.info(f"AlignmentService: Linear fallback map stored for {abs_id} ({len(clean_map)} points)")
+            if self._publish_map(abs_id, clean_map, "storyteller_linear", total_chars=len(ebook_text)):
+                logger.info(f"AlignmentService: Linear fallback map stored for {abs_id} ({len(clean_map)} points)")
+            # Same rationale as the anchored-path veto above: a two-point linear
+            # fallback vetoed against a better incumbent is not a failure.
             return True
 
         alignment_map = list(storyteller_transcript.iter_alignment_points())
@@ -499,8 +496,9 @@ class AlignmentService:
                 "ts": pt.get("ts", 0.0)
             })
 
-        self._save_alignment(abs_id, clean_map, "storyteller")
-        logger.info(f"AlignmentService: Unanchored Storyteller map stored for {abs_id} ({len(clean_map)} points)")
+        if self._publish_map(abs_id, clean_map, "storyteller"):
+            logger.info(f"AlignmentService: Unanchored Storyteller map stored for {abs_id} ({len(clean_map)} points)")
+        # Same rationale: a veto here still leaves the existing, better map in place.
         return True
 
     def get_time_for_text(self, abs_id: str, query_text: str, char_offset_hint: int = None) -> Optional[float]:
@@ -727,12 +725,15 @@ class AlignmentService:
             return []
         return tokens
 
-    def _generate_alignment_map_with_method(self, segments: List[Dict], full_text: str) -> Tuple[List[Dict], str]:
+    def _generate_alignment_map_with_method(self, segments: List[Dict], full_text: str,
+                                            abs_id: Optional[str] = None) -> Tuple[List[Dict], str]:
         """
         Core Anchored Alignment Algorithm (Two-Pass), returning (map, method).
         Pass 1: High confidence (N=12) global search.
         Pass 2: Backfill start gap (N=6) if first anchor is late.
         method: 'lexical' (n-gram anchors), 'llm_anchor' (embedding rescue), or 'linear'.
+        abs_id: optional book identifier, used only for the out-of-order-block
+        diagnostic warning (issue #426); omitted from all other behavior.
         """
         def _build_linear_fallback_map(reason: str) -> List[Dict]:
             end_ts = 0.0
@@ -846,6 +847,34 @@ class AlignmentService:
         logger.info(f"   📊 Monotonic LIS filter: {len(anchors)} candidates -> {len(valid_anchors)} valid")
         if len(anchors) > len(valid_anchors):
             logger.info(f"      📊 Dropped {len(anchors) - len(valid_anchors)} non-monotonic anchors")
+
+        # Diagnostics only (issue #426) — a large run of anchors the LIS could not
+        # chain onto the retained subsequence is the signature of an EPUB spine
+        # whose chapter/section order doesn't match the audiobook's narration
+        # order (Four Past Midnight: a four-novella collection spined 2-4-3-1 but
+        # narrated 1-2-3-4). This never gates or alters `valid_anchors` — a
+        # detector failure must never break alignment.
+        try:
+            out_of_order_blocks = map_quality.detect_out_of_order_blocks(
+                anchors, valid_anchors, total_chars=len(full_text))
+            if out_of_order_blocks:
+                dropped = len(anchors) - len(valid_anchors)
+                dropped_pct = (100.0 * dropped / len(anchors)) if anchors else 0.0
+                block_summary = "; ".join(
+                    f"chars {block['char_start']}-{block['char_end']} / "
+                    f"ts {block['ts_start']:.1f}-{block['ts_end']:.1f}s"
+                    for block in out_of_order_blocks[:4]
+                )
+                logger.warning(
+                    f"⚠️ Alignment: EPUB and audio are out of order for {abs_id or 'unknown'} — "
+                    f"{dropped} non-monotonic anchors dropped ({dropped_pct:.1f}% of {len(anchors)} candidates), "
+                    f"{len(out_of_order_blocks)} large out-of-order block(s): {block_summary}. "
+                    "The EPUB's chapter/section order does not match the audiobook's narration "
+                    "order, so positions inside these blocks will be wrong; a correctly ordered "
+                    "EPUB is the fix."
+                )
+        except Exception:
+            logger.warning("⚠️ Alignment: out-of-order block detection failed", exc_info=True)
 
         # 4. PASS 2: Backfill Start (N=6) "Work Backwards"
         # If the first anchor is significantly into the book, try to recover the intro.
@@ -1070,9 +1099,73 @@ class AlignmentService:
             return False
         return True
 
+    def _publish_map(self, abs_id: str, alignment_map: List[Dict], align_method: str,
+                     total_chars: Optional[int] = None,
+                     exclude_spans: Optional[List[Tuple[int, int]]] = None) -> bool:
+        """Store `alignment_map` unless doing so would regress a materially better incumbent.
+
+        Every alignment write funnels through this seam (issue #426). Previously only
+        the CTC path backed up and checked anything before overwriting the stored map,
+        so re-aligning a book that already had a good CTC map was silently destroyed by
+        a fresh lexical map before anything decided the lexical one was better (Four
+        Past Midnight: the CTC map scored 0.324, the lexical rebuild that clobbered it
+        scored 0.200).
+
+        This is deliberately a regression *veto*, not a "challenger must be better"
+        test: on a healthy book a CTC map and a lexical map score almost identically
+        (~0.996 on live data), so requiring the challenger to score higher would reject
+        nearly every healthy CTC upgrade and silently disable that path entirely. The
+        score is only trustworthy as a detector of material degradation, never as a
+        tie-breaker between two maps that both look healthy (see
+        `map_quality.is_regression`).
+
+        Returns True when the map was stored, False when the write was vetoed as a
+        regression — the existing map is left untouched and no backup is taken.
+        """
+        challenger_quality = map_quality.score_map(alignment_map, exclude_spans)
+        incumbent = self._get_alignment(abs_id)
+        incumbent_method = self.database_service.get_alignment_method(abs_id) or ""
+        incumbent_total_chars = self._get_alignment_total_chars(abs_id)
+
+        skip_veto = (
+            not incumbent or len(incumbent) < 2
+            or incumbent_method in self._CTC_REPLACEABLE_METHODS
+            or (total_chars is not None and incumbent_total_chars is not None
+                and incumbent_total_chars != total_chars)
+            # An incumbent with no recorded total_chars (84% of stored maps predate
+            # that field) cannot prove which ebook it was built against, so its score
+            # is not a trustworthy comparison basis against a challenger that does
+            # know its own ebook length -- this can never make a book worse than the
+            # pre-veto behaviour, which always overwrote unconditionally. Every CTC
+            # map (the regression this veto exists for) records total_chars, so the
+            # protection that matters is unaffected.
+            or (total_chars is not None and incumbent_total_chars is None)
+        )
+        if not skip_veto:
+            incumbent_quality = map_quality.score_map(incumbent, exclude_spans)
+            if map_quality.is_regression(incumbent_quality, challenger_quality):
+                logger.warning(
+                    "🚫 Map publish vetoed for %s — challenger '%s' scores %.3f "
+                    "(density_spread=%.2f, max_gap_fraction=%.3f) vs incumbent '%s' %.3f "
+                    "(density_spread=%.2f, max_gap_fraction=%.3f); keeping the existing map",
+                    abs_id, align_method, challenger_quality.score,
+                    challenger_quality.density_spread, challenger_quality.max_gap_fraction,
+                    incumbent_method or "existing", incumbent_quality.score,
+                    incumbent_quality.density_spread, incumbent_quality.max_gap_fraction,
+                )
+                return False
+
+        self._backup_alignment(abs_id)
+        self._save_alignment(abs_id, alignment_map, align_method, total_chars=total_chars,
+                             quality=challenger_quality)
+        return True
+
     def _save_alignment(self, abs_id: str, alignment_map: List[Dict], align_method: str = None,
-                        total_chars: Optional[int] = None):
+                        total_chars: Optional[int] = None,
+                        quality: Optional[map_quality.MapQuality] = None):
         """Upsert alignment to SQLite."""
+        quality_score = quality.score if quality is not None else None
+        quality_detail = map_quality.quality_detail_json(quality) if quality is not None else None
         with self.database_service.get_session() as session:
             json_blob = json.dumps(alignment_map)
 
@@ -1087,10 +1180,16 @@ class AlignmentService:
                 # must not destroy a known-good value.
                 if total_chars is not None:
                     existing.total_chars = total_chars
+                # Same discipline for quality: a caller that didn't score the map
+                # (e.g. a direct restore) must not wipe a previously recorded score.
+                if quality is not None:
+                    existing.quality_score = quality_score
+                    existing.quality_detail = quality_detail
                 existing.last_updated = utcnow()
             else:
                 new_align = BookAlignment(abs_id=abs_id, alignment_map_json=json_blob,
-                                          align_method=align_method, total_chars=total_chars)
+                                          align_method=align_method, total_chars=total_chars,
+                                          quality_score=quality_score, quality_detail=quality_detail)
                 session.add(new_align)
 
             # Context manager handles commit

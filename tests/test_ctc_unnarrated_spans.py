@@ -129,9 +129,15 @@ def service(tmp_path):
 def test_service_detects_excludes_accepts_and_backs_up_large_intentional_gap(service, caplog):
     text, prior, span = lexical_gap(gap=6000)
     service._save_alignment("book", prior, "lexical", total_chars=len(text))
-    new = [{"char": c, "ts": c / 40} for c in range(0, len(text) + 1, 5)
-           if not span[0] <= c < span[1]]
-    assert not service._ctc_map_accepted("book", new, prior)
+    # Realistic CTC output: the intentionally-unnarrated span costs no real audio
+    # time, so ts stays a continuous function of the *collapsed* (post-exclusion)
+    # char position rather than the raw one -- otherwise the map's own pacing
+    # would look pathologically uneven (`map_quality`'s density-spread axis) purely
+    # as an artifact of this synthetic construction, not a real alignment defect.
+    gap_width = span[1] - span[0]
+    new = [{"char": c, "ts": (c if c < span[0] else c - gap_width) / 40}
+           for c in range(0, len(text) + 1, 5) if not span[0] <= c < span[1]]
+    assert not service._ctc_map_accepted("book", new)
     with patch.object(ForcedAligner, "is_available", return_value=True), \
          patch.object(ForcedAligner, "align", return_value=new) as align, \
          caplog.at_level("INFO"):
@@ -145,16 +151,19 @@ def test_service_detects_excludes_accepts_and_backs_up_large_intentional_gap(ser
 
 def test_intentional_gap_does_not_hide_a_separate_failed_chunk(service):
     points = [{"char": c, "ts": c / 10} for c in [0, 10, 20, 60, 70, 100]]
-    assert not service._ctc_map_accepted("book", points, None, [(20, 60)])
+    assert not service._ctc_map_accepted("book", points, [(20, 60)])
 
 
-def test_exclusions_apply_to_prior_regression_comparison_too(service):
-    # Subtracting only from the new map would make its 20% narrated gap look
-    # worse than the prior's unadjusted 10%, spuriously tripping the 5% margin.
+def test_exclusions_apply_to_incumbent_and_challenger_alike(service):
+    # The regression comparison now lives in `_publish_map` (issue #426 phase 2).
+    # Subtracting the exclusion only from the challenger would make its 20% narrated
+    # gap look worse than the incumbent's unadjusted 10%, spuriously vetoing a map
+    # that is really an equivalent, evenly-paced rebuild.
     prior = [{"char": c, "ts": c / 10} for c in range(0, 1001, 100)]
     new = [p for p in prior if not 200 < p["char"] < 700]
     service._save_alignment("book", prior, "lexical", total_chars=1000)
-    assert service._ctc_map_accepted("book", new, prior, [(200, 700)])
+    assert service._publish_map("book", new, "ctc", total_chars=1000, exclude_spans=[(200, 700)])
+    assert service.database_service.get_alignment_method("book") == "ctc"
 
 
 def test_mismatched_ebook_length_prevents_detection(service):

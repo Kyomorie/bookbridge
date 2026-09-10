@@ -213,6 +213,84 @@ class ForcedAligner:
             except OSError:
                 pass
 
+    def _target_tokens(self, full_text: str, text_range: Optional[Tuple[int, int]] = None,
+                       exclude_spans: Optional[List[Tuple[int, int]]] = None
+                       ) -> Tuple[List[List[int]], List[Tuple[str, int]]]:
+        """Build per-word CTC token ids for the words `align()` would actually target.
+
+        Re-derives the same ``word_tokens``/``kept`` pair `align()` builds: words from
+        `_book_words` within ``text_range``, with any word inside `exclude_spans`
+        dropped, each converted to token ids via `self._dict`. This is the single
+        implementation of that bookkeeping — `align()` and `can_single_pass` both call
+        it, so a doomed pass's target-token count is always derived the same way it
+        will actually be counted.
+
+        Requires `self._dict` to already be loaded (call `self._load()` first).
+        Returns ``([], [])`` when ``text_range`` is invalid or no word survives.
+        """
+        start, end = text_range if text_range is not None else (0, len(full_text))
+        if not 0 <= start < end <= len(full_text):
+            return [], []
+        spans: List[Tuple[int, int]] = []
+        for lo, hi in sorted(exclude_spans or []):
+            lo, hi = max(start, lo), min(end, hi)
+            if lo >= hi:
+                continue
+            if spans and lo <= spans[-1][1]:
+                spans[-1] = (spans[-1][0], max(spans[-1][1], hi))
+            else:
+                spans.append((lo, hi))
+        entries = [(word, char + start) for word, char in self._book_words(full_text[start:end])]
+        word_tokens: List[List[int]] = []
+        kept: List[Tuple[str, int]] = []
+        span_idx = 0
+        for word, char in entries:
+            while span_idx < len(spans) and spans[span_idx][1] <= char:
+                span_idx += 1
+            if span_idx < len(spans) and spans[span_idx][0] <= char < spans[span_idx][1]:
+                continue
+            ids = [self._dict[c] for c in word if c in self._dict]
+            if not ids:
+                continue
+            word_tokens.append(ids)
+            kept.append((word, char))
+        return word_tokens, kept
+
+    def can_single_pass(self, audio_duration_seconds: float, full_text: str,
+                        text_range: Optional[Tuple[int, int]] = None,
+                        exclude_spans: Optional[List[Tuple[int, int]]] = None) -> bool:
+        """Decode-free pre-flight: would a single forced_align pass fit this book?
+
+        Mirrors the sizing check `align()` only discovers after paying for a full
+        audio decode (issue #426: a 106,703s/846 MB book cost ~59s of pure waste
+        decoding once just to learn it needed the chunked path, then decoded again
+        for that path). Frames are estimated from ``audio_duration_seconds`` exactly
+        as `align()` estimates them from a decoded waveform
+        (``waveform.size(1) // 320`` — the MMS/wav2vec2 downsample factor already
+        assumed there), so ``int(audio_duration_seconds * self._sample_rate) // 320``
+        reproduces the same estimate without decoding anything. Loads the model
+        (`self._load()`) since the sizing decision needs `self._dict` (to count
+        target tokens via `_target_tokens`) and `self._device`, but never touches
+        audio.
+
+        Returns False when the aligner is unavailable, the model fails to load, or
+        the text yields no alignable tokens in range — all of these already mean
+        `align()` itself would fail, so it is always safe to skip a decode over them.
+        """
+        if not self.is_available():
+            return False
+        try:
+            self._load()
+            word_tokens, _kept = self._target_tokens(full_text, text_range, exclude_spans)
+            if not word_tokens:
+                return False
+            num_targets = sum(len(ids) for ids in word_tokens)
+            est_frames = max(1, int(audio_duration_seconds * self._sample_rate) // 320)
+            return self._single_pass_fits(self._device, est_frames, num_targets)
+        except Exception:
+            logger.error("❌ CTC pre-flight sizing check failed", exc_info=True)
+            return False
+
     def align(self, audio_paths: str | os.PathLike | List[str | os.PathLike], full_text: str,
               text_range: Optional[Tuple[int, int]] = None,
               boundaries: Optional[List[Dict]] = None,
@@ -256,19 +334,7 @@ class ForcedAligner:
 
             self._load()
 
-            word_tokens: List[List[int]] = []
-            kept: List[Tuple[str, int]] = []
-            span_idx = 0
-            for word, char in entries:
-                while span_idx < len(spans) and spans[span_idx][1] <= char:
-                    span_idx += 1
-                if span_idx < len(spans) and spans[span_idx][0] <= char < spans[span_idx][1]:
-                    continue
-                ids = [self._dict[c] for c in word if c in self._dict]
-                if not ids:
-                    continue
-                word_tokens.append(ids)
-                kept.append((word, char))
+            word_tokens, kept = self._target_tokens(full_text, text_range, exclude_spans)
             if not word_tokens:
                 return None
             num_targets = sum(len(ids) for ids in word_tokens)

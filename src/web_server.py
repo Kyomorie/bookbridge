@@ -495,7 +495,7 @@ _ADMIN_ONLY_ENDPOINTS = {
     'admin_users', 'admin_user_integrations',
     'api_restart', 'test_connection',
     'get_booklore_libraries', 'get_booklore_shelves', 'get_abs_libraries',
-    'api_booklore_refresh', 'alignments_llm_status', 'alignments_realign',
+    'api_booklore_refresh', 'alignments_llm_status', 'alignments_realign', 'alignments_restore',
     'kosync_admin.api_get_kosync_documents',
     'kosync_admin.api_link_kosync_document',
     'kosync_admin.api_unlink_kosync_document',
@@ -6079,6 +6079,9 @@ def alignments_llm_status():
         # Self-heal legacy maps: classify NULL provenance by map shape (no re-transcription)
         # so the report and the re-align target list are accurate.
         database_service.backfill_alignment_methods()
+        # Score maps stored before quality tracking existed, a bounded batch per call
+        # so the health panel's scores fill in over a few page loads (issue #426 phase 4).
+        database_service.backfill_alignment_quality()
         return jsonify(database_service.get_alignment_provenance())
     except Exception as e:
         logger.error(f"❌ Failed to read alignment provenance: {e}", exc_info=True)
@@ -6112,6 +6115,27 @@ def alignments_realign():
         return jsonify({"queued": queued})
     except Exception as e:
         logger.error(f"❌ Failed to queue re-align: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+def alignments_restore():
+    """API: Restore a book's alignment map to the backup taken before its last
+    overwrite (issue #426 phase 4).
+
+    Body: {"abs_id": "..."}. Returns {"restored": bool} — False when there is no
+    backup on file for that book.
+    """
+    data = request.get_json(silent=True) or {}
+    abs_id = (data.get("abs_id") or "").strip()
+    if not abs_id:
+        return jsonify({"error": "Provide 'abs_id'"}), 400
+
+    try:
+        alignment_service = getattr(manager, "alignment_service", None) if manager else None
+        restored = bool(alignment_service and alignment_service.restore_previous_alignment(abs_id))
+        return jsonify({"restored": restored})
+    except Exception as e:
+        logger.error(f"❌ Failed to restore alignment for {abs_id}: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 
@@ -12498,6 +12522,7 @@ def create_app(test_container=None):
     app.add_url_rule('/api/forge/process', 'forge_process', forge_process, methods=['POST'])
     app.add_url_rule('/api/alignments/llm-status', 'alignments_llm_status', alignments_llm_status, methods=['GET'])
     app.add_url_rule('/api/alignments/realign', 'alignments_realign', alignments_realign, methods=['POST'])
+    app.add_url_rule('/api/alignments/restore', 'alignments_restore', alignments_restore, methods=['POST'])
 
     @app.route('/api/forge/active', methods=['GET'])
     def forge_active_tasks():

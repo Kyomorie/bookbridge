@@ -540,16 +540,27 @@ class BookAlignment(Base):
     # not the end of the book, so using it over-reports every position. NULL =
     # built before this was recorded; callers fall back to the last anchor.
     total_chars = Column(Integer, nullable=True)
+    # `map_quality.score_map(...).score` (0.0-1.0, higher is better) computed at
+    # publish time. NULL = scored before this column existed; backfilled lazily
+    # (`DatabaseService.backfill_alignment_quality`), not all at once.
+    quality_score = Column(Float, nullable=True)
+    # JSON-encoded `MapQuality` fields (anchors, span_chars, max_gap_fraction,
+    # anchor_density, density_spread, backwards_fraction) for diagnostics. NULL
+    # alongside `quality_score` for the same reason.
+    quality_detail = Column(Text, nullable=True)
 
     # Relationship
     book = relationship("Book", back_populates="alignment")
 
     def __init__(self, abs_id: str, alignment_map_json: str, align_method: str = None,
-                 total_chars: int = None):
+                 total_chars: int = None, quality_score: float = None,
+                 quality_detail: str = None):
         self.abs_id = abs_id
         self.alignment_map_json = alignment_map_json
         self.align_method = align_method
         self.total_chars = total_chars
+        self.quality_score = quality_score
+        self.quality_detail = quality_detail
 
 
 class BookAlignmentBackup(Base):

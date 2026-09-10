@@ -447,6 +447,47 @@ class SyncManager:
             return paths
         return None
 
+    def _try_ctc_alignment(self, abs_id: str, audio_paths: list, book_text: str,
+                           spine_chapters: Optional[list], abs_title: str,
+                           audio_duration: Optional[float], source_label: str) -> bool:
+        """Run one CTC forced-alignment attempt and log its outcome (issue #426).
+
+        `_run_background_job` calls `AlignmentService.align_forced_and_store` from
+        two places -- the pre-transcription attempt and the post-transcript upgrade
+        -- that are otherwise near-duplicate try/except/log blocks. This is their
+        single shared implementation: it re-raises `TranscriptionCancelled` and
+        catches/logs any other exception exactly as both call sites did before,
+        returning whether a CTC map was stored.
+
+        `source_label` is ``"attempt"`` for the pre-transcription call site and
+        ``"upgrade"`` for the post-transcript one; it selects each site's existing,
+        byte-identical success and failure log text (the two sites word their
+        failure log differently, so this is not just a success-message suffix).
+        """
+        is_upgrade = source_label == "upgrade"
+        try:
+            stored = self.alignment_service.align_forced_and_store(
+                abs_id, audio_paths, book_text, spine_chapters=spine_chapters,
+                audio_duration=audio_duration,
+            )
+        except TranscriptionCancelled:
+            raise
+        except Exception as ctc_err:
+            if is_upgrade:
+                logger.warning(f"CTC upgrade failed for '{abs_id}': {ctc_err}", exc_info=True)
+            else:
+                logger.warning(f"CTC alignment failed for '{abs_id}': {ctc_err}", exc_info=True)
+            return False
+        if stored:
+            if is_upgrade:
+                logger.info(
+                    "CTC forced-alignment map generated for "
+                    f"'{sanitize_log_data(abs_title)}' (from transcript boundaries)"
+                )
+            else:
+                logger.info(f"CTC forced-alignment map generated for '{sanitize_log_data(abs_title)}'")
+        return stored
+
     @staticmethod
     def _freshness_guards_enabled() -> bool:
         """Kill switch for the Phase 2 freshness guards (staleness suppression +
@@ -2433,13 +2474,14 @@ class SyncManager:
                         # (existing map -> chunk boundaries). A new long book has no prior
                         # map yet, so this falls back and CTC is applied after transcription.
                         ensure_active()
-                        if self.alignment_service.align_forced_and_store(
-                            abs_id, ctc_local_paths, book_text, spine_chapters=spine_chapters,
+                        if self._try_ctc_alignment(
+                            abs_id, ctc_local_paths, book_text, spine_chapters, abs_title,
+                            getattr(book, "audio_duration", None) or getattr(book, "duration", None),
+                            source_label="attempt",
                         ):
                             direct_aligned = True
                             transcript_source = "ctc"
                             update_progress(1.0, 2)
-                            logger.info(f"CTC forced-alignment map generated for '{sanitize_log_data(abs_title)}'")
                     else:
                         logger.info(f"CTC enabled but audio for '{abs_id}' is not fully local; using SMIL/Whisper")
                 except TranscriptionCancelled:
@@ -2511,14 +2553,12 @@ class SyncManager:
                     if upgrade_paths:
                         try:
                             ensure_active()
-                            if self.alignment_service.align_forced_and_store(
-                                abs_id, upgrade_paths, book_text, spine_chapters=spine_chapters,
+                            if self._try_ctc_alignment(
+                                abs_id, upgrade_paths, book_text, spine_chapters, abs_title,
+                                getattr(book, "audio_duration", None) or getattr(book, "duration", None),
+                                source_label="upgrade",
                             ):
                                 transcript_source = "ctc"
-                                logger.info(
-                                    "CTC forced-alignment map generated for "
-                                    f"'{sanitize_log_data(abs_title)}' (from transcript boundaries)"
-                                )
                         except TranscriptionCancelled:
                             raise
                         except Exception as ctc_err:

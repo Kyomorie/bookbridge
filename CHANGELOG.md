@@ -8,6 +8,26 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **Spot an ebook whose sections are in a different order from the audiobook (#426).**
+  Some EPUBs — collections and omnibuses especially — carry their parts in a different
+  order than the narrator reads them. Alignment silently discarded every match that
+  broke the running order, which on a badly ordered file can throw away half the book's
+  matches and leave long stretches pointing at the wrong audio. Alignment now says so,
+  naming each out-of-order stretch by its place in the book and in the audio, and what
+  fixes it: a correctly ordered EPUB. The four-novella volume *Four Past Midnight*
+  surfaced this — 51% of its matches were being dropped.
+
+- **Alignment quality, in Settings → Alignment Health (#426).** Every map now carries a
+  0–1 quality score, built from how evenly it paces against the audio, how large its
+  biggest guessed-through gap is, and how densely it anchors. Poor maps are now listed
+  for re-alignment next to the pre-LLM and linear ones, so a badly broken map is no
+  longer reported as healthy just because it was built the normal way. Scores fill in
+  for existing books a few at a time as you open the page.
+
+- **Restore the previous alignment map (#426).** Each alignment already kept a backup of
+  the map it replaced, but nothing could reach it. A **Restore previous** button now sits
+  beside each book in Alignment Health.
+
 - **Recover CTC gaps caused by compressed lexical timing (#426).** A second pass
   aligns skipped words between the measured CTC anchors that bracket them, splitting
   work to fit the device and preserving unnarrated-text boundaries. It only runs where
@@ -81,6 +101,18 @@ All notable changes to BookBridge will be documented in this file.
   volume of is listed like any other.
 
 ### Fixed
+
+- **A re-align can no longer replace a good map with a worse one (#426).** Only the CTC
+  path checked anything before overwriting a book's map, so re-aligning a book that
+  already had a good CTC map destroyed it with a fresh transcript-based map before
+  anything compared the two. Every alignment write now passes through one place that
+  backs up the current map and refuses a materially worse replacement — and the two
+  separate, disagreeing regression checks that used to make this decision are now one.
+
+- **Stop decoding the whole audiobook twice on a re-align (#426).** Re-aligning a book
+  already using CTC decoded the entire audio file, discovered it had nothing to chunk
+  against, gave up, and decoded it again. That check now happens before the decode,
+  saving a full pass over the audio — about 107 seconds on an 846 MB book.
 
 - **Prepare KOReader's download list when books are matched.** After a bridge
   restart, catalog changes now start the manifest worker for installs that have

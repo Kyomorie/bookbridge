@@ -2379,10 +2379,10 @@
                 </div>
                 <div class="section-body">
                     <div class="form-group full-width">
-                        <label>Pre-LLM / Linear Alignment Maps</label>
+                        <label>Pre-LLM / Linear / Low-Quality Alignment Maps</label>
                         <div class="cleanup-group">
                             <button type="button" class="btn btn-primary" id="realignAllBtn" onclick="realignAllNonLlm()">
-                                Re-align all pre-LLM / linear maps
+                                Re-align all pre-LLM / linear / low-quality maps
                             </button>
                             <p class="help-text flex-1 m-0" id="alignHealthSummary">Loading alignment health...</p>
                         </div>
@@ -3327,6 +3327,17 @@
             return div.innerHTML;
         }
 
+        function formatQualityScore(score) {
+            return (typeof score === 'number') ? score.toFixed(2) : '—';
+        }
+
+        function qualityScoreColor(score) {
+            if (typeof score !== 'number') return 'rgba(255,255,255,0.45)';
+            if (score < 0.5) return '#e57373';
+            if (score < 0.75) return '#ffb74d';
+            return '#81c784';
+        }
+
         async function loadAlignmentHealth() {
             const summaryEl = document.getElementById('alignHealthSummary');
             const listEl = document.getElementById('alignHealthList');
@@ -3336,7 +3347,7 @@
                 const res = await fetch('/api/alignments/llm-status');
                 const data = await res.json();
                 const needs = data.needs_realign || 0;
-                summaryEl.textContent = `${needs} of ${data.total || 0} maps could benefit from LLM re-alignment.`;
+                summaryEl.textContent = `${needs} of ${data.total || 0} maps could benefit from LLM re-alignment (pre-LLM, linear, or low-quality).`;
 
                 const allBtn = document.getElementById('realignAllBtn');
                 if (allBtn) allBtn.disabled = needs === 0;
@@ -3350,16 +3361,24 @@
                 listEl.innerHTML = '';
                 recommended.forEach((book) => {
                     const method = book.align_method || 'pre_llm';
+                    const score = book.quality_score;
                     const row = document.createElement('div');
                     row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;';
                     row.innerHTML = `<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(book.title)}</span>`
+                        + `<span style="color:${qualityScoreColor(score)};font-size:12px;min-width:44px;text-align:right;" title="Map quality score (0-1, higher is better)">${formatQualityScore(score)}</span>`
                         + `<span style="color:#e57373;font-size:12px;min-width:120px;text-align:right;">${escapeHtml(method)}</span>`;
-                    const button = document.createElement('button');
-                    button.type = 'button';
-                    button.textContent = 'Re-align';
-                    button.className = 'btn';
-                    button.onclick = () => realignBook(book.abs_id, button);
-                    row.appendChild(button);
+                    const realignBtn = document.createElement('button');
+                    realignBtn.type = 'button';
+                    realignBtn.textContent = 'Re-align';
+                    realignBtn.className = 'btn';
+                    realignBtn.onclick = () => realignBook(book.abs_id, realignBtn);
+                    row.appendChild(realignBtn);
+                    const restoreBtn = document.createElement('button');
+                    restoreBtn.type = 'button';
+                    restoreBtn.textContent = 'Restore previous';
+                    restoreBtn.className = 'btn';
+                    restoreBtn.onclick = () => restoreAlignment(book.abs_id, restoreBtn);
+                    row.appendChild(restoreBtn);
                     listEl.appendChild(row);
                 });
             } catch (err) {
@@ -3386,6 +3405,27 @@
             }
         }
 
+        async function restoreAlignment(absId, btn) {
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Restoring...';
+            }
+            try {
+                const res = await fetch('/api/alignments/restore', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ abs_id: absId })
+                });
+                const data = await res.json();
+                if (btn) btn.textContent = data.restored ? 'Restored' : 'No backup';
+            } catch (err) {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = 'Restore previous';
+                }
+            }
+        }
+
         async function realignAllNonLlm() {
             const btn = document.getElementById('realignAllBtn');
             if (btn) {
@@ -3403,7 +3443,7 @@
             } catch (err) {
                 if (btn) {
                     btn.disabled = false;
-                    btn.textContent = 'Re-align all pre-LLM / linear maps';
+                    btn.textContent = 'Re-align all pre-LLM / linear / low-quality maps';
                 }
             }
         }
