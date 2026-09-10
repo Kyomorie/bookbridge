@@ -12,12 +12,15 @@ measured live, issue #426) was reported healthy.
 import json
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 
 from src.db.database_service import DatabaseService
 from src.db.models import Book, BookAlignment
+from src.services.alignment_service import AlignmentService
 from src.services.map_quality import ALIGNMENT_QUALITY_REALIGN_THRESHOLD, score_map
+from src.utils.polisher import Polisher
 
 
 def _dense_map(length: int, step: int) -> List[Dict]:
@@ -181,6 +184,85 @@ class TestBackfillAlignmentQuality(_AlignmentQualityTestBase):
 
         self.assertEqual(first_pass, 3)
         self.assertEqual(second_pass, 0)
+
+    def test_backfill_does_not_disturb_last_updated(self):
+        """Load-bearing: `backfill_alignment_quality` is a metadata-only pass
+        (it only fills `quality_score`/`quality_detail`) and must not stamp
+        `last_updated` to "now". `BookAlignment.last_updated` carries
+        `onupdate=utcnow`, which SQLAlchemy fires on ANY UPDATE that touches
+        the row -- including a plain ORM attribute assignment of
+        `quality_score`/`quality_detail` -- unless `last_updated` is itself
+        named explicitly in the UPDATE's SET clause. Fails against the
+        pre-fix implementation (`row.quality_score = ...` / `row.quality_detail
+        = ...` through the ORM), which lets `onupdate` rewrite `last_updated`
+        to the moment of the backfill.
+
+        `last_updated` is set to a fixed, clearly-old datetime (2020-01-01)
+        before calling the backfill so a "now" stamp is unmistakable, and the
+        row is constructed with that value already set (an INSERT, where
+        `onupdate` never applies) so the fixture itself cannot be the thing
+        that moves it.
+        """
+        unscored = _broken_map(1000)
+        old_stamp = datetime(2020, 1, 1)
+        with self.db.get_session() as session:
+            row = BookAlignment(
+                abs_id="legacy-book",
+                alignment_map_json=json.dumps(unscored),
+                align_method="lexical",
+                total_chars=1000,
+                quality_score=None,
+                quality_detail=None,
+            )
+            row.last_updated = old_stamp
+            session.add(row)
+
+        with self.db.get_session() as session:
+            before = session.query(BookAlignment).filter_by(abs_id="legacy-book").first()
+            self.assertEqual(before.last_updated, old_stamp)
+
+        scored_count = self.db.backfill_alignment_quality()
+
+        self.assertEqual(scored_count, 1)
+        with self.db.get_session() as session:
+            after = session.query(BookAlignment).filter_by(abs_id="legacy-book").first()
+            self.assertIsNotNone(after.quality_score)
+            self.assertIsNotNone(after.quality_detail)
+            self.assertEqual(
+                after.last_updated, old_stamp,
+                "backfill_alignment_quality must not disturb last_updated "
+                "(it is a metadata-only pass, not a re-alignment)",
+            )
+
+
+class TestSaveAlignmentStillAdvancesLastUpdated(_AlignmentQualityTestBase):
+    """Guards that the last_updated fix above does not disable legitimate
+    provenance updates: unlike the metadata-only backfills, `_save_alignment`
+    genuinely replaces the stored map, so it must still advance
+    `last_updated`."""
+
+    def test_save_alignment_advances_last_updated_on_rebuild(self):
+        old_map = _broken_map(1000)
+        old_stamp = datetime(2020, 1, 1)
+        with self.db.get_session() as session:
+            row = BookAlignment(
+                abs_id="rebuilt-book",
+                alignment_map_json=json.dumps(old_map),
+                align_method="lexical",
+                total_chars=1000,
+            )
+            row.last_updated = old_stamp
+            session.add(row)
+
+        service = AlignmentService(self.db, Polisher())
+        new_map = _dense_map(1000, 10)
+        service._save_alignment("rebuilt-book", new_map, align_method="ctc", total_chars=1000)
+
+        with self.db.get_session() as session:
+            after = session.query(BookAlignment).filter_by(abs_id="rebuilt-book").first()
+            self.assertEqual(json.loads(after.alignment_map_json), new_map)
+            self.assertNotEqual(after.last_updated, old_stamp)
+            self.assertGreater(after.last_updated, old_stamp)
 
 
 if __name__ == "__main__":

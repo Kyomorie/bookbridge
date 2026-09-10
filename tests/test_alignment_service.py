@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 from src.services.alignment_service import (
@@ -695,6 +696,41 @@ def test_backfill_persists_against_a_real_database():
 
         # A book with no alignment row at all is simply skipped.
         assert service.record_total_chars_if_missing("abs-unknown", 100_000) is False
+    finally:
+        if hasattr(db, 'db_manager'):
+            db.db_manager.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_backfill_total_chars_does_not_disturb_last_updated():
+    """set_alignment_total_chars_if_missing is a metadata backfill (it only
+    fills a NULL total_chars, never rebuilds the map), so it must not stamp
+    BookAlignment.last_updated to "now" via onupdate=utcnow. Fails against a
+    plain `row.total_chars = ...` ORM assignment, which fires onupdate on the
+    resulting UPDATE regardless of whether last_updated itself changed."""
+    import shutil
+    from src.db.database_service import DatabaseService
+
+    tmp = tempfile.mkdtemp()
+    try:
+        db = DatabaseService(str(Path(tmp) / "align_total_chars.db"))
+        old_stamp = datetime(2020, 1, 1)
+        with db.get_session() as session:
+            row = BookAlignment(
+                abs_id="abs-legacy",
+                alignment_map_json=json.dumps(
+                    [{"char": 0, "ts": 0.0}, {"char": 75_470, "ts": 76_726.9}]
+                ),
+            )
+            row.last_updated = old_stamp
+            session.add(row)
+
+        assert db.set_alignment_total_chars_if_missing("abs-legacy", 100_000) is True
+
+        with db.get_session() as session:
+            after = session.query(BookAlignment).filter_by(abs_id="abs-legacy").first()
+            assert after.total_chars == 100_000
+            assert after.last_updated == old_stamp
     finally:
         if hasattr(db, 'db_manager'):
             db.db_manager.close()

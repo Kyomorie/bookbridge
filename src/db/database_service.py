@@ -685,7 +685,21 @@ class DatabaseService:
             )
             if row is None or row.total_chars is not None:
                 return False
-            row.total_chars = int(total_chars)
+            # This is a metadata backfill, not a re-alignment: the map itself is
+            # untouched, so `last_updated` (the map's build/rebuild provenance
+            # timestamp, surfaced by `get_alignment_provenance`) must not move.
+            # A plain ORM attribute assignment (`row.total_chars = ...`) still
+            # fires `BookAlignment.last_updated`'s `onupdate=utcnow` -- it fires
+            # on ANY UPDATE to the row, not just when `last_updated` itself
+            # changes. Naming `last_updated` explicitly in the bulk UPDATE's SET
+            # clause is what suppresses `onupdate`: an explicit value takes
+            # precedence over it, whereas re-assigning the same value through
+            # the ORM leaves the attribute un-dirty (omitted from the SET
+            # clause), so `onupdate` fires anyway.
+            session.query(BookAlignment).filter(BookAlignment.abs_id == abs_id).update(
+                {"total_chars": int(total_chars), "last_updated": row.last_updated},
+                synchronize_session=False,
+            )
             return True
 
     def get_alignment_provenance(self) -> dict:
@@ -770,7 +784,18 @@ class DatabaseService:
         self, abs_ids: list[str], method: str
     ) -> int:
         """Apply an align_method value to abs_ids in chunks to avoid SQLite's
-        bound-parameter limit. Returns the total number of rows updated."""
+        bound-parameter limit. Returns the total number of rows updated.
+
+        This classifies a pre-existing map by shape (see
+        `backfill_alignment_methods`); it does not rebuild it, so
+        `last_updated` must not move. A bulk UPDATE that omits a column still
+        fires that column's `onupdate=utcnow` for every row it touches (same
+        issue as `backfill_alignment_quality`, which explains the mechanism in
+        full), so `last_updated` is set to a self-referential column
+        expression here -- a genuine value in the SET clause that reassigns
+        each row its own current value and so suppresses `onupdate`, without
+        needing to fetch each row's timestamp up front.
+        """
         if not abs_ids:
             return 0
         total_updated = 0
@@ -779,7 +804,13 @@ class DatabaseService:
                 chunk = abs_ids[i : i + _SQL_IN_CHUNK]
                 total_updated += session.query(BookAlignment).filter(
                     BookAlignment.abs_id.in_(chunk)
-                ).update({BookAlignment.align_method: method}, synchronize_session=False)
+                ).update(
+                    {
+                        BookAlignment.align_method: method,
+                        BookAlignment.last_updated: BookAlignment.last_updated,
+                    },
+                    synchronize_session=False,
+                )
         return total_updated
 
     def backfill_alignment_methods(self) -> int:
@@ -877,8 +908,29 @@ class DatabaseService:
                 except Exception:
                     continue
                 quality = score_map(alignment_map)
-                row.quality_score = quality.score
-                row.quality_detail = quality_detail_json(quality)
+                # This is a metadata backfill, not a re-alignment: the map
+                # itself is untouched, so `last_updated` (the map's
+                # build/rebuild provenance timestamp, surfaced by
+                # `get_alignment_provenance`) must not move. A plain ORM
+                # attribute assignment (`row.quality_score = ...`) still fires
+                # `BookAlignment.last_updated`'s `onupdate=utcnow` -- it fires
+                # on ANY UPDATE to the row, not just when `last_updated` itself
+                # changes -- which would silently rewrite provenance for the
+                # whole library a page at a time (this endpoint calls this
+                # method 25 rows at a time on every load). Naming
+                # `last_updated` explicitly in the SET clause is what
+                # suppresses `onupdate`: an explicit value takes precedence
+                # over it, whereas re-assigning the same value through the ORM
+                # leaves the attribute un-dirty (omitted from the SET clause),
+                # so `onupdate` fires anyway.
+                session.query(BookAlignment).filter(BookAlignment.abs_id == row.abs_id).update(
+                    {
+                        "quality_score": quality.score,
+                        "quality_detail": quality_detail_json(quality),
+                        "last_updated": row.last_updated,
+                    },
+                    synchronize_session=False,
+                )
                 scored += 1
             return scored
 
