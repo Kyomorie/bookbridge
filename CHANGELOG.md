@@ -42,14 +42,6 @@ All notable changes to BookBridge will be documented in this file.
   the map it replaced, but nothing could reach it. A **Restore previous** button now sits
   beside each book in Alignment Health.
 
-- **Recover CTC gaps caused by compressed lexical timing (#426).** A second pass
-  aligns skipped words between the measured CTC anchors that bracket them, splitting
-  work to fit the device and preserving unnarrated-text boundaries. It only runs where
-  those anchors bound real audio, so a genuinely unnarrated stretch is still left
-  interpolated rather than crammed. Diagnostics report recovered words and remaining
-  gaps separately. Existing maps need re-alignment; the usual quality gate and
-  previous-map backup still apply.
-
 - **See which books already use CTC alignment (#426).** A small CTC badge appears
   beside the card's sync time. Its reset menu shows a disabled **Already using CTC**
   action, while **Clear position** stays available. Both update on the dashboard's
@@ -72,6 +64,12 @@ All notable changes to BookBridge will be documented in this file.
   standard image is unchanged and CTC stays inert there). When on, CTC becomes the
   preferred backend and the Whisper/lexical pipeline remains the automatic fallback.
   Existing books adopt it via **Remap**.
+
+  Books of any length are handled by aligning in chapter-sized pieces; large unspoken
+  passages inside a book are detected and set aside rather than being given narration
+  time they never had; and a rebuilt map must be at least as good as the one it
+  replaces before it is kept — the previous map is saved either way, so a remap can be
+  undone.
 
 - **"Remap" a book's audio alignment from the dashboard (#426).** The Clear-Progress
   button on each book is now a small menu with two choices: **Clear position** (the old
@@ -116,43 +114,17 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
-- **A re-align can no longer replace a good map with a worse one (#426).** Only the CTC
-  path checked anything before overwriting a book's map, so re-aligning a book that
-  already had a good CTC map destroyed it with a fresh transcript-based map before
-  anything compared the two. Every alignment write now passes through one place that
-  backs up the current map and refuses a materially worse replacement — and the two
-  separate, disagreeing regression checks that used to make this decision are now one.
-
-- **Stop decoding the whole audiobook twice on a re-align (#426).** Re-aligning a book
-  already using CTC decoded the entire audio file, discovered it had nothing to chunk
-  against, gave up, and decoded it again. That check now happens before the decode,
-  saving a full pass over the audio — about 107 seconds on an 846 MB book.
-
 - **Prepare KOReader's download list when books are matched.** After a bridge
   restart, catalog changes now start the manifest worker for installs that have
   used device sync, instead of waiting for KOReader to connect. Rapid matches
   share one background worker; a match arriving during a build queues another
   pass. The refreshed list is available once the build finishes.
 
-- **A poor CTC alignment can no longer entrench itself across re-alignments (#426).**
-  A CTC pass chunks a long book by reading an existing map's timings. It was reading
-  its own previous CTC map, so any error in that map re-derived the same chunk windows
-  and reproduced itself — leaving books stuck with the same misaligned region no matter
-  how often they were re-aligned. CTC now ignores a previous CTC map as a chunking
-  source and rebuilds from transcript-derived timings first, which lets a re-alignment
-  actually correct the book.
-
 - **Books with a malformed EPUB manifest now parse instead of failing.** Some EPUBs
   list a file in their manifest (e.g. an Adobe `page-template.xpgt`) that isn't actually
   in the archive, which aborted parsing of the whole book — so it couldn't be matched,
   aligned, or synced. BookBridge now parses a repaired copy with the missing manifest
   entries dropped, and the book's text extracts normally.
-
-- **Keep large unspoken passages from displacing CTC word timings (#426).**
-  Well-covered lexical maps can now identify large interior ebook-only gaps and
-  align the surrounding narration separately. Matched phrases are preserved,
-  compressed transcript timestamps cannot justify exclusions, and deliberate
-  gaps do not trip the acceptance gate. Existing maps need re-alignment to benefit.
 
 - **Recover from incomplete BookOrbit audiobook downloads.** Downloads are written
   to temporary files and checked against the response size before becoming usable.
@@ -170,19 +142,6 @@ All notable changes to BookBridge will be documented in this file.
   before it is accepted. Downloads from servers that compress their responses are
   no longer mistaken for truncated ones.
 
-- **A remap never downgrades a book's alignment, and a bad remap can be undone (#426).**
-  A CTC remap now has to clear a quality bar before it replaces the existing map: a
-  degenerate result (one big interpolated stretch of text with no anchor), or one that
-  leaves a larger gap than the map it would replace, is rejected and the previous map is
-  kept — so the CTC badge can't appear on a map that is actually worse than what you had.
-  When a remap is accepted, the map it replaced is saved first, so a remap that turns out
-  worse can be rolled back to exactly what was there before.
-- **CTC remaps finish on the selected GPU (#426).** Emissions and target tokens now
-  stay on the same device through forced alignment. Oversized CPU runs fall back
-  before entering torchaudio's unsafe back-pointer loop, and phase logs show decode,
-  emission and alignment progress. When an existing lexical map covers the narration,
-  its matched EPUB chapters bound the remap so unnarrated bonus excerpts do not get
-  squeezed into the audiobook; saved offsets still refer to the complete EPUB.
 - **Reset menus stay above neighboring book cards (#426).** The popup escapes card
   clipping, stays within the viewport, and both actions retain valid click handlers.
 - **Matching a BookOrbit or Grimmory audiobook now fills in its series right away.**
