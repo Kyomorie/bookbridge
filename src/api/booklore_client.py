@@ -10,6 +10,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from pathlib import Path
 
+from src.utils.file_transfers import (
+    IncompleteTransferError,
+    response_declares_size,
+    stream_response_to_path,
+)
 from src.utils.logging_utils import sanitize_log_data
 from src.sync_clients.sync_client_interface import LocatorResult
 from src.utils.user_config import resolve_setting
@@ -2005,7 +2010,8 @@ class BookloreClient:
         token = self._get_fresh_token()
         if not token:
             return False
-        headers = {"Authorization": f"Bearer {token}"}
+        # identity encoding keeps Content-Length comparable with the bytes written.
+        headers = {"Authorization": f"Bearer {token}", "Accept-Encoding": "identity"}
         urls = [
             f"{self.base_url}/api/v1/audiobooks/{book_id}/stream",
         ]
@@ -2033,20 +2039,27 @@ class BookloreClient:
                         continue
 
                     output_path = Path(output_path)
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    with open(output_path, "wb") as handle:
-                        for chunk in response.iter_content(chunk_size=65536):
-                            if chunk:
-                                handle.write(chunk)
-                    actual_size = output_path.stat().st_size
-                    size_display = f"{actual_size // (1024 * 1024)} MiB" if actual_size > 1024 * 1024 else f"{actual_size // 1024} KiB"
-                    
-                    # If we downloaded a file that is still too small, try next endpoint
-                    if expected_size and actual_size < expected_size * 0.1:
+                    # Publish only a complete stream: a rejected candidate must leave
+                    # any previously downloaded file intact for the next endpoint.
+                    try:
+                        stream_response_to_path(
+                            response,
+                            output_path,
+                            expected_size=response_declares_size(response),
+                            min_size=int(expected_size * 0.1) if expected_size else 0,
+                            chunk_size=65536,
+                        )
+                    except IncompleteTransferError as e:
+                        got = e.actual_size
+                        got_display = f"{got // (1024 * 1024)} MiB" if got > 1024 * 1024 else f"{got // 1024} KiB"
                         logger.warning(
-                            f"Grimmory downloaded file too small ({size_display}) from {url}, trying next endpoint..."
+                            f"Grimmory downloaded file too small ({got_display}) from {url}, "
+                            f"trying next endpoint... reason={e}",
+                            exc_info=True,
                         )
                         continue
+                    actual_size = output_path.stat().st_size
+                    size_display = f"{actual_size // (1024 * 1024)} MiB" if actual_size > 1024 * 1024 else f"{actual_size // 1024} KiB"
 
                     logger.info(
                         f"Grimmory audiobook download: book_id={book_id} "
@@ -2069,7 +2082,8 @@ class BookloreClient:
         token = self._get_fresh_token()
         if not token:
             return False
-        headers = {"Authorization": f"Bearer {token}"}
+        # identity encoding keeps Content-Length comparable with the bytes written.
+        headers = {"Authorization": f"Bearer {token}", "Accept-Encoding": "identity"}
         url = f"{self.base_url}/api/v1/audiobooks/{book_id}/track/{track_index}/stream"
         try:
             with self.session.get(url, headers=headers, stream=True, timeout=120) as response:
@@ -2079,13 +2093,21 @@ class BookloreClient:
                         f"track_index={track_index} status={response.status_code}"
                     )
                     return False
-                output_path = Path(output_path)
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(output_path, "wb") as handle:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            handle.write(chunk)
-                return True
+                expected_size = response_declares_size(response)
+                try:
+                    return stream_response_to_path(response, output_path, expected_size=expected_size)
+                except IncompleteTransferError as e:
+                    logger.error(
+                        "❌ Grimmory audiobook track download truncated: book_id=%s track_index=%s "
+                        "path=%s got=%s expected=%s",
+                        book_id,
+                        track_index,
+                        output_path,
+                        e.actual_size,
+                        e.expected_size if e.expected_size is not None else "unknown",
+                        exc_info=True,
+                    )
+                    return False
         except Exception as e:
             logger.error(f"❌ Grimmory audiobook track download error: {e}", exc_info=True)
             return False

@@ -433,6 +433,61 @@ class SyncManager:
             return None
         return self.active_audio_source_adapters.get(source)
 
+    def _ctc_local_audio_paths(self, audio_adapter, audio_source_id, abs_id):
+        """Local audio file paths for CTC, or None unless every part is local.
+
+        CTC decodes files with ffmpeg, so it needs on-disk parts. get_audio_files
+        downloads/caches them (and re-downloads if a prior part was pruned).
+        """
+        if not audio_adapter:
+            return None
+        files = audio_adapter.get_audio_files(audio_source_id, bridge_key=abs_id)
+        paths = [f.get("local_path") for f in (files or []) if f.get("local_path")]
+        if files and len(paths) == len(files):
+            return paths
+        return None
+
+    def _try_ctc_alignment(self, abs_id: str, audio_paths: list, book_text: str,
+                           spine_chapters: Optional[list], abs_title: str,
+                           audio_duration: Optional[float], source_label: str) -> bool:
+        """Run one CTC forced-alignment attempt and log its outcome (issue #426).
+
+        `_run_background_job` calls `AlignmentService.align_forced_and_store` from
+        two places -- the pre-transcription attempt and the post-transcript upgrade
+        -- that are otherwise near-duplicate try/except/log blocks. This is their
+        single shared implementation: it re-raises `TranscriptionCancelled` and
+        catches/logs any other exception exactly as both call sites did before,
+        returning whether a CTC map was stored.
+
+        `source_label` is ``"attempt"`` for the pre-transcription call site and
+        ``"upgrade"`` for the post-transcript one; it selects each site's existing,
+        byte-identical success and failure log text (the two sites word their
+        failure log differently, so this is not just a success-message suffix).
+        """
+        is_upgrade = source_label == "upgrade"
+        try:
+            stored = self.alignment_service.align_forced_and_store(
+                abs_id, audio_paths, book_text, spine_chapters=spine_chapters,
+                audio_duration=audio_duration,
+            )
+        except TranscriptionCancelled:
+            raise
+        except Exception as ctc_err:
+            if is_upgrade:
+                logger.warning(f"CTC upgrade failed for '{abs_id}': {ctc_err}", exc_info=True)
+            else:
+                logger.warning(f"CTC alignment failed for '{abs_id}': {ctc_err}", exc_info=True)
+            return False
+        if stored:
+            if is_upgrade:
+                logger.info(
+                    "CTC forced-alignment map generated for "
+                    f"'{sanitize_log_data(abs_title)}' (from transcript boundaries)"
+                )
+            else:
+                logger.info(f"CTC forced-alignment map generated for '{sanitize_log_data(abs_title)}'")
+        return stored
+
     @staticmethod
     def _freshness_guards_enabled() -> bool:
         """Kill switch for the Phase 2 freshness guards (staleness suppression +
@@ -2337,7 +2392,12 @@ class SyncManager:
 
             raw_transcript = None
             transcript_source = None
-            storyteller_aligned = False
+            # A direct alignment map (Storyteller or CTC) was already stored — when
+            # set, transcription (SMIL/Whisper) and lexical anchoring are skipped.
+            direct_aligned = False
+            # Local audio paths for CTC, resolved once and reused for the post-transcript
+            # CTC upgrade (new long books have no prior map to chunk against up front).
+            ctc_local_paths = None
 
             # [MOVED UP] Fetch item details to get chapters (for time alignment) and for Ebook Acquisition
             # item_details = self.abs_client.get_item_details(abs_id) # Already fetched above
@@ -2348,7 +2408,7 @@ class SyncManager:
             
             # Pre-fetch book text for validation and alignment.
             # We need this for Validating SMIL OR for Aligning Whisper
-            book_text, _ = self.ebook_parser.extract_text_and_map(epub_path)
+            book_text, spine_chapters = self.ebook_parser.extract_text_and_map(epub_path)
 
             if (
                 self.alignment_service
@@ -2388,10 +2448,10 @@ class SyncManager:
                 if storyteller_manifest:
                     try:
                         storyteller_transcript = StorytellerTranscript(storyteller_manifest)
-                        storyteller_aligned = self.alignment_service.align_storyteller_and_store(
+                        direct_aligned = self.alignment_service.align_storyteller_and_store(
                             abs_id, storyteller_transcript, ebook_text=book_text
                         )
-                        if storyteller_aligned:
+                        if direct_aligned:
                             transcript_source = "storyteller"
                             update_progress(1.0, 2)
                             logger.info(f"Storyteller alignment map generated for '{sanitize_log_data(abs_title)}'")
@@ -2402,8 +2462,35 @@ class SyncManager:
                 else:
                     logger.info(f"Storyteller manifest unavailable for '{abs_id}', falling back to SMIL/Whisper")
 
+            # CTC forced alignment (issue #426): align the audio directly against the
+            # ebook text — no transcript. Preferred when enabled; falls back to
+            # SMIL/Whisper on any failure, or when the audio is not fully local (CTC
+            # needs local files to decode).
+            if not direct_aligned and AlignmentService.ctc_enabled():
+                try:
+                    ctc_local_paths = self._ctc_local_audio_paths(audio_adapter, audio_source_id, abs_id)
+                    if ctc_local_paths:
+                        # First pass: succeeds directly for short books, and for a Remap
+                        # (existing map -> chunk boundaries). A new long book has no prior
+                        # map yet, so this falls back and CTC is applied after transcription.
+                        ensure_active()
+                        if self._try_ctc_alignment(
+                            abs_id, ctc_local_paths, book_text, spine_chapters, abs_title,
+                            getattr(book, "audio_duration", None) or getattr(book, "duration", None),
+                            source_label="attempt",
+                        ):
+                            direct_aligned = True
+                            transcript_source = "ctc"
+                            update_progress(1.0, 2)
+                    else:
+                        logger.info(f"CTC enabled but audio for '{abs_id}' is not fully local; using SMIL/Whisper")
+                except TranscriptionCancelled:
+                    raise
+                except Exception as ctc_err:
+                    logger.warning(f"CTC alignment failed for '{abs_id}': {ctc_err}", exc_info=True)
+
             # Attempt SMIL extraction
-            if not storyteller_aligned and hasattr(self.transcriber, 'transcribe_from_smil'):
+            if not direct_aligned and hasattr(self.transcriber, 'transcribe_from_smil'):
                   raw_transcript = self.transcriber.transcribe_from_smil(
                       abs_id, epub_path, chapters,
                       full_book_text=book_text,
@@ -2413,7 +2500,7 @@ class SyncManager:
                       transcript_source = "smil"
 
             # Step 3: Fallback to Whisper (Slow Path) - Only runs if SMIL failed
-            if not storyteller_aligned and not raw_transcript:
+            if not direct_aligned and not raw_transcript:
                 logger.info("🔄 SMIL extraction skipped/failed, falling back to Whisper transcription")
                 
                 if not audio_adapter:
@@ -2430,11 +2517,11 @@ class SyncManager:
                 )
                 if raw_transcript:
                     transcript_source = "whisper"
-            elif not storyteller_aligned:
+            elif not direct_aligned:
                 # If SMIL worked, it's already done with transcribing phase
                 update_progress(1.0, 2)
 
-            if not storyteller_aligned and not raw_transcript:
+            if not direct_aligned and not raw_transcript:
                 raise Exception("Failed to generate transcript from both SMIL and Whisper.")
 
             # Step 4: Parse EPUB - ebook_parser caches result, so repeating is cheap.
@@ -2442,20 +2529,41 @@ class SyncManager:
             
             # Align and store using AlignmentService.
             # This is where we commit the result to the DB
-            if not storyteller_aligned:
+            if not direct_aligned:
                 logger.info(f"🧠 Aligning transcript ({transcript_source}) using Anchored Alignment...")
             
             # Update progress to show we are working on alignment (Start of Phase 3 = 90%)
             update_progress(0.1, 3) # 91%
             
-            if storyteller_aligned:
+            if direct_aligned:
                 success = True
             else:
                 ensure_active()
                 success = self.alignment_service.align_and_store(
                     abs_id, raw_transcript, book_text, chapters
                 )
-            
+                # A new book has no prior map, so the CTC attempt above could not chunk a
+                # long book. Now that transcription built a lexical map, reuse it as chunk
+                # boundaries to upgrade to CTC (issue #426) — new long books get CTC on
+                # first mapping (not only via a manual Remap), regardless of Storyteller.
+                if success and AlignmentService.ctc_enabled():
+                    upgrade_paths = ctc_local_paths
+                    if not (upgrade_paths and all(os.path.exists(p) for p in upgrade_paths)):
+                        upgrade_paths = self._ctc_local_audio_paths(audio_adapter, audio_source_id, abs_id)
+                    if upgrade_paths:
+                        try:
+                            ensure_active()
+                            if self._try_ctc_alignment(
+                                abs_id, upgrade_paths, book_text, spine_chapters, abs_title,
+                                getattr(book, "audio_duration", None) or getattr(book, "duration", None),
+                                source_label="upgrade",
+                            ):
+                                transcript_source = "ctc"
+                        except TranscriptionCancelled:
+                            raise
+                        except Exception as ctc_err:
+                            logger.warning(f"CTC upgrade failed for '{abs_id}': {ctc_err}", exc_info=True)
+
             # Alignment done
             update_progress(0.5, 3) # 95%
             

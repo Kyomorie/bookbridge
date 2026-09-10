@@ -339,6 +339,38 @@ class TestDatabaseServiceIntegration(unittest.TestCase):
         # Re-running is a no-op (nothing left NULL).
         self.assertEqual(self.db_service.backfill_alignment_methods(), 0)
 
+    def test_backfill_alignment_methods_does_not_disturb_last_updated(self):
+        """backfill_alignment_methods classifies a pre-existing map by shape
+        (see _seed_alignment); it never rebuilds the map, so last_updated
+        must not move. BookAlignment.last_updated carries onupdate=utcnow,
+        which fires on any UPDATE touching the row -- including the bulk
+        classification UPDATE this method issues -- unless last_updated is
+        itself named in that UPDATE's SET clause. Fails against a bulk
+        update that only sets align_method."""
+        from src.db.models import BookAlignment
+
+        self._seed_alignment('lin-ts', 'Linear Timestamp', points=2)
+        old_stamp = datetime(2020, 1, 1)
+        with self.db_service.get_session() as session:
+            session.query(BookAlignment).filter_by(abs_id='lin-ts').update(
+                {'last_updated': old_stamp}, synchronize_session=False
+            )
+        with self.db_service.get_session() as session:
+            before = session.query(BookAlignment).filter_by(abs_id='lin-ts').first()
+            self.assertEqual(before.last_updated, old_stamp)
+
+        updated = self.db_service.backfill_alignment_methods()
+        self.assertEqual(updated, 1)
+
+        with self.db_service.get_session() as session:
+            after = session.query(BookAlignment).filter_by(abs_id='lin-ts').first()
+            self.assertEqual(after.align_method, 'linear')
+            self.assertEqual(
+                after.last_updated, old_stamp,
+                "backfill_alignment_methods must not disturb last_updated "
+                "(it classifies by shape, it does not rebuild the map)",
+            )
+
     def test_alignment_provenance_never_selects_map_blob(self):
         """Regression test: get_alignment_provenance must not SELECT alignment_map_json.
         

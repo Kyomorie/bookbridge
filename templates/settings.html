@@ -2150,7 +2150,7 @@
                         </div>
                         <div class="form-group" id="storyteller_poll_settle_row"
                              {% if get_val('STORYTELLER_POLL_MODE') != 'custom' %}style="opacity: 0.45; pointer-events: none;"{% endif %}>
-                            <label>Wait for Position to Settle</label>
+                            <label>Storyteller — Wait for Position to Settle</label>
                             <div class="toggle-switch-wrapper">
                                 <label class="toggle-switch">
                                     <input type="checkbox" name="STORYTELLER_POLL_WAIT_FOR_SETTLE"
@@ -2180,7 +2180,7 @@
                         </div>
                         <div class="form-group" id="booklore_poll_settle_row"
                              {% if get_val('BOOKLORE_POLL_MODE') != 'custom' %}style="opacity: 0.45; pointer-events: none;"{% endif %}>
-                            <label>Wait for Position to Settle</label>
+                            <label>Grimmory — Wait for Position to Settle</label>
                             <div class="toggle-switch-wrapper">
                                 <label class="toggle-switch">
                                     <input type="checkbox" name="BOOKLORE_POLL_WAIT_FOR_SETTLE"
@@ -2208,7 +2208,7 @@
                         </div>
                         <div class="form-group" id="booklore_audio_poll_settle_row"
                              {% if get_val('BOOKLORE_AUDIO_POLL_MODE') != 'custom' %}style="opacity: 0.45; pointer-events: none;"{% endif %}>
-                            <label>Wait for Position to Settle</label>
+                            <label>Grimmory Audiobook — Wait for Position to Settle</label>
                             <div class="toggle-switch-wrapper">
                                 <label class="toggle-switch">
                                     <input type="checkbox" name="BOOKLORE_AUDIO_POLL_WAIT_FOR_SETTLE"
@@ -2238,7 +2238,7 @@
                         </div>
                         <div class="form-group" id="bookorbit_poll_settle_row"
                              {% if get_val('BOOKORBIT_POLL_MODE') != 'custom' %}style="opacity: 0.45; pointer-events: none;"{% endif %}>
-                            <label>Wait for Position to Settle</label>
+                            <label>BookOrbit — Wait for Position to Settle</label>
                             <div class="toggle-switch-wrapper">
                                 <label class="toggle-switch">
                                     <input type="checkbox" name="BOOKORBIT_POLL_WAIT_FOR_SETTLE"
@@ -2266,7 +2266,7 @@
                         </div>
                         <div class="form-group" id="bookorbit_audio_poll_settle_row"
                              {% if get_val('BOOKORBIT_AUDIO_POLL_MODE') != 'custom' %}style="opacity: 0.45; pointer-events: none;"{% endif %}>
-                            <label>Wait for Position to Settle</label>
+                            <label>BookOrbit Audiobook — Wait for Position to Settle</label>
                             <div class="toggle-switch-wrapper">
                                 <label class="toggle-switch">
                                     <input type="checkbox" name="BOOKORBIT_AUDIO_POLL_WAIT_FOR_SETTLE"
@@ -2296,7 +2296,7 @@
                         </div>
                         <div class="form-group" id="kavita_poll_settle_row"
                              {% if get_val('KAVITA_POLL_MODE') != 'custom' %}style="opacity: 0.45; pointer-events: none;"{% endif %}>
-                            <label>Wait for Position to Settle</label>
+                            <label>Kavita — Wait for Position to Settle</label>
                             <div class="toggle-switch-wrapper">
                                 <label class="toggle-switch">
                                     <input type="checkbox" name="KAVITA_POLL_WAIT_FOR_SETTLE"
@@ -2326,7 +2326,7 @@
                         </div>
                         <div class="form-group" id="cwa_sync_poll_settle_row"
                              {% if get_val('CWA_SYNC_POLL_MODE') != 'custom' %}style="opacity: 0.45; pointer-events: none;"{% endif %}>
-                            <label>Wait for Position to Settle</label>
+                            <label>Calibre-Web Automated — Wait for Position to Settle</label>
                             <div class="toggle-switch-wrapper">
                                 <label class="toggle-switch">
                                     <input type="checkbox" name="CWA_SYNC_POLL_WAIT_FOR_SETTLE"
@@ -2356,7 +2356,7 @@
                         </div>
                         <div class="form-group" id="bookfusion_poll_settle_row"
                              {% if get_val('BOOKFUSION_POLL_MODE') != 'custom' %}style="opacity: 0.45; pointer-events: none;"{% endif %}>
-                            <label>Wait for Position to Settle</label>
+                            <label>BookFusion — Wait for Position to Settle</label>
                             <div class="toggle-switch-wrapper">
                                 <label class="toggle-switch">
                                     <input type="checkbox" name="BOOKFUSION_POLL_WAIT_FOR_SETTLE"
@@ -2379,10 +2379,10 @@
                 </div>
                 <div class="section-body">
                     <div class="form-group full-width">
-                        <label>Pre-LLM / Linear Alignment Maps</label>
+                        <label>Pre-LLM / Linear / Low-Quality Alignment Maps</label>
                         <div class="cleanup-group">
                             <button type="button" class="btn btn-primary" id="realignAllBtn" onclick="realignAllNonLlm()">
-                                Re-align all pre-LLM / linear maps
+                                Re-align all pre-LLM / linear / low-quality maps
                             </button>
                             <p class="help-text flex-1 m-0" id="alignHealthSummary">Loading alignment health...</p>
                         </div>
@@ -2791,6 +2791,79 @@
                             <div class="help-text">Use int8 for CPU, float16 for GPU.</div>
                         </div>
                     </div>
+
+                    <div class="form-group full-width" style="align-items: center;">
+                        <label>Content-Match Guard</label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" name="CONTENT_MATCH_GUARD"
+                                {% if get_bool('CONTENT_MATCH_GUARD') %}checked{% endif %}>
+                            <span class="slider"></span>
+                        </label>
+                        <div class="help-text">Non-LLM guard: refuse to store an alignment when a
+                            direct word n-gram overlap check finds too little of the ebook text inside
+                            the transcript — a sign the audio and ebook are different content (wrong
+                            edition / abridged / different book). Runs whenever the semantic
+                            (Ollama) content-match guard above cannot give a verdict — because Ollama
+                            is not configured, or is configured but down — so an outage never leaves
+                            you unguarded. Leave on unless you are deliberately re-aligning a book you
+                            know is a rough match.</div>
+                    </div>
+                    <div class="form-group full-width">
+                        <label>Content-Match Min Overlap (0-1)</label>
+                        <input type="number" step="0.01" min="0" max="1" name="CONTENT_MATCH_MIN_OVERLAP"
+                            value="{{ get_val('CONTENT_MATCH_MIN_OVERLAP') }}">
+                        <div class="help-text">Below this fraction of matched ebook n-grams, the
+                            Content-Match Guard refuses to store the map. The default 0.15 was
+                            measured across 28 real book/transcript pairs: correct pairings scored
+                            0.30-0.85 (never 1.0 — speech recognition never matches text verbatim),
+                            while a genuinely different book shares almost no phrases and scores near
+                            0. Raise it only if mismatches are slipping through.</div>
+                    </div>
+
+                    <!-- CTC forced alignment: experimental/advanced, hidden behind a disclosure.
+                         Not in any published image (needs a local INSTALL_CTC=true build) and
+                         effectively needs a GPU — see the note below. -->
+                    <details class="advanced-sub full-width" {% if get_bool('CTC_ENABLED') %}open{% endif %}>
+                        <summary>Advanced · Experimental — CTC forced alignment (needs a custom build + a GPU)</summary>
+                    <div class="form-group full-width">
+                        <label class="toggle-label">
+                            <input type="checkbox" name="CTC_ENABLED"
+                                onchange="toggleSection('ctc_body', this.checked)"
+                                {% if get_bool('CTC_ENABLED') %}checked{% endif %}>
+                            Use CTC forced alignment
+                        </label>
+                        <div class="help-text"><strong>Experimental &amp; advanced — leave off unless you
+                            know you want it.</strong> Aligns the audiobook directly against the known ebook
+                            text (per-word) instead of transcribing and matching back — more accurate for
+                            char-precise readers (BookOrbit, ABS ebook, Grimmory). <strong>Not included in any
+                            published image:</strong> it requires a custom <code>-ctc</code> build
+                            (<code>INSTALL_CTC=true</code>, which bundles torch/torchaudio) and is inert on the
+                            standard and <code>-cuda</code> images. <strong>Effectively requires an NVIDIA
+                            GPU</strong> — on CPU it works only for short books and is very slow on full-length
+                            audiobooks. Leave off to keep the Whisper/lexical pipeline (the default).</div>
+                    </div>
+                    <div id="ctc_body" class="dynamic-group full-width section-body {% if not get_bool('CTC_ENABLED') %}collapsed{% endif %}" style="display:contents;">
+                        <div class="form-group">
+                            <label>CTC Model</label>
+                            <input type="text" name="CTC_MODEL" value="{{ get_val('CTC_MODEL', 'mms_fa') }}"
+                                placeholder="mms_fa" autocomplete="off">
+                            <div class="help-text">Forced-alignment model bundle. <code>mms_fa</code> (Meta MMS,
+                                ~1000 languages) is the only supported value today.</div>
+                        </div>
+                        <div class="form-group">
+                            <label>CTC Device</label>
+                            <select name="CTC_DEVICE">
+                                <option value="auto" {% if get_val('CTC_DEVICE')=='auto' %}selected{% endif %}>Auto
+                                    (detect GPU)</option>
+                                <option value="cpu" {% if get_val('CTC_DEVICE')=='cpu' %}selected{% endif %}>CPU</option>
+                                <option value="cuda" {% if get_val('CTC_DEVICE')=='cuda' %}selected{% endif %}>GPU
+                                    (NVIDIA)</option>
+                            </select>
+                            <div class="help-text">Auto uses an NVIDIA GPU when available, otherwise CPU. CTC on CPU
+                                is workable but slow for long audiobooks.</div>
+                        </div>
+                    </div>
+                    </details>
                 </div>
             </div>
 
@@ -3282,6 +3355,17 @@
             return div.innerHTML;
         }
 
+        function formatQualityScore(score) {
+            return (typeof score === 'number') ? score.toFixed(2) : '—';
+        }
+
+        function qualityScoreColor(score) {
+            if (typeof score !== 'number') return 'rgba(255,255,255,0.45)';
+            if (score < 0.5) return '#e57373';
+            if (score < 0.75) return '#ffb74d';
+            return '#81c784';
+        }
+
         async function loadAlignmentHealth() {
             const summaryEl = document.getElementById('alignHealthSummary');
             const listEl = document.getElementById('alignHealthList');
@@ -3291,7 +3375,7 @@
                 const res = await fetch('/api/alignments/llm-status');
                 const data = await res.json();
                 const needs = data.needs_realign || 0;
-                summaryEl.textContent = `${needs} of ${data.total || 0} maps could benefit from LLM re-alignment.`;
+                summaryEl.textContent = `${needs} of ${data.total || 0} maps could benefit from LLM re-alignment (pre-LLM, linear, or low-quality).`;
 
                 const allBtn = document.getElementById('realignAllBtn');
                 if (allBtn) allBtn.disabled = needs === 0;
@@ -3305,16 +3389,24 @@
                 listEl.innerHTML = '';
                 recommended.forEach((book) => {
                     const method = book.align_method || 'pre_llm';
+                    const score = book.quality_score;
                     const row = document.createElement('div');
                     row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;';
                     row.innerHTML = `<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(book.title)}</span>`
+                        + `<span style="color:${qualityScoreColor(score)};font-size:12px;min-width:44px;text-align:right;" title="Map quality score (0-1, higher is better)">${formatQualityScore(score)}</span>`
                         + `<span style="color:#e57373;font-size:12px;min-width:120px;text-align:right;">${escapeHtml(method)}</span>`;
-                    const button = document.createElement('button');
-                    button.type = 'button';
-                    button.textContent = 'Re-align';
-                    button.className = 'btn';
-                    button.onclick = () => realignBook(book.abs_id, button);
-                    row.appendChild(button);
+                    const realignBtn = document.createElement('button');
+                    realignBtn.type = 'button';
+                    realignBtn.textContent = 'Re-align';
+                    realignBtn.className = 'btn';
+                    realignBtn.onclick = () => realignBook(book.abs_id, realignBtn);
+                    row.appendChild(realignBtn);
+                    const restoreBtn = document.createElement('button');
+                    restoreBtn.type = 'button';
+                    restoreBtn.textContent = 'Restore previous';
+                    restoreBtn.className = 'btn';
+                    restoreBtn.onclick = () => restoreAlignment(book.abs_id, restoreBtn);
+                    row.appendChild(restoreBtn);
                     listEl.appendChild(row);
                 });
             } catch (err) {
@@ -3341,6 +3433,27 @@
             }
         }
 
+        async function restoreAlignment(absId, btn) {
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Restoring...';
+            }
+            try {
+                const res = await fetch('/api/alignments/restore', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ abs_id: absId })
+                });
+                const data = await res.json();
+                if (btn) btn.textContent = data.restored ? 'Restored' : 'No backup';
+            } catch (err) {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = 'Restore previous';
+                }
+            }
+        }
+
         async function realignAllNonLlm() {
             const btn = document.getElementById('realignAllBtn');
             if (btn) {
@@ -3358,7 +3471,7 @@
             } catch (err) {
                 if (btn) {
                     btn.disabled = false;
-                    btn.textContent = 'Re-align all pre-LLM / linear maps';
+                    btn.textContent = 'Re-align all pre-LLM / linear / low-quality maps';
                 }
             }
         }

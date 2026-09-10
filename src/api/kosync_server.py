@@ -290,8 +290,15 @@ def seconds_since_device_sync_activity() -> float:
 
 
 def signal_manifest_rebuild() -> None:
-    """Wake the manifest prebuilder thread so it rebuilds on the next cycle."""
+    """Refresh used device-sync manifests as soon as the catalog changes."""
     _manifest_rebuild_event.set()
+    if not _manifest_prebuilder_started:
+        # A persisted manifest proves device sync was used before this restart.
+        # Start now so a new match is ready before the next device request; keep
+        # installs that have never used device sync idle (ref #342).
+        path = _manifest_cache_file()
+        if path is not None and path.exists():
+            _start_manifest_prebuilder()
 
 
 def _compute_manifest_revision(items) -> str:
@@ -590,11 +597,10 @@ def _manifest_prebuilder_loop() -> None:
     """Daemon thread: rebuild the manifest cache when signaled, or as a backstop.
 
     Catalog changes signal this loop directly (DatabaseService fires a
-    catalog-change callback on every book create/save/delete/status change, and
-    the sync manager fires one after each cycle), so the timeout is only a safety
-    net for changes nothing announces -- chiefly a book's bytes changing on disk
-    while its catalog row stays put. It is deliberately long: a short interval
-    rebuilt an unchanged manifest hundreds of times a day.
+    catalog-change callback on book create/delete/catalog-field changes), so the
+    timeout is only a safety net for unannounced changes -- chiefly a book's bytes
+    changing on disk while its catalog row stays put. It is deliberately long:
+    a short interval rebuilt an unchanged manifest hundreds of times a day.
     """
     global _manifest_cache
     _REBUILD_INTERVAL = 1800
@@ -621,9 +627,10 @@ def _manifest_prebuilder_loop() -> None:
 
 def _start_manifest_prebuilder() -> None:
     global _manifest_prebuilder_started
-    if not _manifest_prebuilder_started:
-        _manifest_prebuilder_started = True
-        threading.Thread(target=_manifest_prebuilder_loop, daemon=True).start()
+    with _manifest_cache_lock:
+        if not _manifest_prebuilder_started:
+            threading.Thread(target=_manifest_prebuilder_loop, daemon=True).start()
+            _manifest_prebuilder_started = True
 
 
 def init_kosync_server(database_service, container, manager, ebook_dir=None):
@@ -634,8 +641,8 @@ def init_kosync_server(database_service, container, manager, ebook_dir=None):
     _manager = manager
     _ebook_dir = ebook_dir
     _kosync_device_session_registry = None
-    # Prebuilder is started lazily on first manifest request so idle installs
-    # that don't use device-sync never hash the library (ref #342).
+    # First-time device sync starts the prebuilder on request. After that,
+    # catalog-change signals can start it again following a restart.
 
 
 def _get_koreader_device_sync_service():
@@ -1828,8 +1835,8 @@ def koreader_device_sync_manifest():
     build and primes the cache so subsequent requests are instant.
     """
     global _manifest_cache
-    # Prebuilder is started lazily on first manifest request so idle installs
-    # that don't use device-sync never hash the library (ref #342).
+    # First-time device sync starts here; returning installs can also start
+    # the prebuilder on a catalog change before the device connects.
     _start_manifest_prebuilder()
     note_device_sync_activity()
 

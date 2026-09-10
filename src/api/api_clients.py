@@ -4,6 +4,11 @@ import logging
 import time
 from typing import Optional
 
+from src.utils.file_transfers import (
+    IncompleteTransferError,
+    response_declares_size,
+    stream_response_to_path,
+)
 from src.utils.kosync_headers import (
     hash_kosync_key,
     kosync_request_kwargs,
@@ -409,37 +414,29 @@ class ABSClient:
         self._update_session_headers()
         try:
             logger.info(f"⬇️ ABS: Downloading file from {stream_url}...")
-            with self.session.get(stream_url, stream=True, timeout=120) as r:
+            # identity encoding keeps Content-Length comparable with the bytes written.
+            headers = {"Accept-Encoding": "identity"}
+            with self.session.get(stream_url, headers=headers, stream=True, timeout=120) as r:
                 r.raise_for_status()
-                with open(output_path, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                # iter_content stops silently when the connection closes early, so a
-                # truncated body would otherwise be accepted as a complete download.
-                declared = r.headers.get('Content-Length')
-
-            # Content-Length is a decimal string; anything else is unverifiable.
-            declared = str(declared or "").strip()
-            if declared.isdigit():
-                expected_bytes = int(declared)
-                actual_bytes = os.path.getsize(output_path) if os.path.exists(output_path) else 0
-                if expected_bytes > 0 and actual_bytes != expected_bytes:
+                expected_bytes = response_declares_size(r)
+                try:
+                    # Anything at or below 1 KiB is an error page, not a media file.
+                    return stream_response_to_path(
+                        r, output_path, expected_size=expected_bytes, min_size=1024,
+                    )
+                except IncompleteTransferError as e:
                     logger.error(
                         "❌ ABS Download truncated: got %s bytes, expected %s (%s)",
-                        actual_bytes,
-                        expected_bytes,
+                        e.actual_size,
+                        e.expected_size if e.expected_size is not None else "unknown",
                         output_path,
+                        exc_info=True,
                     )
-                    if os.path.exists(output_path):
-                        os.remove(output_path)
                     return False
-
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
-                return True
-            return False
         except Exception as e:
             logger.error(f"❌ ABS Download failed: {e}", exc_info=True)
-            if os.path.exists(output_path): os.remove(output_path)
+            # A failed transfer must not destroy a previously valid destination; the
+            # staged-file publication path only replaces the final file after success.
             return False
 
     def get_item_details(self, item_id):

@@ -495,7 +495,7 @@ _ADMIN_ONLY_ENDPOINTS = {
     'admin_users', 'admin_user_integrations',
     'api_restart', 'test_connection',
     'get_booklore_libraries', 'get_booklore_shelves', 'get_abs_libraries',
-    'api_booklore_refresh', 'alignments_llm_status', 'alignments_realign',
+    'api_booklore_refresh', 'alignments_llm_status', 'alignments_realign', 'alignments_restore',
     'kosync_admin.api_get_kosync_documents',
     'kosync_admin.api_link_kosync_document',
     'kosync_admin.api_unlink_kosync_document',
@@ -3548,6 +3548,29 @@ def _create_or_update_library_audio_mapping(
             storyteller_manifest,
         )
 
+    # Resolve series from the owning library so the mapping collapses into its series
+    # card immediately. The other match paths already do this (ABS metadata; the
+    # shelf-watch / book_mapping_service path), but the library-audio path (BookOrbit/
+    # Grimmory) did not, so a freshly matched book had no series until a manual
+    # backfill. One detail call per match; matches are infrequent.
+    if not target_book.series_name:
+        try:
+            resolution = resolve_series_details(
+                target_book,
+                abs_client=uc().abs_client,
+                bookorbit_client=uc().bookorbit_client,
+                booklore_client=uc().booklore_client,
+                kavita_client=uc().kavita_client,
+            )
+            if resolution.name:
+                target_book.series_name = resolution.name
+                target_book.series_sequence = resolution.sequence
+        except Exception as series_err:
+            logger.warning(
+                "Series resolve on match failed for '%s': %s",
+                sanitize_log_data(target_book.abs_title), series_err, exc_info=True,
+            )
+
     saved_book = database_service.save_book(target_book)
 
     # An ebook-only mapping for this same ebook may already exist -- adding an
@@ -4002,6 +4025,8 @@ def settings():
             'OLLAMA_EBOOK_TEXT_FALLBACK',
             'DIAGNOSTICS_OPT_IN',
             'WHISPER_CPP_SEND_ORIGINAL',
+            'CTC_ENABLED',
+            'CONTENT_MATCH_GUARD',
             'SHARE_ALL_BOOKS_WITH_ALL_USERS',
             'REMOTE_AUTH_ENABLED',
         ]
@@ -5384,6 +5409,7 @@ def _build_dashboard_mappings(
     if bookorbit_authors is None:
         bookorbit_authors = _prefetch_bookorbit_authors(books, integrations)
 
+    ctc_aligned_book_ids = database_service.get_ctc_aligned_book_ids()
     mappings = []
     total_duration = 0
     total_listened = 0
@@ -5401,6 +5427,7 @@ def _build_dashboard_mappings(
             bookfusion_by_book=bookfusion_by_book,
             bookorbit_authors=bookorbit_authors,
         )
+        mapping["ctc_aligned"] = book.abs_id in ctc_aligned_book_ids
         mappings.append(mapping)
 
         duration = mapping.get("duration", 0)
@@ -6053,6 +6080,9 @@ def alignments_llm_status():
         # Self-heal legacy maps: classify NULL provenance by map shape (no re-transcription)
         # so the report and the re-align target list are accurate.
         database_service.backfill_alignment_methods()
+        # Score maps stored before quality tracking existed, a bounded batch per call
+        # so the health panel's scores fill in over a few page loads (issue #426 phase 4).
+        database_service.backfill_alignment_quality()
         return jsonify(database_service.get_alignment_provenance())
     except Exception as e:
         logger.error(f"❌ Failed to read alignment provenance: {e}", exc_info=True)
@@ -6086,6 +6116,27 @@ def alignments_realign():
         return jsonify({"queued": queued})
     except Exception as e:
         logger.error(f"❌ Failed to queue re-align: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+def alignments_restore():
+    """API: Restore a book's alignment map to the backup taken before its last
+    overwrite (issue #426 phase 4).
+
+    Body: {"abs_id": "..."}. Returns {"restored": bool} — False when there is no
+    backup on file for that book.
+    """
+    data = request.get_json(silent=True) or {}
+    abs_id = (data.get("abs_id") or "").strip()
+    if not abs_id:
+        return jsonify({"error": "Provide 'abs_id'"}), 400
+
+    try:
+        alignment_service = getattr(manager, "alignment_service", None) if manager else None
+        restored = bool(alignment_service and alignment_service.restore_previous_alignment(abs_id))
+        return jsonify({"restored": restored})
+    except Exception as e:
+        logger.error(f"❌ Failed to restore alignment for {abs_id}: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 
@@ -9002,6 +9053,80 @@ def clear_progress(abs_id):
     return redirect(url_for('index'))
 
 
+def remap_alignment(abs_id):
+    """Rebuild a book's audio↔text alignment with the best available backend.
+
+    Unlike Clear Position, Remap never touches the reader's saved progress — it only
+    rebuilds the audio↔ebook map:
+      - CTC configured and the current map is not already CTC -> rebuild with CTC.
+      - otherwise an estimated map (no measured word timings) -> force a fresh
+        word-timestamped transcription and re-anchor.
+      - a map already at the best available backend -> nothing to do.
+
+    The rebuild runs through the normal pending -> forge pipeline, exactly like
+    ``/api/alignments/realign`` (single scope).
+    """
+    book = database_service.get_book(abs_id)
+    if not book:
+        return jsonify({"success": False, "error": "Book not found"}), 404
+
+    user = current_user()
+    if not _user_may_modify_book(user, abs_id):
+        return _forbidden_book_response(json_response=True)
+
+    # Audio→text alignment only exists for mappings that have an audiobook side.
+    if getattr(book, "sync_mode", "audiobook") == "ebook_only":
+        return jsonify({
+            "success": False,
+            "error": "This mapping has no audiobook to align.",
+        }), 400
+
+    # None = no stored map; "" = map with unrecorded (legacy) method.
+    current_method = database_service.get_alignment_method(abs_id)
+    ctc_available = env_truthy("CTC_ENABLED")
+
+    # Methods that are already word-accurate and need no word-level rebuild. Coarse
+    # fallbacks ('lexical', 'linear', 'llm_anchor', 'storyteller[_linear]', legacy '')
+    # are all improvable, so they are deliberately absent here.
+    _word_accurate = ("ctc", "lexical_timed")
+
+    target = None
+    if ctc_available and current_method != "ctc":
+        target = "ctc"
+    elif (current_method or "") not in _word_accurate:
+        target = "word_level"
+
+    if target is None:
+        return jsonify({
+            "success": False,
+            "status": "up_to_date",
+            "message": "Alignment already uses the best available backend.",
+        })
+
+    # A rebuild reuses the cached transcript to skip Whisper; a transcript captured
+    # before word-level timing has no per-word times, so drop it to force a fresh,
+    # word-timestamped transcription. (CTC ignores the transcript entirely.)
+    if target == "word_level":
+        transcriber = getattr(manager, "transcriber", None) if manager else None
+        if transcriber is not None:
+            try:
+                transcriber.invalidate_transcript_cache(abs_id)
+            except Exception as e:
+                logger.warning(
+                    f"⚠️ Remap: could not invalidate transcript for '{abs_id}': {e}",
+                    exc_info=True,
+                )
+
+    if not database_service.set_book_status(abs_id, "pending"):
+        return jsonify({"success": False, "error": "Could not queue remap."}), 500
+
+    logger.info(
+        f"🔁 Remap queued for {sanitize_log_data(book.abs_title or abs_id)} "
+        f"(backend='{target}', from='{current_method or 'none'}')"
+    )
+    return jsonify({"success": True, "backend": target})
+
+
 
 def sync_now(abs_id):
     book = database_service.get_book(abs_id)
@@ -10090,11 +10215,12 @@ def api_status():
 def _build_dashboard_progress_rows(books, all_states):
     """The per-book fields the dashboard's periodic refresh actually redraws.
 
-    Deliberately derived from Book and State rows alone: no display-metadata
+    Derived from Book/State rows and scalar alignment status: no display-metadata
     resolution, no per-book service lookups, and above all no alignment map —
     which the full dashboard build loads per book to compute the drift badge
     (issue #412)."""
     states_by_book = _group_dashboard_states_by_book(all_states)
+    ctc_aligned_book_ids = database_service.get_ctc_aligned_book_ids()
     rows = []
 
     for book in books or []:
@@ -10118,6 +10244,7 @@ def _build_dashboard_progress_rows(books, all_states):
 
         rows.append({
             "abs_id": abs_id,
+            "ctc_aligned": abs_id in ctc_aligned_book_ids,
             "unified_progress": min(max_progress, 100.0),
             "last_sync": _format_dashboard_last_sync(latest_update_time),
             "last_sync_unix": latest_update_time,
@@ -12327,6 +12454,7 @@ def create_app(test_container=None):
     app.add_url_rule('/suggestions', 'suggestions', suggestions_page, methods=['GET', 'POST'])
     app.add_url_rule('/delete/<abs_id>', 'delete_mapping', delete_mapping, methods=['POST'])
     app.add_url_rule('/clear-progress/<abs_id>', 'clear_progress', clear_progress, methods=['POST'])
+    app.add_url_rule('/api/remap-alignment/<abs_id>', 'remap_alignment', remap_alignment, methods=['POST'])
     app.add_url_rule('/api/sync-now/<abs_id>', 'sync_now', sync_now, methods=['POST'])
     app.add_url_rule('/api/mark-complete/<abs_id>', 'mark_complete', mark_complete, methods=['POST'])
     app.add_url_rule('/api/me/kosync-documents', 'api_me_kosync_documents', api_me_kosync_documents, methods=['GET'])
@@ -12395,6 +12523,7 @@ def create_app(test_container=None):
     app.add_url_rule('/api/forge/process', 'forge_process', forge_process, methods=['POST'])
     app.add_url_rule('/api/alignments/llm-status', 'alignments_llm_status', alignments_llm_status, methods=['GET'])
     app.add_url_rule('/api/alignments/realign', 'alignments_realign', alignments_realign, methods=['POST'])
+    app.add_url_rule('/api/alignments/restore', 'alignments_restore', alignments_restore, methods=['POST'])
 
     @app.route('/api/forge/active', methods=['GET'])
     def forge_active_tasks():

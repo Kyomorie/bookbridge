@@ -30,6 +30,11 @@ from urllib.parse import quote
 import requests
 
 from src.sync_clients.sync_client_interface import LocatorResult
+from src.utils.file_transfers import (
+    IncompleteTransferError,
+    response_declares_size,
+    stream_response_to_path,
+)
 from src.utils.user_config import resolve_setting
 
 logger = logging.getLogger(__name__)
@@ -1064,7 +1069,7 @@ class BookOrbitClient:
         if not token:
             return False
         url = f"{self._get_base_url()}/api/v1/books/files/{file_id}/download"
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {"Authorization": f"Bearer {token}", "Accept-Encoding": "identity"}
         try:
             with self.session.get(url, headers=headers, stream=True, timeout=300) as resp:
                 if resp.status_code != 200:
@@ -1073,13 +1078,18 @@ class BookOrbitClient:
                         file_id, resp.status_code,
                     )
                     return False
-                output_path = Path(output_path)
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(output_path, "wb") as handle:
-                    for chunk in resp.iter_content(chunk_size=8192):
-                        if chunk:
-                            handle.write(chunk)
-                return True
+                expected_size = response_declares_size(resp)
+                try:
+                    return stream_response_to_path(resp, output_path, expected_size=expected_size)
+                except IncompleteTransferError as e:
+                    logger.error(
+                        "BookOrbit file download incomplete: file_id=%s got=%s expected=%s",
+                        file_id,
+                        e.actual_size,
+                        e.expected_size if e.expected_size is not None else "unknown",
+                        exc_info=True,
+                    )
+                    return False
         except Exception as e:
             logger.error("BookOrbit file download error: file_id=%s: %s", file_id, e, exc_info=True)
             return False

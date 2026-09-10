@@ -156,6 +156,8 @@ ALL_SETTINGS = [
     'JOB_MAX_RETRIES', 'JOB_RETRY_DELAY_MINS', 'WHISPER_MODEL',
     'WHISPER_DEVICE', 'WHISPER_COMPUTE_TYPE',
     'TRANSCRIPTION_PROVIDER', 'DEEPGRAM_API_KEY', 'DEEPGRAM_MODEL', 'WHISPER_CPP_URL', 'WHISPER_CPP_TIMEOUT', 'WHISPER_CPP_SEND_ORIGINAL', 'WHISPER_CPP_CHUNK_MINUTES',
+    'CTC_ENABLED', 'CTC_MODEL', 'CTC_DEVICE',
+    'CONTENT_MATCH_GUARD', 'CONTENT_MATCH_MIN_OVERLAP',
     'AUDIO_SPLIT_DURATION_MINUTES',
     'SMIL_VALIDATION_THRESHOLD', 'TRANSCRIPT_MIN_COVERAGE',
     'DIAGNOSTICS_MAX_PAYLOAD_BYTES',
@@ -189,6 +191,16 @@ DEFAULT_CONFIG = {
     'WHISPER_CPP_TIMEOUT': '600',
     'WHISPER_CPP_SEND_ORIGINAL': 'false',
     'WHISPER_CPP_CHUNK_MINUTES': '0',
+    # CTC forced alignment (opt-in; needs the CTC-enabled image with torch/torchaudio).
+    'CTC_ENABLED': 'false',
+    'CTC_MODEL': 'mms_fa',
+    'CTC_DEVICE': 'auto',
+    # Non-LLM content-match guard (issue #426): n-gram overlap fallback used when the
+    # embedding path (OLLAMA_ALIGN_CONTENT_GUARD) is unavailable. See
+    # AlignmentService._verify_content_match / map_quality.transcript_text_overlap for
+    # the calibration data behind the 0.25 default.
+    'CONTENT_MATCH_GUARD': 'true',
+    'CONTENT_MATCH_MIN_OVERLAP': '0.15',
     'AUDIO_SPLIT_DURATION_MINUTES': '45',
     'TRANSCRIPT_MIN_COVERAGE': '0.85',
     # Byte budget for a diagnostics upload. The receiver rejects larger bodies with

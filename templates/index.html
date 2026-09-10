@@ -353,17 +353,30 @@
             {% endif %}
 
             <div class="card-footer">
-                <div class="last-sync">Synced {{ mapping.last_sync }}</div>
+                <div class="last-sync">
+                    <span class="last-sync-age">Synced {{ mapping.last_sync }}</span>
+                    <span class="ctc-alignment-badge" title="CTC word alignment is ready"
+                        {% if not mapping.ctc_aligned %}hidden{% endif %}>CTC</span>
+                </div>
                 <div class="quick-actions">
                     <button type="button" class="action-btn" onclick="syncNow('{{ mapping.abs_id }}', this)"
                         title="Sync Now">⚡</button>
                     <button type="button" class="action-btn"
                         onclick='markComplete({{ mapping.abs_id|tojson }}, {{ mapping.abs_title|tojson }})'
                         title="Mark Complete">✅</button>
-                    <form method="POST" action="/clear-progress/{{ mapping.abs_id }}">
-                        <button type="submit" class="action-btn warning" aria-label="Clear Progress"
-                            title="Clear progress" onclick="return confirm('Clear all progress for this book?')">🔄</button>
-                    </form>
+                    <div class="reset-menu">
+                        <button type="button" class="action-btn warning" aria-haspopup="true"
+                            aria-expanded="false" aria-label="Reset options"
+                            title="Reset / remap" onclick="toggleResetMenu(event, this)">🔄</button>
+                        <div class="reset-menu-dropdown" role="menu" hidden>
+                            <button type="button" role="menuitem" class="reset-menu-item"
+                                onclick='clearPosition({{ mapping.abs_id|tojson }})'>🧹 Clear position</button>
+                            <button type="button" role="menuitem" class="reset-menu-item remap-alignment-btn"
+                                data-ctc-aligned="{{ 'true' if mapping.ctc_aligned else 'false' }}"
+                                {% if mapping.ctc_aligned %}disabled title="This book already has a CTC alignment map"{% endif %}
+                                onclick='remapAlignment({{ mapping.abs_id|tojson }}, this)'>{{ '✓ Already using CTC' if mapping.ctc_aligned else '🎯 Remap alignment' }}</button>
+                        </div>
+                    </div>
                     <form method="POST" action="/delete/{{ mapping.abs_id }}">
                         <button type="submit" class="action-btn danger" aria-label="Delete Mapping"
                             title="Delete mapping" onclick="return confirm('Delete this mapping?')">🗑️</button>
@@ -1026,6 +1039,44 @@
         .action-btn.warning:hover {
             background: rgba(255, 209, 102, 0.25);
         }
+
+        .reset-menu { position: relative; display: inline-block; }
+        .ctc-alignment-badge {
+            margin-left: 5px;
+            padding: 2px 5px;
+            border-radius: 4px;
+            background: rgba(79, 195, 247, 0.18);
+            color: var(--reading, #4fc3f7);
+            font-size: 9px;
+            font-weight: 700;
+        }
+        /* Portaled to <body> and positioned in JS (position:fixed) so the card's
+           overflow:hidden and hover transform can neither clip it nor paint over it. */
+        .reset-menu-dropdown {
+            position: fixed;
+            z-index: 1000;
+            min-width: 180px;
+            padding: 4px;
+            text-align: left;
+            background: var(--card-bg, #1e1e2e);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+        }
+        .reset-menu-item {
+            display: block;
+            width: 100%;
+            padding: 8px 10px;
+            background: none;
+            border: none;
+            color: inherit;
+            font-size: 13px;
+            text-align: left;
+            cursor: pointer;
+            border-radius: 6px;
+        }
+        .reset-menu-item:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+        .reset-menu-item:disabled { opacity: 0.6; cursor: default; }
 
         /* Empty State: base centering/padding comes from app.css's shared .empty-state */
         .empty-state-icon {
@@ -3123,7 +3174,7 @@
                 }
 
                 // Compact position feed, not the full dashboard payload: this
-                // handler only redraws progress numbers and the synced line.
+                // handler redraws progress, the synced line and CTC status.
                 fetch('/api/status/progress')
                     .then(r => r.json())
                     .then(data => {
@@ -3131,6 +3182,7 @@
                         data.mappings.forEach(book => {
                             const card = document.querySelector(`.book-card[data-abs-id="${book.abs_id}"]`);
                             if (!card) return;
+                            updateCtcAlignmentStatus(card, book.ctc_aligned === true);
 
                             // Update progress percentage text
                             const progressPercent = card.querySelector('.progress-percent');
@@ -3165,7 +3217,7 @@
                             }
 
                             // Update last sync text
-                            const lastSync = card.querySelector('.last-sync');
+                            const lastSync = card.querySelector('.last-sync-age');
                             if (lastSync && book.last_sync) {
                                 lastSync.textContent = `Synced ${book.last_sync}`;
                             }
@@ -3360,6 +3412,111 @@
                             btn.innerHTML = originalText;
                             btn.disabled = false;
                         }, 2000);
+                    });
+            }
+
+            function updateCtcAlignmentStatus(card, isCtc) {
+                const badge = card.querySelector('.ctc-alignment-badge');
+                if (badge) badge.hidden = !isCtc;
+                const owner = card.querySelector('.reset-menu > button');
+                const menu = owner?._menu || card.querySelector('.reset-menu-dropdown');
+                const btn = menu?.querySelector('.remap-alignment-btn');
+                if (!btn || btn.dataset.ctcAligned === String(isCtc)) return;
+                btn.dataset.ctcAligned = String(isCtc);
+                btn.disabled = isCtc;
+                btn.textContent = isCtc ? '✓ Already using CTC' : '🎯 Remap alignment';
+                btn.title = isCtc ? 'This book already has a CTC alignment map' : '';
+            }
+
+            function _positionResetMenu(btn, menu) {
+                const r = btn.getBoundingClientRect();
+                const mw = menu.offsetWidth || 190;
+                const mh = menu.offsetHeight || 88;
+                let left = Math.max(8, Math.min(r.right - mw, window.innerWidth - mw - 8));
+                let top = r.bottom + 4;
+                if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4);
+                menu.style.left = left + 'px';
+                menu.style.top = top + 'px';
+            }
+
+            function _closeResetMenu(btn, menu) {
+                menu.hidden = true;
+                if (btn) btn.setAttribute('aria-expanded', 'false');
+                if (menu._home && menu.parentElement !== menu._home) menu._home.appendChild(menu);
+                if (menu._cleanup) { menu._cleanup(); menu._cleanup = null; }
+            }
+
+            function toggleResetMenu(event, btn) {
+                event.stopPropagation();
+                const menu = btn._menu || btn.parentElement.querySelector('.reset-menu-dropdown');
+                if (!menu) return;
+                btn._menu = menu;
+                if (!menu.hidden) { _closeResetMenu(btn, menu); return; }
+                // Close any other open reset menus first.
+                document.querySelectorAll('.reset-menu-dropdown').forEach(m => {
+                    if (m !== menu && !m.hidden && m._ownerBtn) _closeResetMenu(m._ownerBtn, m);
+                });
+                // Portal to <body> so the card's overflow/transform can't clip or cover it.
+                if (menu.parentElement !== document.body) {
+                    menu._home = menu.parentElement;
+                    document.body.appendChild(menu);
+                }
+                menu._ownerBtn = btn;
+                menu.hidden = false;
+                btn.setAttribute('aria-expanded', 'true');
+                _positionResetMenu(btn, menu);
+                const onDoc = (e) => { if (!menu.contains(e.target) && e.target !== btn) _closeResetMenu(btn, menu); };
+                const onMove = () => _closeResetMenu(btn, menu);
+                menu._cleanup = () => {
+                    document.removeEventListener('click', onDoc);
+                    window.removeEventListener('scroll', onMove, true);
+                    window.removeEventListener('resize', onMove);
+                };
+                setTimeout(() => document.addEventListener('click', onDoc), 0);
+                window.addEventListener('scroll', onMove, true);
+                window.addEventListener('resize', onMove);
+            }
+
+            function clearPosition(absId) {
+                if (!confirm('Clear all progress for this book?')) {
+                    return;
+                }
+                // Preserve the original redirect-to-home behaviour of the POST form.
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = '/clear-progress/' + absId;
+                document.body.appendChild(form);
+                form.submit();
+            }
+
+            function remapAlignment(absId, btn) {
+                btn.disabled = true;
+                const originalText = btn.innerHTML;
+                btn.innerHTML = '⏳ Remapping…';
+                fetch('/api/remap-alignment/' + absId, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                }).then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            const label = data.backend === 'ctc' ? 'CTC forced alignment' : 'word-level alignment';
+                            btn.innerHTML = '✅ Queued (' + label + ')';
+                        } else if (data.status === 'up_to_date') {
+                            btn.innerHTML = 'ℹ️ Already optimal';
+                        } else {
+                            btn.innerHTML = '❌ ' + (data.error || 'Failed');
+                        }
+                        setTimeout(() => {
+                            if (btn.dataset.ctcAligned === 'true') return;
+                            btn.innerHTML = originalText; btn.disabled = false;
+                        }, 3000);
+                    }).catch(error => {
+                        console.error('Remap error:', error);
+                        btn.innerHTML = '❌ Failed';
+                        setTimeout(() => {
+                            if (btn.dataset.ctcAligned === 'true') return;
+                            btn.innerHTML = originalText; btn.disabled = false;
+                        }, 3000);
                     });
             }
 

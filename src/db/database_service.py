@@ -44,6 +44,7 @@ from .models import (
     UserBookOrbitLink,
     Base,
 )
+from src.services.map_quality import ALIGNMENT_QUALITY_REALIGN_THRESHOLD, quality_detail_json, score_map
 from src.utils import secret_store
 from src.utils.time_utils import utcnow
 
@@ -637,6 +638,35 @@ class DatabaseService:
             except (TypeError, ValueError):
                 return None
 
+    def get_alignment_method(self, abs_id: str) -> Optional[str]:
+        """How a book's stored alignment map was built, or None if it has no map.
+
+        Returns the ``align_method`` string (e.g. 'lexical', 'lexical_timed',
+        'llm_anchor', 'linear', 'ctc', 'storyteller', 'storyteller_linear'). A stored
+        map with a NULL method (built before provenance tracking) returns the empty
+        string so callers can distinguish "no map" (None) from "map, unknown method".
+        Selects the scalar only, never the map blob.
+        """
+        if not abs_id:
+            return None
+        with self.get_session() as session:
+            row = (
+                session.query(BookAlignment.align_method)
+                .filter(BookAlignment.abs_id == abs_id)
+                .first()
+            )
+            if row is None:
+                return None
+            return row[0] or ""
+
+    def get_ctc_aligned_book_ids(self) -> set[str]:
+        """Return CTC-aligned book IDs in one query without loading map blobs."""
+        with self.get_session() as session:
+            return {
+                row[0] for row in session.query(BookAlignment.abs_id)
+                .filter(BookAlignment.align_method == "ctc").all()
+            }
+
     def set_alignment_total_chars_if_missing(self, abs_id: str, total_chars: int) -> bool:
         """Record an ebook length on a map that has none. Returns whether it wrote.
 
@@ -655,21 +685,39 @@ class DatabaseService:
             )
             if row is None or row.total_chars is not None:
                 return False
-            row.total_chars = int(total_chars)
+            # This is a metadata backfill, not a re-alignment: the map itself is
+            # untouched, so `last_updated` (the map's build/rebuild provenance
+            # timestamp, surfaced by `get_alignment_provenance`) must not move.
+            # A plain ORM attribute assignment (`row.total_chars = ...`) still
+            # fires `BookAlignment.last_updated`'s `onupdate=utcnow` -- it fires
+            # on ANY UPDATE to the row, not just when `last_updated` itself
+            # changes. Naming `last_updated` explicitly in the bulk UPDATE's SET
+            # clause is what suppresses `onupdate`: an explicit value takes
+            # precedence over it, whereas re-assigning the same value through
+            # the ORM leaves the attribute un-dirty (omitted from the SET
+            # clause), so `onupdate` fires anyway.
+            session.query(BookAlignment).filter(BookAlignment.abs_id == abs_id).update(
+                {"total_chars": int(total_chars), "last_updated": row.last_updated},
+                synchronize_session=False,
+            )
             return True
 
     def get_alignment_provenance(self) -> dict:
         """Report how each stored alignment map was built.
 
         Returns {'summary': {method: count, ...}, 'total': int, 'needs_realign': int,
-        'books': [{abs_id, title, align_method, llm_used, needs_realign, last_updated}, ...]}.
+        'books': [{abs_id, title, align_method, llm_used, needs_realign, last_updated,
+        quality_score}, ...]}.
         NULL align_method (maps built before provenance tracking) is reported as 'pre_llm'.
 
-        The 'books' list now ONLY contains rows that need re-aligning (NULL align_method,
-        'linear', or 'storyteller_linear'). The 'summary' and 'total' still cover every
-        stored map. The alignment_map_json blob is deliberately never selected.
+        The 'books' list now contains rows that need re-aligning: NULL align_method,
+        'linear', 'storyteller_linear', OR a recorded quality_score below
+        `ALIGNMENT_QUALITY_REALIGN_THRESHOLD` (issue #426 phase 4 — a clean 'lexical'
+        map is not automatically accurate; the align_method alone can't see a map
+        that scored badly for other reasons). The 'summary' and 'total' still cover
+        every stored map. The alignment_map_json blob is deliberately never selected.
         """
-        from sqlalchemy import func, case, or_
+        from sqlalchemy import func, case, or_, and_
         with self.get_session() as session:
             # Summary + total from aggregate query grouped by align_method
             summary_rows = (
@@ -689,13 +737,18 @@ class DatabaseService:
                 summary[method] = count
                 total += count
 
-            # books now contains ONLY rows that need re-aligning
+            # books now contains rows that need re-aligning
             realign_methods = {None, "linear", "storyteller_linear"}
+            low_quality = and_(
+                BookAlignment.quality_score.isnot(None),
+                BookAlignment.quality_score < ALIGNMENT_QUALITY_REALIGN_THRESHOLD,
+            )
             book_rows = (
                 session.query(
                     BookAlignment.abs_id,
                     BookAlignment.align_method,
                     BookAlignment.last_updated,
+                    BookAlignment.quality_score,
                     Book.abs_title
                 )
                 .outerjoin(Book, Book.abs_id == BookAlignment.abs_id)
@@ -703,18 +756,24 @@ class DatabaseService:
                     or_(
                         BookAlignment.align_method.is_(None),
                         BookAlignment.align_method.in_(["linear", "storyteller_linear"]),
+                        low_quality,
                     )
                 )
                 .all()
             )
             books = []
-            for abs_id, align_method, last_updated, title in book_rows:
+            for abs_id, align_method, last_updated, quality_score, title in book_rows:
                 books.append({
                     "abs_id": abs_id,
                     "title": title or abs_id,
                     "align_method": align_method,
                     "llm_used": align_method == "llm_anchor",
-                    "needs_realign": align_method in realign_methods,
+                    "needs_realign": (
+                        align_method in realign_methods
+                        or (quality_score is not None
+                            and quality_score < ALIGNMENT_QUALITY_REALIGN_THRESHOLD)
+                    ),
+                    "quality_score": quality_score,
                     "last_updated": last_updated.isoformat() if last_updated else None,
                 })
             books.sort(key=lambda b: (b["llm_used"], (b["align_method"] or "")))
@@ -725,7 +784,18 @@ class DatabaseService:
         self, abs_ids: list[str], method: str
     ) -> int:
         """Apply an align_method value to abs_ids in chunks to avoid SQLite's
-        bound-parameter limit. Returns the total number of rows updated."""
+        bound-parameter limit. Returns the total number of rows updated.
+
+        This classifies a pre-existing map by shape (see
+        `backfill_alignment_methods`); it does not rebuild it, so
+        `last_updated` must not move. A bulk UPDATE that omits a column still
+        fires that column's `onupdate=utcnow` for every row it touches (same
+        issue as `backfill_alignment_quality`, which explains the mechanism in
+        full), so `last_updated` is set to a self-referential column
+        expression here -- a genuine value in the SET clause that reassigns
+        each row its own current value and so suppresses `onupdate`, without
+        needing to fetch each row's timestamp up front.
+        """
         if not abs_ids:
             return 0
         total_updated = 0
@@ -734,7 +804,13 @@ class DatabaseService:
                 chunk = abs_ids[i : i + _SQL_IN_CHUNK]
                 total_updated += session.query(BookAlignment).filter(
                     BookAlignment.abs_id.in_(chunk)
-                ).update({BookAlignment.align_method: method}, synchronize_session=False)
+                ).update(
+                    {
+                        BookAlignment.align_method: method,
+                        BookAlignment.last_updated: BookAlignment.last_updated,
+                    },
+                    synchronize_session=False,
+                )
         return total_updated
 
     def backfill_alignment_methods(self) -> int:
@@ -777,13 +853,18 @@ class DatabaseService:
         return updated
 
     def get_books_needing_llm_realign(self) -> List[str]:
-        """abs_ids whose alignment is pre-LLM (NULL) or a flat linear fallback — i.e. the
-        maps that re-running under the LLM-enabled pipeline could actually improve.
+        """abs_ids whose alignment is pre-LLM (NULL), a flat linear fallback, or scored
+        below `ALIGNMENT_QUALITY_REALIGN_THRESHOLD` — i.e. the maps that re-running
+        under the LLM-enabled pipeline could actually improve.
 
-        A clean 'lexical' map is already accurate (the embedding rescue only fires when
-        lexical anchoring fails), so it is intentionally excluded.
+        A clean 'lexical' map is NOT automatically accurate: the embedding rescue only
+        fires when lexical anchoring fails, but lexical anchoring can itself still
+        produce a badly broken map (issue #426 phase 4 — Immortal Mana, Starfish,
+        Bestial, and Four Past Midnight all carry a 'lexical' map that scores far
+        below threshold). A NULL `quality_score` (map stored before scoring existed)
+        is, on its own, not a reason to re-align — only a recorded low score is.
         """
-        from sqlalchemy import or_
+        from sqlalchemy import or_, and_
         with self.get_session() as session:
             rows = (
                 session.query(BookAlignment.abs_id)
@@ -791,11 +872,67 @@ class DatabaseService:
                     or_(
                         BookAlignment.align_method.is_(None),
                         BookAlignment.align_method.in_(["linear", "storyteller_linear"]),
+                        and_(
+                            BookAlignment.quality_score.isnot(None),
+                            BookAlignment.quality_score < ALIGNMENT_QUALITY_REALIGN_THRESHOLD,
+                        ),
                     )
                 )
                 .all()
             )
             return [r[0] for r in rows]
+
+    def backfill_alignment_quality(self, limit: int = 25) -> int:
+        """Score up to `limit` stored maps whose `quality_score` is still NULL.
+
+        Mirrors `backfill_alignment_methods`'s self-heal pattern, bounded for the
+        same reason: map blobs run 10-15MB each and there are ~383 of them, so
+        scoring every unscored row in one call would be far too slow for a request.
+        Order is deterministic (`abs_id`) so repeated calls make steady forward
+        progress instead of re-picking the same unscored rows at random.
+
+        Returns how many rows were scored.
+        """
+        with self.get_session() as session:
+            rows = (
+                session.query(BookAlignment)
+                .filter(BookAlignment.quality_score.is_(None))
+                .order_by(BookAlignment.abs_id)
+                .limit(limit)
+                .all()
+            )
+            scored = 0
+            for row in rows:
+                try:
+                    alignment_map = json.loads(row.alignment_map_json)
+                except Exception:
+                    continue
+                quality = score_map(alignment_map)
+                # This is a metadata backfill, not a re-alignment: the map
+                # itself is untouched, so `last_updated` (the map's
+                # build/rebuild provenance timestamp, surfaced by
+                # `get_alignment_provenance`) must not move. A plain ORM
+                # attribute assignment (`row.quality_score = ...`) still fires
+                # `BookAlignment.last_updated`'s `onupdate=utcnow` -- it fires
+                # on ANY UPDATE to the row, not just when `last_updated` itself
+                # changes -- which would silently rewrite provenance for the
+                # whole library a page at a time (this endpoint calls this
+                # method 25 rows at a time on every load). Naming
+                # `last_updated` explicitly in the SET clause is what
+                # suppresses `onupdate`: an explicit value takes precedence
+                # over it, whereas re-assigning the same value through the ORM
+                # leaves the attribute un-dirty (omitted from the SET clause),
+                # so `onupdate` fires anyway.
+                session.query(BookAlignment).filter(BookAlignment.abs_id == row.abs_id).update(
+                    {
+                        "quality_score": quality.score,
+                        "quality_detail": quality_detail_json(quality),
+                        "last_updated": row.last_updated,
+                    },
+                    synchronize_session=False,
+                )
+                scored += 1
+            return scored
 
     def get_all_books(self, user_id: int = None) -> List[Book]:
         """Get all books as model objects. When user_id is given, scope to the
