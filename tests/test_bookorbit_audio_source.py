@@ -74,6 +74,28 @@ def test_get_audiobook_info_duration_falls_back_to_track_sum():
     assert info["duration_seconds"] == 30
 
 
+def test_get_audiobook_info_uses_v2_manifest_for_playback_timeline():
+    client = _client_with_detail(_DETAIL_MULTI)
+    client._audiobook_api = "playback"
+    client._get_audiobook_manifest = MagicMock(return_value={
+        "revision": "b" * 64,
+        "totalDurationMs": 20049000,
+        "assets": [
+            {"assetId": "aud_a", "sequence": 0, "durationMs": 3806000},
+            {"assetId": "aud_b", "sequence": 1, "durationMs": 4287000},
+        ],
+        "chapters": [{"title": "Opening", "startMs": 0}],
+    })
+
+    info = client.get_audiobook_info(4345)
+
+    assert [track["id"] for track in info["tracks"]] == [9378, 9379]
+    assert [track["id"] for track in info["playback_tracks"]] == ["aud_a", "aud_b"]
+    assert info["primary_playback_id"] == "aud_a"
+    assert info["duration_seconds"] == 20049
+    assert info["chapters"] == [{"title": "Opening", "startMs": 0}]
+
+
 def test_search_audiobooks_filters_audio_hits_and_enriches():
     client = BookOrbitClient()
     client._search_raw = MagicMock(return_value=[

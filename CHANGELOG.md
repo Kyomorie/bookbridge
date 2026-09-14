@@ -135,6 +135,12 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Keep BookOrbit audiobook polling working after its playback API update.**
+  BookOrbit's new audiobook reader replaced the old per-book audio-progress route
+  with revisioned playback state and manifest asset IDs. BookBridge now reads and
+  writes that contract, uses the manifest timeline for multi-file audiobooks, and
+  retains compatibility with older BookOrbit releases.
+
 - **BridgeSync books disappearing immediately after download.** When a match gets
   a new ID, cleanup now preserves files still named in the current manifest.
   Book-sync workers also reopen SQLite instead of using stale legacy state.

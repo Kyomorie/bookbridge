@@ -80,7 +80,7 @@ class BookOrbitAudioSyncClient(SyncClient):
         """Cumulative [start, end) ranges for each audio track, in play order."""
         ranges = []
         cursor = 0.0
-        for track in (info or {}).get("tracks") or []:
+        for track in ((info or {}).get("playback_tracks") or (info or {}).get("tracks") or []):
             if not isinstance(track, dict):
                 continue
             try:

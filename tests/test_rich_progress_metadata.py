@@ -272,6 +272,7 @@ class TestBookOrbitCapture(unittest.TestCase):
             "currentFileId": 9379, "positionSeconds": 194.0,
             "updatedAt": "2026-07-02T13:45:48.701Z",
         })
+        client._audiobook_api = "legacy"
         progress = client.get_audiobook_progress(4345)
         self.assertEqual(progress["updated_at"], "2026-07-02T13:45:48.701Z")
 
