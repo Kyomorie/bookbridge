@@ -1680,6 +1680,7 @@ function BridgeSync:_runSync()
 
     local remote_books = manifest.books or {}
     local remote_by_abs = {}
+    local remote_paths = {}
     local items = self:_loadStateItems()
     local hash_index = nil
     local function getHashIndex()
@@ -1694,6 +1695,7 @@ function BridgeSync:_runSync()
     for _, book in ipairs(remote_books) do
         remote_by_abs[book.abs_id] = true
         local target_path = self.download_dir .. "/" .. book.filename
+        remote_paths[self:_normalizeManagedPath(target_path)] = true
         local entry = items[book.abs_id]
         local previous_entry = entry and {
             local_path = entry.local_path,
@@ -1820,7 +1822,10 @@ function BridgeSync:_runSync()
     if self.delete_removed_books then
         for abs_id, entry in pairs(items) do
             if not remote_by_abs[abs_id] then
-                if self:_isCurrentDocument(entry.local_path) then
+                if remote_paths[self:_normalizeManagedPath(entry.local_path)] then
+                    -- A replacement ID can own the same file as a retired match.
+                    items[abs_id] = nil
+                elseif self:_isCurrentDocument(entry.local_path) then
                     entry.pending_delete = true
                     items[abs_id] = entry
                     deferred = deferred + 1
@@ -1985,7 +1990,7 @@ function BridgeSync:syncFromBridge(silent)
         return pcall(function()
             return self:_runSync()
         end)
-    end)
+    end, { needs_sqlite = true })
 
     if info_msg then
         UIManager:close(info_msg)

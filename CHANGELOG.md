@@ -135,6 +135,12 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **BridgeSync books disappearing immediately after download.** When a match gets
+  a new ID, cleanup now preserves files still named in the current manifest.
+  Book-sync workers also reopen SQLite instead of using stale legacy state.
+  Requires **BridgeSync 0.6.10** and a KOReader restart; the next book sync restores
+  affected downloads.
+
 - **Actively read series appear under In Progress (#432).** With Group series on,
   a series containing any partially read volume now appears under In Progress.
   Completed volumes remain accessible under Finished, and switching grouping off

@@ -746,4 +746,83 @@ for _, failure in ipairs({ "missing", "empty", "size", "hash", "rename", "rename
     os.remove(target)
 end
 
+-- The Kindle downloaded Household Inheritance then deleted it through its old
+-- ebook ID. Run the actual forked book-sync entry point and repeat the sync to
+-- prove both file retention and SQLite revision persistence.
+do
+    local filename = "Household Inheritance.epub"
+    local target = settings_dir .. "/" .. filename
+    local old_id, new_id = "ebook-c84f08fa7c356f9d", "bookorbit:6043"
+    local items = { [old_id] = {
+        local_path = target, filename = filename, content_hash = "book-bytes",
+    } }
+    local revision = "old-revision"
+    local downloads, deletions = 0, 0
+    local SQLite = require("bridge_sqlite_state")
+    local original_new = SQLite.new
+    SQLite.new = function()
+        return {
+            init = function() return true end,
+            get_setting = function() return revision end,
+            get_all_books = function()
+                local ids = {}
+                for id in pairs(items) do ids[#ids + 1] = id end
+                return ids
+            end,
+            get_all_state_items_for_book = function(_, id) return items[id] end,
+            replace_state = function(_, saved, saved_revision)
+                items, revision = saved, saved_revision
+                return true
+            end,
+        }
+    end
+    preload("apps/filemanager/filemanager", empty_module)
+    local sync = BridgeSync:new{
+        server_url = "http://bridge", username = "reader", key = "test",
+        sqlite_available = true, sqlite_state = SQLite:new(),
+        state = { readSetting = function() error("book sync read stale LuaSettings") end },
+        download_dir = settings_dir, delete_removed_books = true,
+        _preflightNetwork = function() return true end,
+        _ensureDirectory = function() return true end,
+        _buildHashIndex = function() return {} end,
+        _fileExists = function(_, path) return file_bytes(path) ~= nil end,
+        _calculateBookHash = function(_, path) return file_bytes(path) end,
+        _removeTree = function() end,
+        _isCurrentDocument = function() return false end,
+        _deleteManagedFile = function(_, path)
+            deletions = deletions + 1
+            os.remove(path)
+            return true
+        end,
+        _updateCollections = function() end,
+        _maybeAutoSyncStats = function() end,
+        _uploadDeviceLogTail = function() end,
+        logInfo = function() end, logWarn = function() end, logErr = function() end,
+        api = {
+            getManifest = function() return true, { revision = "new-revision", books = {
+                { abs_id = new_id, filename = filename, content_hash = "book-bytes",
+                  size = 10, download_path = "/book" },
+            } } end,
+            downloadBook = function(_, _, path)
+                downloads = downloads + 1
+                write_bytes(path, "book-bytes")
+                return true
+            end,
+        },
+    }
+    stub_fork(true)
+    assert(drive(function() return sync:syncFromBridge(true) end),
+        "forked book sync must use its own SQLite connection")
+    assert(file_bytes(target) == "book-bytes" and deletions == 0,
+        "Household Inheritance was downloaded then deleted through its retired ebook ID")
+    assert(items[old_id] == nil and items[new_id] and revision == "new-revision",
+        "book sync must persist the replacement ID and revision in SQLite")
+    sync._in_subprocess = nil
+    assert(drive(function() return sync:syncFromBridge(true) end))
+    assert(downloads == 1 and file_bytes(target) == "book-bytes",
+        "the next sync must retain Household Inheritance without downloading it again")
+    SQLite.new = original_new
+    os.remove(target)
+end
+
 print("BridgeSync Lua init regression test passed")
