@@ -279,19 +279,20 @@ class TestDashboardControlMarkup(_DashboardRenderCase):
 
 
 class TestDashboardDuplicateRendering(_DashboardRenderCase):
-    """Why the count cannot simply tally cards.
+    """Only finished volumes need a second card outside their active series."""
 
-    The In Progress section iterates the flat mapping list, while Not Started and
-    Finished iterate the grouped one. An in-progress book belonging to a series is
-    therefore rendered twice: once nested in its series group (which sits in Not
-    Started, because not every volume is finished) and once flat in In Progress.
-    This is long-standing behaviour -- ``flatten-duplicate`` exists to manage it --
-    and it means a naive ``.book-card`` tally over-reports the library.
-    """
-
-    def test_in_progress_series_volume_is_rendered_twice(self):
+    def test_in_progress_series_volume_is_rendered_once(self):
         html = self._dashboard()
-        self.assertEqual(html.count('data-abs-id="series-two"'), 2)
+        self.assertEqual(html.count('data-abs-id="series-two"'), 1)
+
+    def test_finished_volume_of_active_series_is_rendered_twice(self) -> None:
+        """Finished volumes stay reachable in both their series and Finished."""
+        self.svc.save_state(State(
+            abs_id="series-one", client_name="kosync",
+            last_updated=_SYNC_STAMP, percentage=1.0, user_id=self.user.id,
+        ))
+        html = self._dashboard()
+        self.assertEqual(html.count('data-abs-id="series-one"'), 2)
 
     def test_a_standalone_in_progress_book_is_rendered_once(self):
         """The duplication is specific to series children, not to progress."""

@@ -4340,7 +4340,7 @@ def _finalize_series_group(group: dict) -> None:
         "last_sync_unix": last_sync_unix,
         "added_at_unix": added_at_unix,
         "stack_cover_urls": [c.get("cover_url") for c in children[:3] if c.get("cover_url")],
-        "section_bucket": "finished" if finished == total else "not_started",
+        "section_bucket": "finished" if finished == total else "in_progress" if in_progress else "not_started",
         "dom_id": "series-" + re.sub(r"[^a-z0-9]+", "-", group["series_key"]).strip("-"),
     })
 

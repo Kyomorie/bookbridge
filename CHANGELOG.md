@@ -135,6 +135,11 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Actively read series appear under In Progress (#432).** With Group series on,
+  a series containing any partially read volume now appears under In Progress.
+  Completed volumes remain accessible under Finished, and switching grouping off
+  places each book in its own progress section without duplicate cards.
+
 - **Show Grimmory ebook covers through its book media endpoint (#435).** Ebook
   covers use the book ID rather than the audiobook file-cover route.
 - **Keep Grimmory reads, writes, and cached books tied to the selected ID (#437).**

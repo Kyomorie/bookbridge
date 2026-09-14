@@ -2187,13 +2187,10 @@
           {% if m.unified_progress == 0 %}{% set section_flags.has_not_started = true %}{% endif %}
           {% if m.unified_progress >= 100 %}{% set section_flags.has_finished = true %}{% endif %}
         {% endfor %}
-        {# The flags above come from the flat list, but Not Started and Finished render from
-           the grouped one, so a group can be assigned to a section no flat book asked for:
-           a part-read series buckets to 'not_started' while none of its volumes sits at 0%.
-           Every bucket a group can name must emit its section, or the group -- and every
-           volume nested in it -- never enters the DOM at all. #}
+        {# Keep a section available for every group as well as every individual book. #}
         {% for entry in grouped_mappings %}
           {% if entry.is_series_group %}
+            {% if entry.section_bucket == 'in_progress' %}{% set section_flags.has_in_progress = true %}{% endif %}
             {% if entry.section_bucket == 'not_started' %}{% set section_flags.has_not_started = true %}{% endif %}
             {% if entry.section_bucket == 'finished' %}{% set section_flags.has_finished = true %}{% endif %}
           {% endif %}
@@ -2282,8 +2279,12 @@
             </div>
 
             <div class="book-grid" id="in-progress-grid">
-                {% for m in mappings %}
-                  {% if m.unified_progress > 0 and m.unified_progress < 100 %}{{ render_book_card(m, integrations) }}{% endif %}
+                {% for entry in grouped_mappings %}
+                {% if entry.is_series_group %}
+                  {% if entry.section_bucket == 'in_progress' %}{{ render_series_card(entry, integrations) }}{% endif %}
+                {% else %}
+                  {% if entry.unified_progress > 0 and entry.unified_progress < 100 %}{{ render_book_card(entry, integrations) }}{% endif %}
+                {% endif %}
                 {% endfor %}
             </div>
         </div>
@@ -2320,11 +2321,8 @@
                 {% if entry.is_series_group %}
                   {% if entry.section_bucket == 'finished' %}{{ render_series_card(entry, integrations) }}
                   {% else %}
-                  {# A finished volume of a part-read series stays reachable here as well as
-                     inside its stack -- the same deliberate cross-section duplication the In
-                     Progress section relies on, which distinctBookCards() collapses by abs id.
-                     Finished-bucketed groups are excluded: their stack already renders here,
-                     so their children would sit beside their own stack in one grid. #}
+                  {# Keep finished volumes reachable here as well as inside their series.
+                     Fully finished groups already render here, so do not duplicate them. #}
                     {% for child in entry.children %}
                       {% if child.unified_progress >= 100 %}{{ render_book_card(child, integrations) }}{% endif %}
                     {% endfor %}
@@ -2390,15 +2388,8 @@
                     }
                 });
             }
-            // Counts distinct BOOKS, not cards. The In Progress section renders from the
-            // flat mapping list while the other two render from the grouped one, so an
-            // in-progress book inside a series is rendered twice -- once nested in its
-            // group, once flat. Both copies carry the same abs id, so the id set collapses
-            // them. Grouping is a display choice, so the totals hold either way.
-            // One card per book. The In Progress section renders from the flat mapping
-            // list while the other two render from the grouped one, so an in-progress
-            // volume of a series exists twice in the DOM; both copies carry the same
-            // abs id and the same facet attributes, so the first wins.
+            // Finished volumes can appear in their series and under Finished.
+            // Count each book once, regardless of grouping or duplicate cards.
             function distinctBookCards() {
                 const seen = new Map();
                 document.querySelectorAll('.book-card').forEach(card => {

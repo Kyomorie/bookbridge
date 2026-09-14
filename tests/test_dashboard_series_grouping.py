@@ -236,7 +236,7 @@ class TestSeriesGrouping(unittest.TestCase):
         self.assertTrue(g["is_series_group"])
         self.assertEqual(g["child_count"], 2)
         self.assertEqual(g["finished_count"], 1)
-        self.assertEqual(g["section_bucket"], "not_started")
+        self.assertEqual(g["section_bucket"], "in_progress")
         self.assertEqual(g["next_book"]["display_title"], "Auxiliary Blade")
 
     def test_all_finished_group_lands_in_finished(self):
@@ -246,6 +246,24 @@ class TestSeriesGrouping(unittest.TestCase):
         ]
         result = self.group(flat)
         self.assertEqual(result[0]["section_bucket"], "finished")
+
+    def test_series_bucket_follows_active_reading(self) -> None:
+        """Only actively read volumes move an unfinished series into In Progress."""
+        for progress, expected in (
+            ((100, 2.6), "in_progress"),
+            ((0, 2.6), "in_progress"),
+            ((100, 0, 2.6), "in_progress"),
+            ((25, 75), "in_progress"),
+            ((100, 0), "not_started"),
+            ((0, 0), "not_started"),
+            ((100, 100), "finished"),
+        ):
+            with self.subTest(progress=progress):
+                mappings = [
+                    _make_mapping(abs_id=str(i), series_name="Series", unified_progress=pct)
+                    for i, pct in enumerate(progress)
+                ]
+                self.assertEqual(self.group(mappings)[0]["section_bucket"], expected)
 
     def test_all_not_started_group_lands_in_not_started(self):
         flat = [

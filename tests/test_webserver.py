@@ -1718,14 +1718,7 @@ class CleanFlaskIntegrationTest(unittest.TestCase):
         self.assertIn('justify-content: flex-start', rule)
 
     def test_index_template_renders_part_read_series_when_nothing_is_unstarted(self):
-        """A part-read series must not vanish when no book sits at exactly 0% (#432).
-
-        The section shells are gated by flags derived from the flat mapping list, while
-        the Not Started and Finished grids render from the grouped one. A series holding
-        one finished and one in-progress volume buckets to 'not_started', so with no 0%
-        book anywhere the shell was never emitted and the whole group -- including its
-        finished volume -- never entered the DOM.
-        """
+        """A 100%/2.6% series belongs in In Progress with both volumes intact (#432)."""
         from src.db.models import Book, State
 
         finished_volume = Book(
@@ -1763,23 +1756,28 @@ class CleanFlaskIntegrationTest(unittest.TestCase):
 
         html = self._render_index_template_source()
 
-        # No book is at 0%, but the group is bucketed here, so the shell must exist.
-        self.assertIn('id="not-started-section"', html)
+        self.assertNotIn('id="not-started-section"', html)
 
-        in_progress_chunk = html.split('id="in-progress-section"', 1)[1].split('id="not-started-section"', 1)[0]
-        not_started_chunk = html.split('id="not-started-section"', 1)[1].split('id="finished-section"', 1)[0]
+        in_progress_chunk = html.split('id="in-progress-section"', 1)[1].split('id="finished-section"', 1)[0]
         finished_chunk = html.split('id="finished-section"', 1)[1]
 
         # The stack renders and still holds both volumes.
-        self.assertIn('class="series-group"', not_started_chunk)
-        self.assertIn('data-abs-id="series-finished-1"', not_started_chunk)
-        self.assertIn('data-abs-id="series-reading-1"', not_started_chunk)
+        self.assertIn('class="series-group"', in_progress_chunk)
+        self.assertIn('data-abs-id="series-finished-1"', in_progress_chunk)
+        self.assertIn('data-abs-id="series-reading-1"', in_progress_chunk)
+        self.assertEqual(in_progress_chunk.count('class="book-card'), 2)
 
         # The finished volume is also reachable as its own card under Finished.
         self.assertIn('data-abs-id="series-finished-1"', finished_chunk)
 
-        # The volume being read keeps its own card, as it always has.
-        self.assertIn('data-abs-id="series-reading-1"', in_progress_chunk)
+        # An unstarted child still needs a destination when grouping is switched off.
+        self.mock_database_service.get_all_states.return_value[0].percentage = 0.0
+        self.mock_database_service.get_all_states.return_value[0].timestamp = 0
+        html = self._render_index_template_source()
+        self.assertIn('id="not-started-section"', html)
+        in_progress_chunk = html.split('id="in-progress-section"', 1)[1].split('id="not-started-section"', 1)[0]
+        self.assertIn('class="series-group"', in_progress_chunk)
+        self.assertEqual(in_progress_chunk.count('class="book-card'), 2)
 
     def test_finished_grid_does_not_duplicate_children_of_a_finished_series(self):
         """A fully finished series renders its stack only -- never stack plus children.
