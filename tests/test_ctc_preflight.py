@@ -42,7 +42,8 @@ def service(tmp_path):
 def test_can_single_pass_false_for_a_long_book_with_many_tokens():
     aligner = ForcedAligner()
     text = " ".join(["narration"] * 20000)
-    with patch.object(ForcedAligner, "_load", _fake_load), \
+    with patch.object(ForcedAligner, "is_available", return_value=True), \
+         patch.object(ForcedAligner, "_load", _fake_load), \
          patch.object(ForcedAligner, "_single_pass_fits", return_value=False) as fits, \
          patch.object(ForcedAligner, "_load_audio") as decode:
         assert aligner.can_single_pass(106703.0, text) is False
@@ -58,7 +59,8 @@ def test_can_single_pass_false_for_a_long_book_with_many_tokens():
 def test_can_single_pass_true_for_a_short_book():
     aligner = ForcedAligner()
     text = "a short alignable sentence"
-    with patch.object(ForcedAligner, "_load", _fake_load), \
+    with patch.object(ForcedAligner, "is_available", return_value=True), \
+         patch.object(ForcedAligner, "_load", _fake_load), \
          patch.object(ForcedAligner, "_single_pass_fits", return_value=True) as fits, \
          patch.object(ForcedAligner, "_load_audio") as decode:
         assert aligner.can_single_pass(5.0, text) is True
@@ -76,7 +78,8 @@ def test_can_single_pass_false_when_unavailable():
 
 def test_can_single_pass_false_when_no_alignable_tokens():
     aligner = ForcedAligner()
-    with patch.object(ForcedAligner, "_load", _fake_load), \
+    with patch.object(ForcedAligner, "is_available", return_value=True), \
+         patch.object(ForcedAligner, "_load", _fake_load), \
          patch.object(ForcedAligner, "_single_pass_fits") as fits:
         assert aligner.can_single_pass(100.0, "1984 —— \U0001f4da") is False
     fits.assert_not_called()
