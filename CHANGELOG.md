@@ -6,6 +6,16 @@ All notable changes to BookBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [7.7.0] - 2026-09-15
+
+Deliberate rewinds now stick, alignment can handle editions whose sections appear in
+different orders, and alignment maps can be scored, remapped, and restored. The
+dashboard gains author and series filters and sorts, while reading sessions are
+recorded as the continuous stretches they actually were. Downloads, fixed-page comic
+sync, and BridgeSync behavior on memory-constrained readers are substantially safer.
+
+This release runs database migrations automatically and ships BridgeSync **0.6.10**.
+
 ### Added
 
 - **Go back in one app and have it stick (#215).** If you fall asleep to the audiobook
@@ -41,14 +51,13 @@ All notable changes to BookBridge will be documented in this file.
   this check would have caught eight mismatched pairings, including an audiobook matched
   to the wrong volume of its own series.
 
-- **Spot an ebook whose sections are in a different order from the audiobook (#426).**
-  Some EPUBs — collections and omnibuses especially — carry their parts in a different
-  order than the narrator reads them. Alignment silently discarded every match that
-  broke the running order, which on a badly ordered file can throw away half the book's
-  matches and leave long stretches pointing at the wrong audio. Alignment now says so,
-  naming each out-of-order stretch by its place in the book and in the audio, and what
-  fixes it: a correctly ordered EPUB. The four-novella volume *Four Past Midnight*
-  surfaced this — 51% of its matches were being dropped.
+- **Align an ebook whose sections are in a different order from the audiobook (#426).**
+  Collections and omnibuses sometimes store their parts in a different order from the
+  narration. Enable the experimental **Segmented Alignment Maps** setting and remap the
+  affected book to fit those sections independently and follow the resulting segmented
+  map as playback moves between them, instead of discarding every match that breaks the
+  EPUB's spine order. Alignment Health reports any section it still cannot place rather
+  than quietly publishing a misleading map. Normally ordered books are unaffected.
 
 - **Alignment quality, in Settings → Alignment Health (#426).** Every map now carries a
   0–1 quality score, built from how evenly it paces against the audio, how large its
@@ -70,8 +79,7 @@ All notable changes to BookBridge will be documented in this file.
   compatible HTTP servers now supply word timestamps, and Storyteller re-alignment
   retains its existing word timing. Audio-part offsets and transcript caches preserve
   those timestamps through to EPUB matching. Segment-only transcripts keep their
-  existing fallback. Existing books need fresh transcription/re-alignment to benefit;
-  a temporary excerpt comparison script helps evaluate the change before replacing maps.
+  existing fallback. Existing books need fresh transcription/re-alignment to benefit.
 
 - **Optional CTC forced alignment (#426).** A new alignment backend aligns the
   audiobook **directly against the ebook text** (Meta's MMS model via torchaudio),
@@ -141,27 +149,33 @@ All notable changes to BookBridge will be documented in this file.
   writes that contract, uses the manifest timeline for multi-file audiobooks, and
   retains compatibility with older BookOrbit releases.
 
-- **BridgeSync books disappearing immediately after download.** When a match gets
-  a new ID, cleanup now preserves files still named in the current manifest.
-  Book-sync workers also reopen SQLite instead of using stale legacy state.
-  Requires **BridgeSync 0.6.10** and a KOReader restart; the next book sync restores
-  affected downloads.
+- **Audiobookshelf clients see when another reader finishes a book (#433).**
+  Completion now travels through Audiobookshelf's playback-session event path, so
+  official and third-party clients that subscribe to session updates refresh without
+  waiting for a poll. A completion propagated from reading adds no listening time.
+
+- **Calibre-Web Automated progress stays attached to the book you selected (#427).**
+  BookBridge now stores the numeric ID from CWA's download link, resolves older
+  mappings through title and filename hints, and accepts only an exact ID or slug
+  match. An ambiguous search result is skipped instead of writing one book's progress
+  onto another, and a corrected mapping can recover without restarting BookBridge.
+
+- **KoSync timestamps mean UTC regardless of the container timezone (#438).**
+  Older timezone-naive timestamps were interpreted as local time on non-UTC hosts,
+  skewing freshness checks and the timestamp returned to readers. They are now
+  converted explicitly as UTC.
 
 - **Actively read series appear under In Progress (#432).** With Group series on,
   a series containing any partially read volume now appears under In Progress.
   Completed volumes remain accessible under Finished, and switching grouping off
-  places each book in its own progress section without duplicate cards.
+  places each book in its own progress section without duplicate cards. The collapse
+  control also stays beside its series heading. (#430)
 
 - **Show Grimmory ebook covers through its book media endpoint (#435).** Ebook
   covers use the book ID rather than the audiobook file-cover route.
 - **Keep Grimmory reads, writes, and cached books tied to the selected ID (#437).**
   Ambiguous or refused legacy mappings stop without guessing another book. Renames
   preserve the original cache filename, including older mappings where it was unset.
-- **Sync single-page comic turns even just after a bridge write (#436).** KoSync
-  retains the prior synced page through incoming updates, and CBZ echo suppression
-  distinguishes adjacent pages. Unconfirmed Grimmory writes no longer save the
-  attempted page as successful; concurrent reader progress stays available.
-
 - **Keep a reader's position when a sync only rounds it backward (#434).** A newer
   bridge write no longer overrides an older, further-ahead device position merely
   because it is newer. Only a corroborated rewind can retire positions reported
@@ -171,8 +185,10 @@ All notable changes to BookBridge will be documented in this file.
 - **Keep CBZ page progress consistent between Grimmory and KoSync.** Fixed-page
   positions now travel as explicit page numbers rather than fake EPUB locators,
   use KOReader's page-count semantics (including its bundled MuPDF WebP support),
-  and never invent page 1 for non-zero progress. Unsupported comic archives and
-  Kavita retain their existing behavior.
+  never invent page 1 for non-zero progress, and preserve adjacent page turns even
+  just after a bridge write. Unconfirmed Grimmory writes no longer hide concurrent
+  reader progress. Unsupported comic archives and Kavita retain their existing
+  behavior. (#436)
 
 - **Prepare KOReader's download list when books are matched.** After a bridge
   restart, catalog changes now start the manifest worker for installs that have
@@ -202,8 +218,6 @@ All notable changes to BookBridge will be documented in this file.
   before it is accepted. Downloads from servers that compress their responses are
   no longer mistaken for truncated ones.
 
-- **Reset menus stay above neighboring book cards (#426).** The popup escapes card
-  clipping, stays within the viewport, and both actions retain valid click handlers.
 - **Matching a BookOrbit or Grimmory audiobook now fills in its series right away.**
   Those matches saved the mapping without looking up the book's series, so it wouldn't
   group into its series card on the dashboard until you ran the series backfill by hand.
@@ -218,8 +232,9 @@ All notable changes to BookBridge will be documented in this file.
   anything on the device is touched, and only replaces the book you have once it is
   known good. A download that arrives missing, empty, the wrong size, or with the wrong
   contents is discarded and simply retried on the next sync, with your existing copy
-  and its progress still sitting there. Requires the updated **BridgeSync 0.6.9**
-  plugin on the device.
+  and its progress still sitting there. Files still named in the current manifest are
+  preserved when a match receives a new internal ID. Requires the updated
+  **BridgeSync 0.6.10** plugin on the device.
 
 - **Two things touching the Storyteller cache at once no longer empty it.**
   BookBridge keeps a slim, narration-free copy of a Storyteller book to work reading
@@ -289,6 +304,17 @@ All notable changes to BookBridge will be documented in this file.
   that. Both routes now merge. Existing duplicates are not cleaned up automatically —
   delete the leftover ebook-only entry and the audiobook one keeps the progress.
 
+- **Adding a book adopts the KOReader progress already stored for that file (#431).**
+  A matching KoSync document is linked as soon as the book is added, including older
+  orphaned progress on the next device read. A hash that already belongs to another
+  book is left alone, and re-matching an aligned book no longer sends it back through
+  transcription or changes its identity underneath stored progress and annotations.
+
+- **Suggestions show one entry for one physical audiobook (#383).** When
+  Audiobookshelf and Grimmory index the same library tree, their copies are collapsed
+  by normalized path. Matching one provider's copy also keeps the other from returning
+  as an unmatched suggestion on the next scan.
+
 - **Adding or removing a book now starts rebuilding your reader's book list
   immediately.** That list was refreshed only on a timer, so a match you had just
   added or deleted waited for the next tick before BookBridge even began to notice
@@ -308,7 +334,7 @@ All notable changes to BookBridge will be documented in this file.
   session down: malformed ones are dropped at once, ones for a book that is no longer
   matched are retried a few times — in case you re-match the same file — and then let
   go, and genuine temporary failures keep retrying exactly as before. Requires the
-  updated **BridgeSync 0.6.8** plugin on the device.
+  updated **BridgeSync 0.6.10** plugin on the device.
 
 - **KOReader froze and ran out of memory on Kindle while BridgeSync was syncing.**
   The plugin was starting a full copy of KOReader in the background for every single
@@ -322,7 +348,7 @@ All notable changes to BookBridge will be documented in this file.
   plugin keeps one sync queue for the whole app rather than one per open book, so a
   wake no longer replays the same uploads several times over. Going to sleep now also
   cancels queued work and stops anything still running, instead of leaving it holding
-  memory until the next wake. Requires the updated **BridgeSync 0.6.7** plugin on the
+  memory until the next wake. Requires the updated **BridgeSync 0.6.10** plugin on the
   device.
 
 - **Most ebook-only books showed no author.** BookBridge works an author out from
@@ -333,6 +359,11 @@ All notable changes to BookBridge will be documented in this file.
   author it already knows, which recovered 67 of the 73 affected books on the library
   this was found on. It only fills a gap: an author already coming from Grimmory or
   Storyteller is left exactly as it was.
+
+- **Series metadata can come from the EPUB itself (#261).** When a library API cannot
+  supply a series — notably Calibre-Web Automated's OPDS feed — BookBridge now reads
+  Calibre series metadata from the downloaded EPUB before falling back to guessing
+  from the title. Library metadata remains authoritative when both are available.
 
 - **Audiobook-only books were invisible to the library filter.** Books matched to an
   audiobook with no ebook side showed up under All Books but were hidden by *both*
@@ -349,6 +380,10 @@ All notable changes to BookBridge will be documented in this file.
   dashboard search revealed every book in that series, including ones the format filter
   was meant to be hiding. The search now finds the series without overriding what you
   filtered out.
+
+- **Wait for Position to Settle toggles now name their client.** Settings no longer
+  presents several identically labelled controls without saying which integration each
+  one affects.
 
 ## [7.6.0] - 2026-09-01
 
