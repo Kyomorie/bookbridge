@@ -22,6 +22,7 @@ local BridgeAnnotations = require("bridge_annotations")
 local BridgeSweep = require("bridge_sweep")
 local BridgeSyncCoordinator = require("bridge_sync_coordinator")
 local BridgeStatsBatches = require("bridge_stats_batches")
+local BridgeBookStatus = require("bridge_book_status")
 local BridgeVersion = require("bridge_version")
 local ManifestRules = require("bridge_manifest_rules")
 local BridgeSqliteState = require("bridge_sqlite_state")
@@ -2856,6 +2857,91 @@ function BridgeSync:_runStatisticsSync(stats_state)
         self:logInfo("Merged", result.merged_page_stats, "reading stat rows from other devices")
     end
 
+    -- Reading status rides the same cadence as stats but is a separate exchange:
+    -- it comes from the sidecars, not statistics.sqlite, and a failure on either
+    -- side must not cost the other its results.
+    local status_result = self:_runBookStatusSync()
+    result.status_uploaded = status_result.uploaded or 0
+    result.status_applied = status_result.applied or 0
+    result.status_deferred = status_result.deferred or 0
+    result.status_error = status_result.err
+    if status_result.err then
+        self:logWarn("Reading status sync failed:", status_result.err)
+    elseif status_result.disabled then
+        self:logInfo("Reading status sync is disabled on the bridge")
+    else
+        self:logInfo(
+            "Reading status sync: uploaded", status_result.uploaded or 0,
+            "applied", status_result.applied or 0,
+            "unchanged", status_result.unchanged or 0,
+            "deferred", status_result.deferred or 0,
+            "errors", status_result.errors or 0
+        )
+    end
+
+    return result
+end
+
+-- Exchange this device's sidecar reading statuses with the bridge.
+--
+-- Every book the bridge knows comes back, not just ones this device reported:
+-- the point of the feature is a book delivered here but never opened, which by
+-- definition has nothing to report and still needs its status.
+function BridgeSync:_runBookStatusSync()
+    local result = {
+        uploaded = 0, applied = 0, unchanged = 0,
+        deferred = 0, errors = 0, err = nil, disabled = false,
+    }
+
+    local ok_run, run_err = pcall(function()
+        local device, device_id = self:_currentDeviceIdentity()
+        local hash_index = self:_buildHashIndex()
+        -- `dir` lets collect() also read sidecars whose book file is gone. Mirror
+        -- deletion removes the ebook and leaves the .sdr, and on a real device
+        -- those are most of the statused sidecars -- their status is still worth
+        -- sharing, because the book may well be present on another device.
+        local books = BridgeBookStatus.collect(hash_index, { dir = self.download_dir })
+
+        local ok, response = self.api:uploadBookStatus({
+            device = device,
+            device_id = device_id,
+            books = books,
+        })
+        if not ok then
+            result.err = tostring(response or "status upload failed")
+            return
+        end
+        if type(response) == "table" and response.enabled == false then
+            result.disabled = true
+            return
+        end
+        result.uploaded = tonumber(response and response.accepted) or #books
+
+        local ok_merged, merged = self.api:getMergedBookStatus()
+        if not ok_merged then
+            result.err = tostring(merged or "merged status fetch failed")
+            return
+        end
+        if type(merged) == "table" and merged.enabled == false then
+            result.disabled = true
+            return
+        end
+
+        local totals = BridgeBookStatus.apply(hash_index, merged and merged.books or {}, {
+            -- The open document's DocSettings live in memory and are rewritten
+            -- wholesale on close, so a write here would be discarded. The
+            -- existing after-close sync picks it up on the next pass.
+            skip_path = self:_currentDocumentPath(),
+        })
+        result.applied = totals.applied
+        result.unchanged = totals.unchanged
+        result.deferred = totals.deferred
+        result.errors = totals.errors
+    end)
+
+    if not ok_run and not result.err then
+        result.err = tostring(run_err or "reading status sync failed")
+    end
     return result
 end
 

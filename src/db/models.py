@@ -768,6 +768,65 @@ class KOReaderPageStat(Base):
         self.uploaded_at = utcnow()
 
 
+class KOReaderBookStatus(Base):
+    """
+    Per-device KOReader reading status, read from each device's ``.sdr`` sidecar.
+
+    KOReader keeps reading status in the sidecar's ``summary`` table
+    (``status`` = reading | complete | abandoned, plus a ``modified`` date), which
+    no existing sync channel carries: KoSync moves position only, and the
+    statistics DB has no status column. One row per (md5, user, device); the
+    cross-device winner is resolved at read time by
+    ``DatabaseService.resolve_koreader_book_status``.
+
+    ``modified`` is the DEVICE's own date for the status change and is stored
+    verbatim as ``YYYY-MM-DD``; ``received_at`` is the bridge's own clock. Both are
+    kept because they answer different questions — see the resolver for how they
+    are ordered.
+    """
+    __tablename__ = 'koreader_book_status'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    md5 = Column(String(32), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True)
+    device = Column(String(128), nullable=True)
+    device_id = Column(String(128), nullable=True)
+    device_key = Column(String(128), nullable=False, index=True)
+    status = Column(String(16), nullable=False)
+    modified = Column(String(10), nullable=True)      # KOReader's summary.modified, "YYYY-MM-DD"
+    received_at = Column(Float, nullable=False)       # bridge clock, epoch seconds
+    last_updated = Column(DateTime, default=utcnow, onupdate=utcnow, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('md5', 'user_id', 'device_key', name='uq_koreader_book_status_md5_user_device'),
+    )
+
+    def __init__(
+        self,
+        md5: str,
+        device_key: str,
+        status: str,
+        received_at: float,
+        device: str = None,
+        device_id: str = None,
+        modified: str = None,
+        user_id: int = None,
+    ):
+        self.md5 = md5
+        self.device = device
+        self.device_id = device_id
+        self.device_key = device_key
+        self.user_id = user_id
+        self.status = status
+        self.modified = modified
+        self.received_at = received_at
+        self.last_updated = utcnow()
+
+    def __repr__(self):
+        return (f"<KOReaderBookStatus(md5='{self.md5}', device_key='{self.device_key}', "
+                f"status='{self.status}')>")
+
+
 class KoreaderAnnotation(Base):
     """
     Canonical highlight/annotation store for the device+web annotation hub.

@@ -108,6 +108,16 @@ _kosync_recent_external_puts_lock = threading.Lock()
 _KOREADER_STATS_MAX_BOOKS = 1000
 _KOREADER_STATS_MAX_PAGE_STATS = 10000
 _KOREADER_STATS_MERGE_LIMIT = 10000
+_KOREADER_STATUS_MAX_BOOKS = 5000
+_KOREADER_STATUS_MERGE_LIMIT = 5000
+# KOReader's own vocabulary for sidecar summary.status. An unknown value is
+# rejected rather than stored: these strings are written straight back into a
+# device's sidecar, and a typo there is a status the reader can never clear.
+_KOREADER_STATUS_VALUES = frozenset({'reading', 'complete', 'abandoned'})
+# 'unread' is the bridge's CLEAR sentinel, not a KOReader status: a device applying
+# it removes the sidecar's status. Devices may RECEIVE it but must never report it,
+# so it is accepted on the merged response and refused on upload.
+_KOREADER_STATUS_CLEARED = 'unread'
 _BRIDGESYNC_LOG_MAX_LINES = 200
 _BRIDGESYNC_LOG_MAX_LINE_CHARS = 1000
 _BRIDGESYNC_LOG_MAX_PAYLOAD_BYTES = 64 * 1024
@@ -2166,6 +2176,102 @@ def koreader_merged_statistics():
         "watermark": merged.get("watermark"),
         "truncated": bool(merged.get("truncated")),
     }), 200
+
+
+@kosync_sync_bp.route('/device-sync/status', methods=['POST'])
+@kosync_sync_bp.route('/koreader/device-sync/status', methods=['POST'])
+@kosync_auth_required
+def koreader_upload_book_status():
+    """Receive each device's sidecar reading statuses (summary.status)."""
+    if not env_truthy("KOREADER_STATUS_SYNC_ENABLED", "true"):
+        return jsonify({"enabled": False, "accepted": 0}), 200
+
+    data = request.json
+    if not data or not isinstance(data, dict):
+        return jsonify({"error": "Expected JSON object"}), 400
+
+    books = data.get("books")
+    if not isinstance(books, list):
+        return jsonify({"error": "Expected 'books' array"}), 400
+    if len(books) > _KOREADER_STATUS_MAX_BOOKS:
+        return jsonify({"error": f"Too many books in status upload (max {_KOREADER_STATUS_MAX_BOOKS})"}), 413
+
+    device = str(data.get("device") or "").strip()
+    device_id = str(data.get("device_id") or "").strip()
+    if not (device_id or device).strip():
+        return jsonify({"error": "Missing device identity"}), 400
+
+    if not _database_service:
+        return jsonify({"error": "Database service unavailable"}), 503
+
+    accepted_rows = []
+    rejected = 0
+    for book in books:
+        if not isinstance(book, dict):
+            rejected += 1
+            continue
+        status = str(book.get("status") or "").strip().lower()
+        if status not in _KOREADER_STATUS_VALUES:
+            # Includes KOReader's empty status, which carries no decision.
+            rejected += 1
+            continue
+        accepted_rows.append({
+            "md5": book.get("md5"),
+            "status": status,
+            "modified": book.get("modified"),
+        })
+
+    user_id = getattr(g, "kosync_user_id", None)
+    try:
+        accepted = _database_service.upsert_koreader_book_status(
+            device=device,
+            device_id=device_id,
+            books=accepted_rows,
+            user_id=user_id,
+        )
+    except Exception as e:
+        logger.error(
+            "KOReader status upload failed for device '%s': %s",
+            (device_id or device), e, exc_info=True,
+        )
+        return jsonify({"error": "Failed to persist status upload"}), 500
+
+    return jsonify({"enabled": True, "accepted": int(accepted or 0), "rejected": rejected}), 200
+
+
+@kosync_sync_bp.route('/device-sync/status/merged', methods=['GET'])
+@kosync_sync_bp.route('/koreader/device-sync/status/merged', methods=['GET'])
+@kosync_auth_required
+def koreader_merged_book_status():
+    """Return the winning reading status per book for the calling user.
+
+    Every known book is returned rather than a per-device delta: the device
+    resolves md5 -> local file through its own hash index and skips anything it
+    already agrees with, so a device that has never reported a book still learns
+    that book's status.
+    """
+    if not env_truthy("KOREADER_STATUS_SYNC_ENABLED", "true"):
+        return jsonify({"enabled": False, "books": []}), 200
+
+    if not _database_service:
+        return jsonify({"error": "Database service unavailable"}), 503
+
+    limit = _KOREADER_STATUS_MERGE_LIMIT
+    limit_raw = request.args.get("limit")
+    if limit_raw:
+        try:
+            limit = max(min(int(limit_raw), _KOREADER_STATUS_MERGE_LIMIT), 1)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid 'limit' value"}), 400
+
+    try:
+        user_id = getattr(g, "kosync_user_id", None)
+        winners = _database_service.resolve_koreader_book_status(user_id=user_id, limit=limit)
+    except Exception as e:
+        logger.error("KOReader merged status fetch failed: %s", e, exc_info=True)
+        return jsonify({"error": "Failed to fetch merged status"}), 500
+
+    return jsonify({"enabled": True, "books": winners}), 200
 
 
 def _annotation_sync_enabled() -> bool:

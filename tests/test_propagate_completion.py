@@ -337,3 +337,72 @@ class TestCompletionPropagationEnabled(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestMarkKoreaderComplete(unittest.TestCase):
+    """The bridge's own completion decision is what tells the reader devices.
+
+    No service needs polling for a status field of its own: the sync cycle
+    already decides a book is finished, off whichever client led it.
+    """
+
+    def _manager(self):
+        mgr = SyncManager.__new__(SyncManager)
+        mgr.database_service = MagicMock()
+        mgr.database_service.record_koreader_status_for_book.return_value = 2
+        mgr._mark_koreader_complete = types.MethodType(
+            SyncManager._mark_koreader_complete, mgr
+        )
+        return mgr
+
+    def setUp(self):
+        self._prior = os.environ.get('KOREADER_STATUS_SYNC_ENABLED')
+        os.environ['KOREADER_STATUS_SYNC_ENABLED'] = 'true'
+
+    def tearDown(self):
+        if self._prior is None:
+            os.environ.pop('KOREADER_STATUS_SYNC_ENABLED', None)
+        else:
+            os.environ['KOREADER_STATUS_SYNC_ENABLED'] = self._prior
+
+    def test_records_complete_against_the_book(self):
+        mgr = self._manager()
+        mgr._mark_koreader_complete(_make_book(), "test-book", "Test Book", "BookOrbit")
+
+        mgr.database_service.record_koreader_status_for_book.assert_called_once()
+        args, kwargs = mgr.database_service.record_koreader_status_for_book.call_args
+        self.assertEqual(args[0], "test-book")
+        self.assertEqual(kwargs["status"], "complete")
+        self.assertEqual(kwargs["device_key"], "bridge")
+
+    def test_gate_off_records_nothing(self):
+        os.environ['KOREADER_STATUS_SYNC_ENABLED'] = 'false'
+        mgr = self._manager()
+        mgr._mark_koreader_complete(_make_book(), "test-book", "Test Book", "BookOrbit")
+        mgr.database_service.record_koreader_status_for_book.assert_not_called()
+
+    def test_gate_accepts_the_checkbox_spelling(self):
+        os.environ['KOREADER_STATUS_SYNC_ENABLED'] = 'on'
+        mgr = self._manager()
+        mgr._mark_koreader_complete(_make_book(), "test-book", "Test Book", "ABS")
+        mgr.database_service.record_koreader_status_for_book.assert_called_once()
+
+    def test_a_database_failure_never_breaks_the_cycle(self):
+        mgr = self._manager()
+        mgr.database_service.record_koreader_status_for_book.side_effect = RuntimeError("db down")
+        # Must not raise: a status write is not worth losing the sync cycle over.
+        mgr._mark_koreader_complete(_make_book(), "test-book", "Test Book", "Grimmory")
+
+    def test_is_independent_of_completion_propagation_setting(self):
+        """Telling the devices a book is finished is a different decision from
+        pushing 100% into every other service."""
+        prior = os.environ.get('SYNC_COMPLETION_PROPAGATION')
+        os.environ['SYNC_COMPLETION_PROPAGATION'] = 'false'
+        try:
+            mgr = self._manager()
+            mgr._mark_koreader_complete(_make_book(), "test-book", "Test Book", "CWA")
+            mgr.database_service.record_koreader_status_for_book.assert_called_once()
+        finally:
+            if prior is None:
+                os.environ.pop('SYNC_COMPLETION_PROPAGATION', None)
+            else:
+                os.environ['SYNC_COMPLETION_PROPAGATION'] = prior

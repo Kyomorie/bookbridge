@@ -358,6 +358,42 @@ class SyncManager:
             value = 99.0
         return max(0.0, min(value, 100.0)) / 100.0
 
+    def _mark_koreader_complete(
+        self,
+        book,
+        abs_id: str,
+        title_snip: str,
+        leader: str,
+    ) -> None:
+        """Record 'complete' for the KOReader devices when a book reaches the end.
+
+        The bridge already decides a book is finished during the ordinary cycle, off
+        whichever client led it -- BookOrbit, ABS, Grimmory, CWA, Storyteller. That
+        decision is the natural source for the devices' reading status, so no service
+        needs polling for a status field of its own.
+
+        Position is untouched here; only the status the file browser shows.
+        """
+        if not env_truthy('KOREADER_STATUS_SYNC_ENABLED', 'true'):
+            return
+        try:
+            written = self.database_service.record_koreader_status_for_book(
+                abs_id,
+                status='complete',
+                device_key='bridge',
+                user_id=get_current_user_id(),
+            )
+            if written:
+                logger.info(
+                    f"🏁 '{abs_id}' '{title_snip}' marked finished for KOReader "
+                    f"({written} document hash(es), leader '{leader}')"
+                )
+        except Exception as e:
+            logger.warning(
+                f"⚠️ Could not mark '{sanitize_log_data(abs_id)}' finished for KOReader: {e}",
+                exc_info=True,
+            )
+
     def _propagate_completion(
         self,
         book: Book | None,
@@ -5014,12 +5050,18 @@ class SyncManager:
 
                 threshold = self._completion_threshold()
                 previous_leader_pct = getattr(leader_state, 'previous_pct', None)
-                if (
-                    self._completion_propagation_enabled()
-                    and leader_pct is not None
+                crossed_completion = (
+                    leader_pct is not None
                     and leader_pct >= threshold
                     and (previous_leader_pct is None or previous_leader_pct < threshold)
-                ):
+                )
+                # Deliberately NOT gated on SYNC_COMPLETION_PROPAGATION: telling the
+                # reader devices a book is finished is a different decision from
+                # pushing 100% into every other service, and wanting the first should
+                # not require accepting the second.
+                if crossed_completion:
+                    self._mark_koreader_complete(book, abs_id, title_snip, leader)
+                if crossed_completion and self._completion_propagation_enabled():
                     self._propagate_completion(book, active_clients, leader, abs_id, title_snip)
 
                 # Save states directly to database service using State models
@@ -5392,6 +5434,30 @@ class SyncManager:
                 # Clear states for this book (scoped to the user when given)
                 cleared_count = self.database_service.delete_states_for_book(abs_id, user_id=user_id)
                 logger.info(f"💾 Cleared {cleared_count} state records from database")
+
+                # Tell the reader devices to forget this book's status too, so a
+                # cleared book reads as never opened rather than keeping the
+                # 'complete' that prompted the clear (the usual reason for one is
+                # about to re-read it). This runs BEFORE the KosyncDocument delete
+                # below, which is what resolves the book's document hashes.
+                if env_truthy('KOREADER_STATUS_SYNC_ENABLED', 'true'):
+                    try:
+                        cleared_hashes = self.database_service.record_koreader_status_for_book(
+                            abs_id,
+                            status=self.database_service.KOREADER_STATUS_CLEARED,
+                            device_key='bridge',
+                            user_id=user_id,
+                        )
+                        if cleared_hashes:
+                            logger.info(
+                                f"🧽 KOReader status cleared for {cleared_hashes} document hash(es) "
+                                f"of '{sanitize_log_data(abs_id)}'"
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"⚠️ Could not clear KOReader status for '{sanitize_log_data(abs_id)}': {e}",
+                            exc_info=True,
+                        )
 
                 # Delete the shared KOSync document only for an unscoped/global clear
                 # (a per-user clear must not wipe a document other users may share).

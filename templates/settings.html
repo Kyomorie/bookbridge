@@ -861,6 +861,16 @@
                             (BridgeSync plugin required on each device). Deletions and note edits propagate too.</div>
                     </div>
                     <div class="checkbox-wrapper full-width">
+                        <input type="checkbox" id="koreader_status_sync" name="KOREADER_STATUS_SYNC_ENABLED" {% if
+                            get_bool('KOREADER_STATUS_SYNC_ENABLED') %}checked{% endif %}>
+                        <label for="koreader_status_sync">Sync reading status between devices</label>
+                        <div class="help-text">Share each book's KOReader status (reading / finished / abandoned)
+                            across your devices, so a book you start on one shows as in progress on the others
+                            (BridgeSync plugin required on each device). Reading <em>position</em> is unaffected —
+                            only the status shown in the file browser is shared. When two devices disagree, the one
+                            whose status changed most recently wins, and "finished" breaks a same-day tie.</div>
+                    </div>
+                    <div class="checkbox-wrapper full-width">
                         <input type="checkbox" id="kosync_pct" name="KOSYNC_USE_PERCENTAGE_FROM_SERVER" {% if
                             get_bool('KOSYNC_USE_PERCENTAGE_FROM_SERVER') %}checked{% endif %}>
                         <label for="kosync_pct">Use Percentage from Server (Ignore Text Matching)</label>

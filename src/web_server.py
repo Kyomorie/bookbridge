@@ -4011,6 +4011,7 @@ def settings():
             'KOSYNC_HASH_RECONCILE_ENABLED',
             'KOSYNC_XPATH_ORDER_ENABLED',
             'KOREADER_ANNOTATION_SYNC',
+            'KOREADER_STATUS_SYNC_ENABLED',
             'SYNC_FRESHNESS_GUARDS',
             'SYNC_TRUST_CORROBORATED_REWIND',
             'SYNC_COMPLETION_PROPAGATION',
@@ -9272,6 +9273,30 @@ def mark_complete(abs_id):
                 cfi=updated_state.get('cfi'),
             )
             database_service.save_state(state)
+
+    # Tell the reader devices too. This path writes 100% to every client directly
+    # and never runs a sync cycle, so the cycle's completion edge -- which is what
+    # normally marks a book finished for KOReader -- never sees it. Pressing this
+    # button is the most explicit "I finished this" the bridge has, so it would be
+    # the worst one to miss.
+    if not perform_delete and env_truthy('KOREADER_STATUS_SYNC_ENABLED', 'true'):
+        try:
+            written = database_service.record_koreader_status_for_book(
+                abs_id,
+                status='complete',
+                device_key='bridge',
+                user_id=(user.id if user else None),
+            )
+            if written:
+                logger.info(
+                    f"🏁 '{abs_id}' marked finished for KOReader "
+                    f"({written} document hash(es), via mark-complete)"
+                )
+        except Exception as e:
+            logger.warning(
+                f"⚠️ Could not mark '{sanitize_log_data(abs_id)}' finished for KOReader: {e}",
+                exc_info=True,
+            )
 
     if perform_delete:
         _delete_or_unlink_book(user, abs_id, book)

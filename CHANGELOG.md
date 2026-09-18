@@ -8,6 +8,41 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **Finishing a book anywhere now marks it finished on your KOReader devices.** When the
+  bridge decides a book is complete — whether you reached the end in BookOrbit, ABS,
+  Grimmory, CWA or Storyteller — your readers are told, and the book shows as finished in
+  the file browser instead of sitting at "in progress" forever. This rides the completion
+  the bridge already works out during a normal sync, so there is nothing new to poll and
+  nothing to turn on per service. It is deliberately independent of the existing
+  "propagate completion" setting: telling your readers a book is done is a different
+  decision from pushing 100% into every other service, and wanting the first should not
+  require accepting the second.
+
+- **Clearing a book's progress now also clears its status on your readers.** Clearing
+  progress reset every service to the beginning but left the book showing as finished in
+  KOReader, which made the clear look like it had not worked — and clearing is usually
+  what you do just before re-reading something. The book now goes back to unread on your
+  devices too. Only the status is removed: a rating or note you wrote stays, and a book
+  your device has never opened is left alone rather than given a sidecar just to say
+  nothing.
+
+- **A book you start on one KOReader device now shows as in progress on the others.**
+  Reading status — in progress, finished, abandoned — lived only in the sidecar file
+  on whichever device you set it on. Nothing carried it anywhere: progress sync moves
+  your *position*, and the reading-stats sync has no place to put a status. So a book
+  you finished on the Kobo still looked untouched on the Kindle, and one you started
+  on the Kindle showed up as new everywhere else. Your devices now share status
+  through the bridge, including for books that were delivered to a device but never
+  opened there — those get their status without you having to open them first. When
+  two devices disagree, the one whose status changed most recently wins, and
+  "finished" settles a same-day tie so reopening a book cannot quietly un-finish it.
+  Your reading position is untouched by this: only the status is shared, never how far
+  through you are. On by default; turn it off with **Sync reading status between
+  devices** under Settings → KOReader / KoSync. Requires the updated **BridgeSync
+  0.8.0** plugin on each device.
+  *Note:* if you use the separate Bookshelf plugin, its shelves cache each book's
+  status and can lag a freshly synced change until you leave and re-enter the view.
+
 - **The device you are reading on can win over the furthest one (#215).** When one
   book is linked to more than one reader file, the furthest position has always won —
   which means a device you have not opened in weeks can keep pulling you forward on
