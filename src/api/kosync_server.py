@@ -694,6 +694,57 @@ def _is_internal_kosync_device(device: str | None, device_id: str | None = None)
     )
 
 
+def _record_external_kosync_observation(kosync_doc, percentage, device: str | None, user_id) -> None:
+    """Record one device-reported position on the book's observation trail.
+
+    Called before furthest-wins decides anything, so a report the guard goes on to
+    reject still counts as evidence of where that reader is.
+    """
+    linked_abs_id = getattr(kosync_doc, "linked_abs_id", None) if kosync_doc else None
+    if not linked_abs_id:
+        return
+    try:
+        observation_trail.record_observation(
+            "KoSync", linked_abs_id, percentage, source="put",
+            user_id=user_id, device=device or "",
+        )
+    except Exception as trail_err:
+        logger.debug(f"Could not record KoSync observation: {trail_err}", exc_info=True)
+
+
+def _backward_move_is_corroborated(kosync_doc, device: str | None, user_id) -> bool:
+    """Whether this DEVICE has proved a backward move by reading on from it.
+
+    Furthest-wins defends one device's position against another's, and the only thing
+    that tells a deliberate rewind apart from a stale reader being opened is what the
+    device does NEXT — which is exactly what the trail records. So ask it about this
+    device alone: a second device reporting where it already sits must never answer
+    for the reader who actually moved. One report is what opening a stale reader looks
+    like, and never qualifies.
+    """
+    if not env_truthy("SYNC_TRUST_CORROBORATED_REWIND", "true"):
+        return False
+    linked_abs_id = getattr(kosync_doc, "linked_abs_id", None) if kosync_doc else None
+    if not linked_abs_id or not device:
+        return False
+    try:
+        corroboration = observation_trail.evaluate(
+            "KoSync", linked_abs_id, user_id=user_id, device=device,
+        )
+    except Exception as trail_err:
+        logger.warning(
+            "KOSync: could not evaluate rewind corroboration for %s: %s",
+            linked_abs_id, trail_err, exc_info=True,
+        )
+        return False
+    if corroboration.corroborated:
+        logger.info(
+            "KOSync: rewind corroboration for '%s' on %s — %s",
+            device, linked_abs_id, corroboration.describe(),
+        )
+    return corroboration.corroborated
+
+
 def _get_kosync_device_key(device: str | None, device_id: str | None) -> str:
     normalized_device_id = (device_id or "").strip()
     if normalized_device_id:
@@ -1716,6 +1767,14 @@ def kosync_put_progress():
         baseline_device, baseline_device_id
     )
 
+    # Record what the device said BEFORE furthest-wins can reject it. A rejected
+    # report is still a true observation of where that reader is, and recording it
+    # only after the gate made the corroborated-rewind rule unreachable for a second
+    # device: proving the rewind needs observations, observations needed accepted
+    # PUTs, and the PUTs were rejected for being the rewind (issue #215).
+    if not is_internal:
+        _record_external_kosync_observation(kosync_doc, percentage, device, request_user_id)
+
     if (
         furthest_wins
         and baseline_pct
@@ -1731,6 +1790,13 @@ def kosync_put_progress():
                     f"({baseline_pct:.2%} -> {new_pct:.2%}): the higher position was never "
                     f"claimed by another device (stored device_id="
                     f"{baseline_device_id or 'none'}), so furthest-wins has no peer to defend"
+                )
+            elif _backward_move_is_corroborated(kosync_doc, device, request_user_id):
+                logger.info(
+                    f"KOSync: Allowing rewind from '{device}' for doc {doc_hash} "
+                    f"({baseline_pct:.2%} -> {new_pct:.2%}): that device has kept reading on "
+                    f"from the new position, which is what separates a deliberate rewind "
+                    f"from a stale reader simply being opened"
                 )
             else:
                 logger.info(f"KOSync: Ignored progress from '{device}' for doc {doc_hash} (user has higher: {baseline_pct:.2f}% vs new {new_pct:.2f}%)")
@@ -1777,17 +1843,8 @@ def kosync_put_progress():
     _database_service.save_kosync_document(kosync_doc)
     if not is_internal:
         _record_recent_external_kosync_put(doc_hash, device, device_id, percentage, now_ts, request_user_id)
-        # A device telling us where it is, in its own words. Instrumentation only for
-        # now — nothing reads the trail to make a decision yet (issue #215 phase 0).
-        linked_abs_id = getattr(kosync_doc, "linked_abs_id", None) if kosync_doc else None
-        if linked_abs_id:
-            try:
-                observation_trail.record_observation(
-                    "KoSync", linked_abs_id, percentage, source="put",
-                    user_id=request_user_id, device=device or "",
-                )
-            except Exception as trail_err:
-                logger.debug(f"Could not record KoSync observation: {trail_err}", exc_info=True)
+        # The observation was recorded before the furthest-wins gate, so that a report
+        # the guard rejects still counts toward proving a later rewind.
         # Per-user device progress: the durable per-user record for unlinked docs
         # and the furthest-wins / sibling-GET source (no-op for no-accounts installs).
         _database_service.upsert_user_kosync_progress(
