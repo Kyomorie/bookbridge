@@ -360,6 +360,47 @@ class TestKoreaderStatusEndpoints(unittest.TestCase):
         self.assertIn(post.status_code, (401, 403))
 
 
+
+    # --- merged-statistics history flag -------------------------------------
+    # History is per-device by design ("books I opened here"), so widening it to
+    # "books I read anywhere" is opt-in and off by default.
+
+    def _merged_body(self):
+        return self.client.get(
+            '/koreader/device-sync/statistics/merged?device=kindle&device_id=kindle',
+            headers=self.headers,
+        ).get_json()
+
+    def test_merge_history_flag_off_by_default(self):
+        prior = os.environ.pop('KOREADER_SYNC_READ_HISTORY', None)
+        try:
+            self.assertFalse(self._merged_body()["merge_history"])
+        finally:
+            if prior is not None:
+                os.environ['KOREADER_SYNC_READ_HISTORY'] = prior
+
+    def test_merge_history_flag_enabled_when_set(self):
+        prior = os.environ.get('KOREADER_SYNC_READ_HISTORY')
+        os.environ['KOREADER_SYNC_READ_HISTORY'] = 'true'
+        try:
+            self.assertTrue(self._merged_body()["merge_history"])
+        finally:
+            if prior is None:
+                os.environ.pop('KOREADER_SYNC_READ_HISTORY', None)
+            else:
+                os.environ['KOREADER_SYNC_READ_HISTORY'] = prior
+
+    def test_merge_history_flag_accepts_checkbox_spelling(self):
+        prior = os.environ.get('KOREADER_SYNC_READ_HISTORY')
+        os.environ['KOREADER_SYNC_READ_HISTORY'] = 'on'
+        try:
+            self.assertTrue(self._merged_body()["merge_history"])
+        finally:
+            if prior is None:
+                os.environ.pop('KOREADER_SYNC_READ_HISTORY', None)
+            else:
+                os.environ['KOREADER_SYNC_READ_HISTORY'] = prior
+
 if __name__ == '__main__':
     unittest.main()
 
@@ -393,4 +434,3 @@ def test_record_status_for_unlinked_book_writes_nothing(database):
     database.save_book(Book(abs_id="b2", abs_title="No hashes", status="active"))
     assert database.record_koreader_status_for_book(
         "b2", status="complete", device_key="bridge", user_id=0) == 0
-

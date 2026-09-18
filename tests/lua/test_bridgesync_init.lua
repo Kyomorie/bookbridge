@@ -252,6 +252,8 @@ preload("bridge_sweep", empty_module)
 -- init harness deliberately does not provide. Its own behavior is covered by
 -- tests/lua/test_bridge_book_status.lua.
 preload("bridge_book_status", empty_module)
+preload("bridge_read_history", empty_module)
+preload("ui/event", function() return { new = function(_, name) return { name = name } end } end)
 preload("bridge_stats_batches", empty_module)
 preload("bridge_version", empty_module)
 preload("bridge_sessions", empty_module)

@@ -2175,6 +2175,10 @@ def koreader_merged_statistics():
         "books": books_meta,
         "watermark": merged.get("watermark"),
         "truncated": bool(merged.get("truncated")),
+        # Whether the device should also file these merged reads into KOReader's
+        # own reading history. That list is per-device by design ("books I opened
+        # here"), so widening it to "books I read anywhere" is opt-in.
+        "merge_history": env_truthy("KOREADER_SYNC_READ_HISTORY", "false"),
     }), 200
 
 

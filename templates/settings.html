@@ -871,6 +871,18 @@
                             whose status changed most recently wins, and "finished" breaks a same-day tie.</div>
                     </div>
                     <div class="checkbox-wrapper full-width">
+                        <input type="checkbox" id="koreader_sync_read_history" name="KOREADER_SYNC_READ_HISTORY" {% if
+                            get_bool('KOREADER_SYNC_READ_HISTORY') %}checked{% endif %}>
+                        <label for="koreader_sync_read_history">Share recently-read books between devices</label>
+                        <div class="help-text">A book you read on one device also appears in KOReader's History on
+                            your others, so views built from it — such as a "Recent" shelf — look the same
+                            everywhere. Without this, History stays strictly per-device: it records only books you
+                            opened <em>on that device</em>, so a book read elsewhere never shows up there even when
+                            its progress and status have synced. Only books whose file is already on the device are
+                            added, nothing read more than 30 days ago, and at most 25 per sync so a first run cannot
+                            bury your existing history.</div>
+                    </div>
+                    <div class="checkbox-wrapper full-width">
                         <input type="checkbox" id="kosync_pct" name="KOSYNC_USE_PERCENTAGE_FROM_SERVER" {% if
                             get_bool('KOSYNC_USE_PERCENTAGE_FROM_SERVER') %}checked{% endif %}>
                         <label for="kosync_pct">Use Percentage from Server (Ignore Text Matching)</label>

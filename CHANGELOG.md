@@ -8,6 +8,18 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
+- **Recently-read books can now be shared between your devices.** KOReader writes its
+  History only when you open a book *on that device*, so a book you read on the Kobo
+  never appeared in the Kindle's History — and anything built from it, like a "Recent"
+  shelf, stayed empty there even though progress, status and reading stats had all
+  synced. Your devices already exchange the underlying reading events; this files them
+  into History too, so recently-read means recently-read *by you*, not *on this device*.
+  **Off by default** — it changes what History means — and switched on with **Share
+  recently-read books between devices** under Settings → KOReader / KoSync. Bounded so a
+  first sync cannot bury your real history: only books already on the device, nothing
+  read more than 30 days ago, and at most 25 per sync. Requires the updated **BridgeSync
+  0.9.6** plugin on each device.
+
 - **Finishing a book anywhere now marks it finished on your KOReader devices.** When the
   bridge decides a book is complete — whether you reached the end in BookOrbit, ABS,
   Grimmory, CWA or Storyteller — your readers are told, and the book shows as finished in
@@ -39,9 +51,10 @@ All notable changes to BookBridge will be documented in this file.
   Your reading position is untouched by this: only the status is shared, never how far
   through you are. On by default; turn it off with **Sync reading status between
   devices** under Settings → KOReader / KoSync. Requires the updated **BridgeSync
-  0.8.0** plugin on each device.
-  *Note:* if you use the separate Bookshelf plugin, its shelves cache each book's
-  status and can lag a freshly synced change until you leave and re-enter the view.
+  0.9.6** plugin on each device.
+  *Note:* after a sync writes statuses or reading history, the bridge tells the rest
+  of KOReader that book metadata changed, so the file browser — and shelf plugins
+  that listen for that — drop their caches and redraw instead of needing a restart.
 
 - **The device you are reading on can win over the furthest one (#215).** When one
   book is linked to more than one reader file, the furthest position has always won —
