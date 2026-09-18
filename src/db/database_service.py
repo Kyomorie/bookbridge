@@ -3262,13 +3262,20 @@ class DatabaseService:
         user_id: int = None,
         modified: str = None,
         device: str = None,
+        only_if_absent: bool = False,
     ) -> int:
         """Record a bridge-originated status against every md5 linked to ``abs_id``.
 
-        Used by sources that speak in books rather than document hashes (the
-        BookOrbit scan, Clear Progress). A book can have several sibling hashes --
-        different EPUB builds of the same title -- and each device knows only its
-        own copy, so every linked hash gets the row.
+        Used by sources that speak in books rather than document hashes (Clear
+        Progress, the completion edge, the started edge). A book can have several
+        sibling hashes -- different EPUB builds of the same title -- and each
+        device knows only its own copy, so every linked hash gets the row.
+
+        ``only_if_absent`` writes nothing for a hash that already has a status
+        from any source. Inferring a status from POSITION must only fill a gap,
+        never overrule a real decision: a book deliberately marked 'abandoned'
+        half way through still has position, and would otherwise be dragged back
+        to 'reading' on the next cycle, every cycle.
 
         Returns the number of hashes written.
         """
@@ -3284,6 +3291,18 @@ class DatabaseService:
                 hashes.append(doc_hash)
         if not hashes:
             return 0
+
+        if only_if_absent:
+            uid = self._resolve_uid(user_id)
+            with self.get_session() as session:
+                query = session.query(KOReaderBookStatus.md5).filter(
+                    KOReaderBookStatus.md5.in_(hashes)
+                )
+                taken = {row.md5 for row in self._scope_koreader_user(
+                    query, KOReaderBookStatus, uid).all()}
+            hashes = [h for h in hashes if h not in taken]
+            if not hashes:
+                return 0
 
         stamp = modified or datetime.now().strftime('%Y-%m-%d')
         return self.upsert_koreader_book_status(

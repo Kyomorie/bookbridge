@@ -98,6 +98,11 @@ _STATE_FETCH_SLOW_SECONDS = 15.0
 # cfi is None (which a percentage-only LocatorResult produces), so it can only
 # ever log a warning and fail — and the ABS branch's mark_finished already
 # marks the whole ABS library item finished, which covers the ebook side.
+# Floor below which position is not evidence that a book is being read. Reuses
+# the 1% suggestion-eligibility floor the tracker posts already apply, so
+# "opened it for ten seconds" does not become 'reading' on every device.
+_KOREADER_READING_MIN_PCT: float = 0.01
+
 _COMPLETION_PROPAGATION_EXCLUDED_CLIENTS: frozenset[str] = frozenset({
     "StoryGraph",
     "Hardcover",
@@ -391,6 +396,71 @@ class SyncManager:
         except Exception as e:
             logger.warning(
                 f"⚠️ Could not mark '{sanitize_log_data(abs_id)}' finished for KOReader: {e}",
+                exc_info=True,
+            )
+
+    def _maybe_mark_koreader_reading_from_config(
+        self,
+        book,
+        config: dict,
+        abs_id: str,
+        title_snip: str,
+    ) -> None:
+        """Apply the 'reading' gap-fill using the highest position any client reports.
+
+        Used on the no-change path, where no leader is chosen. The furthest
+        position across clients is the same figure the dashboard calls the book's
+        progress, so the two agree on what "in progress" means.
+        """
+        pcts = [
+            cfg.current.get('pct')
+            for cfg in config.values()
+            if cfg and cfg.current.get('pct') is not None
+        ]
+        if not pcts:
+            return
+        current_pct = max(pcts)
+        if current_pct > _KOREADER_READING_MIN_PCT and current_pct < self._completion_threshold():
+            self._mark_koreader_reading(book, abs_id, title_snip, current_pct)
+
+    def _mark_koreader_reading(
+        self,
+        book,
+        abs_id: str,
+        title_snip: str,
+        leader_pct: float,
+    ) -> None:
+        """Give a part-read book a 'reading' status for the devices, if it has none.
+
+        The dashboard calls a book in progress on POSITION (0 < pct < 100), while
+        KOReader's 'reading' is a separate flag it only writes through its own
+        book-status UI. A book you opened briefly has position and no status, so
+        it shows as in progress on the bridge and as untouched on every reader.
+        This closes that gap from the position the cycle already knows.
+
+        Strictly gap-filling: a book that already has a status from anywhere keeps
+        it. Position says a book was opened, which is weaker evidence than a
+        reader explicitly marking it finished or abandoned, and must never
+        overrule one.
+        """
+        if not env_truthy('KOREADER_STATUS_SYNC_ENABLED', 'true'):
+            return
+        try:
+            written = self.database_service.record_koreader_status_for_book(
+                abs_id,
+                status='reading',
+                device_key='bridge',
+                user_id=get_current_user_id(),
+                only_if_absent=True,
+            )
+            if written:
+                logger.info(
+                    f"📖 '{abs_id}' '{title_snip}' marked reading for KOReader "
+                    f"({written} document hash(es), position {leader_pct:.1%})"
+                )
+        except Exception as e:
+            logger.warning(
+                f"⚠️ Could not mark '{sanitize_log_data(abs_id)}' reading for KOReader: {e}",
                 exc_info=True,
             )
 
@@ -4687,6 +4757,13 @@ class SyncManager:
 
                 # If nothing changed AND clients are effectively in sync, skip
                 if deltas_zero and not significant_diff:
+                    # ...but a settled part-read book still needs its 'reading'
+                    # status, and settled is its normal condition: a book you are
+                    # part way through and not reading right now never produces a
+                    # delta, so gating this on movement would mean it only ever
+                    # got a status the next time you happened to open it.
+                    # only_if_absent makes this a one-time fill, not per-cycle work.
+                    self._maybe_mark_koreader_reading_from_config(book, config, abs_id, title_snip)
                     logger.debug(f"'{abs_id}' '{title_snip}' No changes and clients in sync, skipping")
                     continue
                 
@@ -5061,6 +5138,12 @@ class SyncManager:
                 # not require accepting the second.
                 if crossed_completion:
                     self._mark_koreader_complete(book, abs_id, title_snip, leader)
+                elif (
+                    leader_pct is not None
+                    and leader_pct > _KOREADER_READING_MIN_PCT
+                    and leader_pct < threshold
+                ):
+                    self._mark_koreader_reading(book, abs_id, title_snip, leader_pct)
                 if crossed_completion and self._completion_propagation_enabled():
                     self._propagate_completion(book, active_clients, leader, abs_id, title_snip)
 

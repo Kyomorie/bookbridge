@@ -434,3 +434,71 @@ def test_record_status_for_unlinked_book_writes_nothing(database):
     database.save_book(Book(abs_id="b2", abs_title="No hashes", status="active"))
     assert database.record_koreader_status_for_book(
         "b2", status="complete", device_key="bridge", user_id=0) == 0
+
+
+def test_only_if_absent_fills_a_gap(database):
+    """A book with no status anywhere gets the bridge's inferred one."""
+    from src.db.models import Book, KosyncDocument
+
+    database.save_book(Book(abs_id="g1", abs_title="Gap", status="active"))
+    database.save_kosync_document(KosyncDocument(
+        document_hash=_hex("gap"), linked_abs_id="g1", user_id=0))
+
+    written = database.record_koreader_status_for_book(
+        "g1", status="reading", device_key="bridge", user_id=0, only_if_absent=True)
+    assert written == 1
+    assert _winner(database, _hex("gap"))["status"] == "reading"
+
+
+def test_only_if_absent_never_overrules_a_real_decision(database):
+    """Position says a book was opened. A reader marking it abandoned half way
+    through is a stronger statement, and must not be dragged back to 'reading'
+    on the next cycle -- and then every cycle after it."""
+    from src.db.models import Book, KosyncDocument
+
+    database.save_book(Book(abs_id="g2", abs_title="Abandoned", status="active"))
+    database.save_kosync_document(KosyncDocument(
+        document_hash=_hex("abandoned-book"), linked_abs_id="g2", user_id=0))
+    _upload(database, "kobo",
+            [{"md5": _hex("abandoned-book"), "status": "abandoned", "modified": "2026-01-01"}])
+
+    written = database.record_koreader_status_for_book(
+        "g2", status="reading", device_key="bridge", user_id=0, only_if_absent=True)
+
+    assert written == 0
+    assert _winner(database, _hex("abandoned-book"))["status"] == "abandoned"
+
+
+def test_only_if_absent_is_per_hash(database):
+    """A book with sibling hashes fills only the ones that have no status."""
+    from src.db.models import Book, KosyncDocument
+
+    database.save_book(Book(abs_id="g3", abs_title="Siblings", status="active"))
+    for seed in ("sib-known", "sib-blank"):
+        database.save_kosync_document(KosyncDocument(
+            document_hash=_hex(seed), linked_abs_id="g3", user_id=0))
+    _upload(database, "kindle",
+            [{"md5": _hex("sib-known"), "status": "complete", "modified": "2026-02-02"}])
+
+    written = database.record_koreader_status_for_book(
+        "g3", status="reading", device_key="bridge", user_id=0, only_if_absent=True)
+
+    assert written == 1
+    assert _winner(database, _hex("sib-known"))["status"] == "complete"
+    assert _winner(database, _hex("sib-blank"))["status"] == "reading"
+
+
+def test_without_only_if_absent_the_write_still_wins(database):
+    """Clear Progress and the completion edge are explicit, and still override."""
+    from src.db.models import Book, KosyncDocument
+
+    database.save_book(Book(abs_id="g4", abs_title="Explicit", status="active"))
+    database.save_kosync_document(KosyncDocument(
+        document_hash=_hex("explicit"), linked_abs_id="g4", user_id=0))
+    _upload(database, "kobo",
+            [{"md5": _hex("explicit"), "status": "reading", "modified": "2026-01-01"}])
+
+    written = database.record_koreader_status_for_book(
+        "g4", status="complete", device_key="bridge", user_id=0)
+    assert written == 1
+    assert _winner(database, _hex("explicit"))["status"] == "complete"

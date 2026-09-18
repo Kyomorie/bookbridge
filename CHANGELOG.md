@@ -20,6 +20,15 @@ All notable changes to BookBridge will be documented in this file.
   read more than 30 days ago, and at most 25 per sync. Requires the updated **BridgeSync
   0.9.6** plugin on each device.
 
+- **A part-read book now shows as in progress on your readers too.** The bridge counts a
+  book as in progress from your reading *position*, but KOReader's "reading" is a separate
+  flag it only writes through its own book-status screen — so a book you opened and dipped
+  into showed as in progress on the dashboard and as untouched on every device. The bridge
+  now supplies that status from the position it already tracks. It only ever fills a gap:
+  a book you deliberately marked finished or abandoned keeps that, because opening a book
+  says less than a decision you made about it. Books barely opened are ignored, using the
+  same 1% floor the reading-tracker updates already apply.
+
 - **Finishing a book anywhere now marks it finished on your KOReader devices.** When the
   bridge decides a book is complete — whether you reached the end in BookOrbit, ABS,
   Grimmory, CWA or Storyteller — your readers are told, and the book shows as finished in
