@@ -911,6 +911,31 @@
                                     simply opening an out-of-date second reader can also become the new position.
                                 </div>
                             </div>
+                            <div class="form-group full-width">
+                                <label>When two KOReader devices disagree</label>
+                                <select name="KOSYNC_ACTIVE_DEVICE_WINS">
+                                    <option value="shadow" {% if get_val('KOSYNC_ACTIVE_DEVICE_WINS', 'shadow')|lower == 'shadow' %}selected{% endif %}>
+                                        Watch and log only (recommended)
+                                    </option>
+                                    <option value="on" {% if get_val('KOSYNC_ACTIVE_DEVICE_WINS', 'shadow')|lower == 'on' %}selected{% endif %}>
+                                        Let the device you are reading on win
+                                    </option>
+                                    <option value="off" {% if get_val('KOSYNC_ACTIVE_DEVICE_WINS', 'shadow')|lower == 'off' %}selected{% endif %}>
+                                        Always use the furthest position
+                                    </option>
+                                </select>
+                                <div class="help-text">
+                                    When one book is linked to more than one reader file, the furthest position normally
+                                    wins — which means a device you have not opened in weeks can keep pulling you forward
+                                    on the device you are actually reading. This lets the device you are reading on win
+                                    instead, but only once it has proved itself: several page turns in a row, moving
+                                    forward, from that same device. A single reading is never enough, so merely opening a
+                                    stale reader still cannot move you.
+                                    <strong>Watch and log only</strong> makes no change to what your readers receive — it
+                                    records what it would have chosen, so the behaviour can be checked against real
+                                    devices first.
+                                </div>
+                            </div>
                         </div>
                     </details>
                 </div>

@@ -6,6 +6,40 @@ All notable changes to BookBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The device you are reading on can win over the furthest one (#215).** When one
+  book is linked to more than one reader file, the furthest position has always won —
+  which means a device you have not opened in weeks can keep pulling you forward on
+  the device you are actually reading, every time it syncs, indefinitely. That device
+  can now win instead, but only once it has proved itself: several page turns in a
+  row, moving forward, from that same device. A single reading is never enough, so
+  simply opening a stale reader still cannot move you, and with no proof the furthest
+  position wins exactly as before. New setting **When two KOReader devices disagree**
+  under Settings → KOReader / KoSync → Advanced cross-device progress. It ships on
+  **Watch and log only**, which records the choice it would have made without changing
+  anything your readers receive.
+
+### Fixed
+
+- **Going back on a second reader now sticks, once you carry on reading.** Going back
+  in a book on one KOReader device while another device sat further ahead could never
+  work: the first report was rejected for being behind, and because it was rejected it
+  was never remembered either — so the reading you did afterwards, which is exactly
+  what proves a rewind deliberate, could never add up to anything. Every page you
+  turned was discarded and your reader was pulled forward again. What a device reports
+  is now remembered whether or not it is accepted, so reading on from the new spot
+  proves the move as it was always meant to. Opening a stale reader and leaving it
+  alone still cannot move your position — that takes one report, and one report is
+  never enough.
+
+- **A second KOReader device no longer vouches for the first one's rewind.** Deciding
+  whether a backward jump was deliberate means checking that the reader carried on
+  reading from the new spot. Both devices' reports were being read as one sequence, so
+  a second device simply reporting where it already sat could supply that evidence and
+  make a stale jump look intentional. Each device's own reading is now judged on its
+  own.
+
 ## [7.7.0] - 2026-09-15
 
 Deliberate rewinds now stick, alignment can handle editions whose sections appear in

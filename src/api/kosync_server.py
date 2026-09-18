@@ -37,7 +37,7 @@ from src.utils.user_config import (
 )
 from src.utils.string_utils import calculate_similarity, clean_book_title
 from src.utils.ebook_sources import is_grimmory_source
-from src.services import observation_trail
+from src.services import kosync_device_arbiter, observation_trail
 from src.services.llm_matching import judge_best_candidate
 from src.db.models import State
 
@@ -3103,6 +3103,56 @@ def _respond_from_book_states(doc_id, book):
         docs_with_progress = eligible_docs
     if docs_with_progress:
         best_doc = max(docs_with_progress, key=lambda d: float(d.percentage))
+        # Furthest-wins is the default answer, but a second device the reader is
+        # demonstrably working through should not be dragged to a row nobody has
+        # touched in weeks. The arbiter decides; in shadow mode it only says what it
+        # would have decided (issue #215, KOSYNC_ACTIVE_DEVICE_WINS).
+        try:
+            choice = kosync_device_arbiter.choose_device_row(
+                docs_with_progress,
+                abs_id=book.abs_id,
+                user_id=user_id,
+                parse_timestamp=parse_service_timestamp,
+                is_internal_device=_is_internal_kosync_device,
+            )
+        except Exception as arbiter_err:
+            logger.warning(
+                "KOSync: device arbiter unavailable for %s: %s", doc_id, arbiter_err, exc_info=True,
+            )
+            choice = None
+        if choice is not None and choice.overrides_furthest:
+            mode = kosync_device_arbiter.arbiter_mode()
+            logger.info(
+                "🎯 KOSync: device arbiter (%s) for %s — %s", mode, doc_id, choice.reason,
+            )
+            if mode == kosync_device_arbiter.MODE_ON:
+                # Answer with the proven reader directly. Feeding it through the
+                # furthest-wins gate below would discard it again: the synced State
+                # holds the very position the stale row put there, so the reader who
+                # is actually reading is never "ahead" of it. Choosing current over
+                # furthest IS the policy this mode enables.
+                arbiter_doc = choice.row
+                poison_pill = _suppress_empty_progress_response(
+                    doc_id, float(arbiter_doc.percentage), arbiter_doc.progress
+                )
+                if poison_pill is not None:
+                    return poison_pill
+                response_data = {
+                    "device": "abs-kosync-bridge",
+                    "device_id": "abs-kosync-bridge",
+                    "document": doc_id,
+                    "percentage": float(arbiter_doc.percentage),
+                    "progress": arbiter_doc.progress or "",
+                    "timestamp": int(datetime_to_epoch(arbiter_doc.timestamp)) if arbiter_doc.timestamp else 0,
+                }
+                response_data.update(
+                    _recent_external_kosync_put_metadata(
+                        arbiter_doc.document_hash,
+                        response_data["percentage"],
+                        user_id,
+                    )
+                )
+                return jsonify(response_data), 200
         # Furthest-wins: only hand back the device's own position when it is genuinely
         # ahead of the bridge-synced position. The bridge's internal sync-push advances
         # the synced State but not this per-user row, so a device that is *behind* (the

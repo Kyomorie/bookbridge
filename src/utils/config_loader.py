@@ -38,6 +38,7 @@ ALL_SETTINGS = [
     'SYNC_REWIND_HOLD_SECONDS',
     'KOSYNC_HASH_RECONCILE_ENABLED', 'KOSYNC_HASH_RECONCILE_MINUTES',
     'KOSYNC_XPATH_ORDER_ENABLED', 'KOSYNC_FURTHEST_WINS',
+    'KOSYNC_ACTIVE_DEVICE_WINS',
     'KOSYNC_PUT_DEBOUNCE_SECONDS',
     'KOSYNC_BOOKORBIT_DISCOVERY_LIMIT',
     'KOREADER_COMBINE_DEVICE_STATS',
@@ -284,6 +285,10 @@ DEFAULT_CONFIG = {
     'KOSYNC_HASH_RECONCILE_ENABLED': 'true',
     'KOSYNC_XPATH_ORDER_ENABLED': 'false',
     'KOSYNC_FURTHEST_WINS': 'true',
+    # off | shadow | on. Ships as 'shadow': the arbiter runs and logs the choice it
+    # would have made without changing what any reader receives, so the decision can
+    # be judged against real multi-device traffic before it takes effect.
+    'KOSYNC_ACTIVE_DEVICE_WINS': 'shadow',
     'KOSYNC_HASH_RECONCILE_MINUTES': '360',
     'KOSYNC_BOOKORBIT_DISCOVERY_LIMIT': '40',
     'STORYTELLER_ENABLED': 'false',
