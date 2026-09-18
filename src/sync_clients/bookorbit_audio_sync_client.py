@@ -178,8 +178,12 @@ class BookOrbitAudioSyncClient(SyncClient):
             current_pct = min(max(current_ts / duration, 0.0), 1.0)
         if current_pct is None:
             current_pct = 0.0
-        if (current_ts is None or current_ts == 0.0) and current_pct and duration:
+        if (current_ts is None or current_ts == 0.0) and duration:
             current_ts = current_pct * duration
+        # An unstarted book (pct 0.0) or one with no duration resolves no position at
+        # all, and leader selection subtracts these timestamps, so None must not escape.
+        if current_ts is None:
+            current_ts = 0.0
 
         prev_ts = prev_state.timestamp if prev_state and prev_state.timestamp is not None else 0.0
         prev_pct = prev_state.percentage if prev_state and prev_state.percentage is not None else 0.0

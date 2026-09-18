@@ -1527,8 +1527,10 @@ class SyncManager:
             return None
 
         normalized = {}
-        abs_ts = config[primary_audio_client].current.get('ts', 0)
-        normalized[primary_audio_client] = abs_ts
+        # The key is present with an explicit None for an unstarted audiobook, so the
+        # `0` default never fires; leader selection subtracts these values downstream.
+        abs_ts = config[primary_audio_client].current.get('ts')
+        normalized[primary_audio_client] = 0 if abs_ts is None else abs_ts
 
         for client_name in ebook_clients:
             if client_name not in self.sync_clients:
