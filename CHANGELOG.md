@@ -79,6 +79,12 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **BookOrbit progress now reads and writes the same primary ebook when a book
+  contains multiple ebook formats (#443).** A secondary KEPUB listed before the
+  primary EPUB could receive every update while the EPUB stayed at its old
+  position, causing repeated syncs. Cached ebook selection now respects the
+  primary file, and writes use the same resolver as reads.
+
 - **Going back on a second reader now sticks, once you carry on reading.** Going back
   in a book on one KOReader device while another device sat further ahead could never
   work: the first report was rejected for being behind, and because it was rejected it

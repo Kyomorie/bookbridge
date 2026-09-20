@@ -275,28 +275,19 @@ class BookOrbitClient:
     def _build_light_info(self, book: dict) -> Optional[dict]:
         """Build a lightweight cache entry from a `/books/query` list row.
 
-        File ids are recorded per kind. Neither of BookOrbit's own notions of a
-        "primary" file is kind-aware: `books.primary_file_id` is book-wide, and
-        the file-level `role == "primary"` is format-agnostic where it exists at
-        all (measured live 2026-08-28: present on every book, and an audio format
-        in 57 of 200 sampled - m4b or mp3; the reporter's instance constrains
-        `book_files.role` to content|cover|metadata|supplement, so it is absent
-        there and file order decided instead). Either way a format-agnostic id
-        can name the audiobook on a book that also holds an EPUB, and it must
-        never satisfy a kind-specific lookup - so the ebook and audio ids are
-        kept apart here (#417).
+        Ebook selection shares the read path's primary-file preference. File
+        ids remain kind-specific: a book-wide primary can be an audiobook and
+        must never receive ebook progress (#417).
         """
         book_id = book.get("id")
         if book_id is None:
             return None
-        ebook_file = None
+        ebook_file = self._primary_file(book, kind="ebook")
         audio_file = None
         for f in book.get("files") or []:
             if not isinstance(f, dict):
                 continue
             fmt = (f.get("format") or "").lower()
-            if ebook_file is None and fmt in _EBOOK_FORMATS:
-                ebook_file = f
             if audio_file is None and fmt in _AUDIO_FORMATS:
                 audio_file = f
         kinds = []
@@ -899,7 +890,9 @@ class BookOrbitClient:
         position; without it BookOrbit derives a chapter-root xpointer from the CFI.
         """
         book_id = book_info.get("id")
-        file_id = book_info.get("ebookFileId")
+        file_id = self._resolve_primary_file_id(book_id, "ebook")
+        if file_id is None:
+            file_id = book_info.get("ebookFileId")
         if file_id is None:
             cached_id = book_info.get("primaryFileId")
             cached_format = (book_info.get("primaryFormat") or "").lower()
@@ -912,7 +905,6 @@ class BookOrbitClient:
                         "- it is not an ebook file; resolving the ebook file instead",
                         cached_id, cached_format or "unknown", book_id,
                     )
-                file_id = self._resolve_primary_file_id(book_id, "ebook")
         if file_id is None:
             logger.error("BookOrbit: cannot update ebook — no primary file id for book %s", book_id)
             return False
