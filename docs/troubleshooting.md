@@ -120,6 +120,62 @@ as a bonus alignment source.
 - Each chapter JSON should contain `wordTimeline` or compatible Storyteller timeline data.
 - If the filenames are right but the data format is wrong, the bridge will skip those files and fall back to SMIL or Whisper.
 
+### KOReader cannot connect: "Unknown server error"
+
+KOReader reports **Unauthorized** when the address is right but the credentials are wrong,
+and **Unknown server error** when it never got a valid KOSync response at all — so this
+error is almost always the address, the port, or the network path, not the password.
+
+Work through it in this order:
+
+1. **Use the address BookBridge suggests.** Open **Account -> Connect a KOReader device**.
+   The suggested address is built from the address bar of the browser you are using, so it
+   already carries the right port.
+2. **Enter the base address only.** No `/api`, `/koreader`, or `/users/auth` suffix —
+   KOReader appends those itself.
+   - Default compose (`8080:5757`): `http://<server>:8080`
+   - Split-port mode: `http://<server>:5758`, but only with `KOSYNC_PORT=5758` set **and**
+     `5758:5758` published.
+3. **Use the KOSync username and password from My Integrations** — not your BookBridge web
+   login, and not your Audiobookshelf account.
+4. **Prove the path from another device on the same network:**
+
+   ```bash
+   curl http://<server>:<port>/healthcheck
+   ```
+
+   It must return `OK`. If it does not, the problem is the Docker port mapping, the host
+   firewall, or your VPN — not BookBridge.
+5. **Read the bridge log while the device retries:**
+
+   ```bash
+   docker compose logs -f | grep "KOSync Auth"
+   ```
+
+   - `KOSync Auth: Failed auth attempt for user '<name>' from '<ip>'` — the address
+     works and the request arrived; the credentials are wrong.
+   - `KOSync Auth: Missing credentials from '<ip>'` — the request arrived with no
+     username/password headers at all.
+   - **No line at all** — at the default `LOG_LEVEL=INFO` a *successful* auth is silent
+     too, so this only means "no failure". If the device still reports an error, the
+     request never reached BookBridge: go back to step 4. To see successes as well, set
+     `LOG_LEVEL=DEBUG` and retry — a good login then logs
+     `KOSync Auth: User '<name>' authenticated successfully`.
+
+### Connecting a Kindle or Kobo over Tailscale
+
+- Use the server's **Tailscale IP** (or MagicDNS name), not its LAN IP. The LAN address is
+  unreachable once the device leaves the network.
+- The port still has to be the one you published. Tailscale does not change port mapping,
+  so `8080:5757` still means `:8080`.
+- On a jailbroken Kindle running Tailscale through KUAL in **userspace/proxy mode**,
+  starting Tailscale is not enough on its own. KOReader also has to be told to use the
+  proxy: **Settings -> Network -> HTTP proxy**, set to `http://localhost:1055`, and
+  enabled. Without this, KOReader's requests bypass the tunnel and fail with
+  "Unknown server error" while other Tailscale checks look healthy.
+- Confirm the tunnel independently before blaming BookBridge: from the device's own
+  network tools (or another tailnet device), fetch `/healthcheck` as shown above.
+
 ### KOSync split-port mode is not working
 
 - If you set `KOSYNC_PORT`, you also need to map that same port in Docker.

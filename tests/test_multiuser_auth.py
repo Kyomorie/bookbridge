@@ -248,7 +248,7 @@ class TestMultiUserAuth(unittest.TestCase):
         self.assertEqual(self.client.get('/api/kosync-plugin/version').status_code, 200)
         self.assertEqual(self.client.get('/api/kosync-plugin/download').status_code, 200)
 
-    def test_account_suggests_browser_visible_kosync_url(self):
+    def test_account_suggests_split_port_kosync_url(self):
         self.svc.create_user("reg", "pw", role="user")
         self.client.post('/login', data={'username': 'reg', 'password': 'pw'})
 
@@ -259,6 +259,37 @@ class TestMultiUserAuth(unittest.TestCase):
         self.assertIn("? location.origin", page)
         self.assertIn("location.protocol + '//' + location.hostname + ':' + syncPort", page)
         self.assertIn('var syncPort = "5758"', page)
+        self.assertIn("var splitPort = syncPort !== '' && syncPort !== '5757'", page)
+        self.assertIn('KOSync listens on port 5758', page)
+
+    def test_account_keeps_browser_port_when_split_port_mode_is_off(self):
+        """Default install publishes 8080:5757, so the browser's own origin is the
+        only address that reaches KOSync — never a hardcoded :5757."""
+        self.svc.create_user("reg", "pw", role="user")
+        self.client.post('/login', data={'username': 'reg', 'password': 'pw'})
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('KOSYNC_PORT', None)
+            page = self.client.get('/account').get_data(as_text=True)
+
+        self.assertIn('var syncPort = ""', page)
+        self.assertNotIn('var syncPort = "5757"', page)
+        self.assertIn("var splitPort = syncPort !== '' && syncPort !== '5757'", page)
+        self.assertIn("(location.protocol === 'https:' || !splitPort)", page)
+        self.assertNotIn('KOSync listens on port', page)
+
+    def test_account_keeps_browser_port_when_kosync_port_is_the_main_port(self):
+        """KOSYNC_PORT=5757 does not start the split-port listener, so the
+        suggestion must stay on the browser's origin."""
+        self.svc.create_user("reg", "pw", role="user")
+        self.client.post('/login', data={'username': 'reg', 'password': 'pw'})
+
+        with patch.dict(os.environ, {'KOSYNC_PORT': '5757'}):
+            page = self.client.get('/account').get_data(as_text=True)
+
+        self.assertIn('var syncPort = "5757"', page)
+        self.assertIn("var splitPort = syncPort !== '' && syncPort !== '5757'", page)
+        self.assertNotIn('KOSync listens on port', page)
 
     def test_account_warns_and_blocks_copy_for_loopback_url(self):
         self.svc.create_user("reg", "pw", role="user")
