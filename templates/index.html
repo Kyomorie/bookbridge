@@ -375,6 +375,13 @@
                                 data-ctc-aligned="{{ 'true' if mapping.ctc_aligned else 'false' }}"
                                 {% if mapping.ctc_aligned %}disabled title="This book already has a CTC alignment map"{% endif %}
                                 onclick='remapAlignment({{ mapping.abs_id|tojson }}, this)'>{{ '✓ Already using CTC' if mapping.ctc_aligned else '🎯 Remap alignment' }}</button>
+                            <button type="button" role="menuitem" class="reset-menu-item readalong-generate-btn"
+                                {% if not mapping.readalong_eligible %}disabled title="{{ mapping.readalong_ineligible_reason }}"{% endif %}
+                                onclick='generateReadalongEpub({{ mapping.abs_id|tojson }}, this)'>📖 Create read-along EPUB</button>
+                            {% if mapping.readalong_audio_ok %}
+                            <button type="button" role="menuitem" class="reset-menu-item readalong-remove-btn"
+                                onclick='removeReadalongEpub({{ mapping.abs_id|tojson }}, this)'>🗑️ Remove read-along EPUB</button>
+                            {% endif %}
                         </div>
                     </div>
                     <form method="POST" action="/delete/{{ mapping.abs_id }}">
@@ -3508,6 +3515,78 @@
                             if (btn.dataset.ctcAligned === 'true') return;
                             btn.innerHTML = originalText; btn.disabled = false;
                         }, 3000);
+                    });
+            }
+
+            function _pollReadalongEpubStatus(absId, btn, originalText) {
+                fetch('/api/readalong-epub/' + absId + '/status')
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.state === 'running') {
+                            setTimeout(() => _pollReadalongEpubStatus(absId, btn, originalText), 5000);
+                            return;
+                        }
+                        if (data.state === 'done') {
+                            btn.innerHTML = data.warning ? '⚠️ Delivered (unconfirmed)' : '✅ Read-along ready';
+                        } else if (data.state === 'failed') {
+                            btn.innerHTML = '❌ ' + (data.error || 'Failed');
+                        } else {
+                            btn.innerHTML = originalText;
+                        }
+                        setTimeout(() => { btn.innerHTML = originalText; btn.disabled = false; }, 5000);
+                    }).catch(error => {
+                        console.debug('Read-along status check failed', error);
+                        setTimeout(() => _pollReadalongEpubStatus(absId, btn, originalText), 8000);
+                    });
+            }
+
+            function generateReadalongEpub(absId, btn) {
+                btn.disabled = true;
+                const originalText = btn.innerHTML;
+                btn.innerHTML = '⏳ Queuing…';
+                fetch('/api/readalong-epub/' + absId, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                }).then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            btn.innerHTML = '⏳ Generating… (this can take minutes)';
+                            setTimeout(() => _pollReadalongEpubStatus(absId, btn, originalText), 5000);
+                        } else {
+                            btn.innerHTML = '❌ ' + (data.error || 'Failed');
+                            setTimeout(() => { btn.innerHTML = originalText; btn.disabled = false; }, 4000);
+                        }
+                    }).catch(error => {
+                        console.error('Read-along generation error:', error);
+                        btn.innerHTML = '❌ Failed';
+                        setTimeout(() => { btn.innerHTML = originalText; btn.disabled = false; }, 4000);
+                    });
+            }
+
+            function removeReadalongEpub(absId, btn) {
+                if (!confirm('Remove the generated read-along EPUB for this book?')) {
+                    return;
+                }
+                btn.disabled = true;
+                const originalText = btn.innerHTML;
+                btn.innerHTML = '⏳ Removing…';
+                fetch('/api/readalong-epub/' + absId + '/remove', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                }).then(response => response.json())
+                    .then(data => {
+                        if (data.success && data.removed) {
+                            btn.innerHTML = '✅ Removed';
+                        } else if (data.success) {
+                            btn.innerHTML = 'ℹ️ Nothing to remove';
+                        } else {
+                            btn.innerHTML = '❌ ' + (data.error || 'Failed');
+                        }
+                        setTimeout(() => { btn.innerHTML = originalText; btn.disabled = false; }, 3000);
+                    }).catch(error => {
+                        console.error('Read-along removal error:', error);
+                        btn.innerHTML = '❌ Failed';
+                        setTimeout(() => { btn.innerHTML = originalText; btn.disabled = false; }, 3000);
                     });
             }
 

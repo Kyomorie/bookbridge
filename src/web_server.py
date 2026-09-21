@@ -55,6 +55,12 @@ from src.db.models import State
 from src.sync_clients.sync_client_interface import LocatorResult, UpdateProgressRequest
 from src.services.audio_source_adapters import AudioResult, ABSAudioSourceAdapter, BookLoreAudioSourceAdapter, BookOrbitAudioSourceAdapter
 from src.utils.storyteller_transcript import StorytellerTranscript
+from src.services.readalong_delivery import (
+    deliver_readalong_epub,
+    resolve_audiobook_folder,
+    remove_readalong_epub as _remove_readalong_epub_file,
+    _readalong_filename,
+)
 from src.utils.kosync_headers import kosync_request_kwargs
 from src.utils.series_metadata import (
     extract_series_from_abs_metadata as _series_from_abs_metadata,
@@ -5455,6 +5461,7 @@ def _build_dashboard_mappings(
         bookorbit_authors = _prefetch_bookorbit_authors(books, integrations)
 
     ctc_aligned_book_ids = database_service.get_ctc_aligned_book_ids()
+    readalong_alignment_book_ids = database_service.get_readalong_alignment_book_ids()
     mappings = []
     total_duration = 0
     total_listened = 0
@@ -5473,6 +5480,32 @@ def _build_dashboard_mappings(
             bookorbit_authors=bookorbit_authors,
         )
         mapping["ctc_aligned"] = book.abs_id in ctc_aligned_book_ids
+
+        # Read-along generation eligibility (Phase 6a). Cheap, locally-computable
+        # conditions only -- whether BookOrbit can actually resolve the audio
+        # entry's real track files needs a live API call (resolve_audiobook_folder)
+        # and is not affordable per book on every dashboard render, so it is left
+        # to the action's own handler; this only surfaces what is knowable from
+        # already-loaded rows, mirroring the ctc_aligned badge above.
+        audio_ok = (
+            getattr(book, "audio_source", None) == "BookOrbit"
+            and getattr(book, "sync_mode", "audiobook") != "ebook_only"
+        )
+        mapping["readalong_audio_ok"] = audio_ok
+        if not audio_ok:
+            mapping["readalong_eligible"] = False
+            mapping["readalong_ineligible_reason"] = (
+                "This mapping has no audiobook to generate a read-along from."
+                if getattr(book, "sync_mode", "audiobook") == "ebook_only"
+                else "Read-along generation requires a BookOrbit audio source."
+            )
+        elif book.abs_id not in readalong_alignment_book_ids:
+            mapping["readalong_eligible"] = False
+            mapping["readalong_ineligible_reason"] = "This book has no CTC or lexical alignment map yet."
+        else:
+            mapping["readalong_eligible"] = True
+            mapping["readalong_ineligible_reason"] = None
+
         mappings.append(mapping)
 
         duration = mapping.get("duration", 0)
@@ -9177,6 +9210,218 @@ def remap_alignment(abs_id):
     return jsonify({"success": True, "backend": target})
 
 
+def _readalong_epub_worker(abs_id: str) -> None:
+    """Background worker: generate (Phases 1-4) and deliver (Phase 5) a
+    read-along EPUB for one book.
+
+    Runs off the request thread via `_spawn_user_background`, which has
+    already rebound the triggering user's contextvars before calling this --
+    BookOrbit is configured per user, and a bare `threading.Thread` would
+    silently resolve the admin/global client instead (CLAUDE.md failure mode
+    #5). Progress/outcome are persisted through the existing `Job` model (the
+    same mechanism `_record_forge_match_job` uses) so
+    `/api/readalong-epub/<abs_id>/status` can report the real result even
+    after the triggering request has long since returned.
+
+    Never touches `book.ebook_filename` / `book.original_ebook_filename` --
+    `deliver_readalong_epub` itself is the one place that would, and it does
+    not (see its own docstring and the plan's Sec. 1 placement decision).
+    """
+    try:
+        book = database_service.get_book(abs_id)
+        if not book:
+            database_service.update_latest_job(abs_id, last_error="Book no longer exists")
+            return
+
+        alignment_service = getattr(manager, "alignment_service", None) if manager else None
+        if alignment_service is None:
+            database_service.update_latest_job(abs_id, last_error="Alignment service unavailable")
+            return
+
+        clients = uc()
+        ebook_sync_client = clients.sync_clients.get("BookOrbit")
+        audio_sync_client = clients.sync_clients.get("BookOrbitAudio")
+        if audio_sync_client is None:
+            database_service.update_latest_job(abs_id, last_error="BookOrbit audio sync is not available")
+            return
+
+        result = deliver_readalong_epub(
+            parser=container.ebook_parser(),
+            alignment_service=alignment_service,
+            bookorbit_client=clients.bookorbit_client,
+            ebook_sync_client=ebook_sync_client,
+            audio_sync_client=audio_sync_client,
+            book=book,
+        )
+        if result is None:
+            database_service.update_latest_job(
+                abs_id,
+                last_error="Read-along generation was refused -- see server logs for the exact reason.",
+            )
+            return
+
+        if not result.confirmed:
+            database_service.update_latest_job(
+                abs_id,
+                progress=1.0,
+                last_error=(
+                    "Generated and delivered, but BookOrbit has not confirmed it "
+                    f"enabled (last status: {result.read_aloud_sync})."
+                ),
+            )
+            logger.warning(
+                "⚠️ Read-along EPUB delivered for '%s' but not confirmed enabled",
+                sanitize_log_data(abs_id),
+            )
+            return
+
+        database_service.update_latest_job(abs_id, progress=1.0, last_error=None)
+        logger.info(
+            "📖 Read-along EPUB ready for %s", sanitize_log_data(book.abs_title or abs_id)
+        )
+    except Exception as e:
+        logger.error(
+            "❌ Read-along generation failed for '%s': %s", sanitize_log_data(abs_id), e, exc_info=True,
+        )
+        try:
+            database_service.update_latest_job(abs_id, last_error=f"Unexpected error: {e}")
+        except Exception as inner_e:
+            logger.error(
+                "❌ Could not record read-along failure for '%s': %s",
+                sanitize_log_data(abs_id), inner_e, exc_info=True,
+            )
+
+
+def generate_readalong_epub(abs_id: str):
+    """Queue background generation + delivery of a read-along EPUB for `abs_id`.
+
+    Async: transcode + repackage takes minutes (plan Sec. "Phase 6"), so this
+    returns immediately once eligibility is confirmed and the real work runs
+    on a user-scoped background thread. Eligibility mirrors what
+    `deliver_readalong_epub`/`build_readalong_epub` actually require that is
+    cheap to check up front (sync mode, audio source, alignment method);
+    resolvability of the live BookOrbit audio entry itself can only be
+    confirmed by the worker's own call to `resolve_audiobook_folder`.
+    """
+    book = database_service.get_book(abs_id)
+    if not book:
+        return jsonify({"success": False, "error": "Book not found"}), 404
+
+    user = current_user()
+    if not _user_may_modify_book(user, abs_id):
+        return _forbidden_book_response(json_response=True)
+
+    if getattr(book, "sync_mode", "audiobook") == "ebook_only":
+        return jsonify({
+            "success": False,
+            "error": "This mapping has no audiobook to generate a read-along from.",
+        }), 400
+
+    if getattr(book, "audio_source", None) != "BookOrbit":
+        return jsonify({
+            "success": False,
+            "error": "Read-along generation requires a BookOrbit audio source.",
+        }), 400
+
+    align_method = database_service.get_alignment_method(abs_id)
+    if (align_method or "") not in ("ctc", "lexical"):
+        return jsonify({
+            "success": False,
+            "error": "This book has no CTC or lexical alignment map yet.",
+        }), 400
+
+    from src.db.models import Job
+    database_service.save_job(
+        Job(abs_id=abs_id, last_attempt=time.time(), retry_count=0, progress=0.0, last_error=None)
+    )
+    _spawn_user_background(_readalong_epub_worker, abs_id, label=f"readalong-epub-{abs_id}")
+
+    logger.info(
+        "📖 Read-along EPUB generation queued for %s", sanitize_log_data(book.abs_title or abs_id)
+    )
+    return jsonify({"success": True, "status": "queued"})
+
+
+def readalong_epub_status(abs_id: str):
+    """Poll the outcome of the most recent read-along generation job for `abs_id`.
+
+    Reads the `Job` row `generate_readalong_epub` created/updates -- the same
+    table `_record_forge_match_job` uses for Forge & Match, so a job triggered
+    by one of those flows on the same book at the same time would be
+    indistinguishable from a read-along job here (the table has no per-kind
+    column). Acceptable for this action: it is a status *display* only, not a
+    correctness dependency, and the collision window is the rare case of a
+    user running both actions on the very same book at the same moment.
+    """
+    book = database_service.get_book(abs_id)
+    if not book:
+        return jsonify({"success": False, "error": "Book not found"}), 404
+
+    user = current_user()
+    if not _user_may_modify_book(user, abs_id):
+        return _forbidden_book_response(json_response=True)
+
+    job = database_service.get_latest_job(abs_id)
+    if job is None:
+        return jsonify({"success": True, "state": "idle"})
+    if job.progress and job.progress >= 1.0:
+        payload = {"success": True, "state": "done"}
+        if job.last_error:
+            payload["warning"] = job.last_error
+        return jsonify(payload)
+    if job.last_error:
+        return jsonify({"success": True, "state": "failed", "error": job.last_error})
+    return jsonify({"success": True, "state": "running"})
+
+
+def remove_readalong_epub_route(abs_id: str):
+    """Remove a previously-delivered read-along EPUB from BookOrbit and disk.
+
+    Synchronous, unlike generation: this is a single BookOrbit delete call plus
+    a local `unlink`, not a transcode/repackage, so it does not need a
+    background job. Resolution mirrors `deliver_readalong_epub`'s own
+    (`resolve_bookorbit_book_id` -> `resolve_audiobook_folder` ->
+    `_readalong_filename`) so the computed path is exactly the one delivery
+    would have written to; every resolution failure is reported as "nothing to
+    remove" rather than an error, since there is nothing this action could
+    have undone.
+    """
+    book = database_service.get_book(abs_id)
+    if not book:
+        return jsonify({"success": False, "error": "Book not found"}), 404
+
+    user = current_user()
+    if not _user_may_modify_book(user, abs_id):
+        return _forbidden_book_response(json_response=True)
+
+    if getattr(book, "audio_source", None) != "BookOrbit":
+        return jsonify({"success": True, "removed": False, "message": "No BookOrbit audio entry for this book."})
+
+    clients = uc()
+    audio_sync_client = clients.sync_clients.get("BookOrbitAudio")
+    audio_book_id = audio_sync_client.resolve_bookorbit_book_id(book) if audio_sync_client else None
+    if audio_book_id is None:
+        return jsonify({"success": True, "removed": False, "message": "No resolvable BookOrbit audio entry for this book."})
+
+    resolved = resolve_audiobook_folder(clients.bookorbit_client, audio_book_id)
+    if resolved is None:
+        return jsonify({"success": True, "removed": False, "message": "Could not resolve the BookOrbit audio folder."})
+
+    epub_filename = getattr(book, "original_ebook_filename", None) or getattr(book, "ebook_filename", None)
+    if not epub_filename:
+        return jsonify({"success": True, "removed": False, "message": "No source EPUB on file."})
+    try:
+        epub_path = container.ebook_parser().resolve_book_path(epub_filename)
+    except FileNotFoundError:
+        return jsonify({"success": True, "removed": False, "message": "Source EPUB not found on disk."})
+
+    output_path = resolved.folder / _readalong_filename(Path(epub_path))
+    ok = _remove_readalong_epub_file(clients.bookorbit_client, audio_book_id, output_path)
+    if ok:
+        logger.info("🗑️ Removed read-along EPUB for %s", sanitize_log_data(book.abs_title or abs_id))
+        return jsonify({"success": True, "removed": True})
+    return jsonify({"success": False, "error": "Could not fully remove the read-along EPUB; see server logs."}), 500
+
 
 def sync_now(abs_id):
     book = database_service.get_book(abs_id)
@@ -12567,6 +12812,9 @@ def create_app(test_container=None):
     app.add_url_rule('/delete/<abs_id>', 'delete_mapping', delete_mapping, methods=['POST'])
     app.add_url_rule('/clear-progress/<abs_id>', 'clear_progress', clear_progress, methods=['POST'])
     app.add_url_rule('/api/remap-alignment/<abs_id>', 'remap_alignment', remap_alignment, methods=['POST'])
+    app.add_url_rule('/api/readalong-epub/<abs_id>', 'generate_readalong_epub', generate_readalong_epub, methods=['POST'])
+    app.add_url_rule('/api/readalong-epub/<abs_id>/status', 'readalong_epub_status', readalong_epub_status, methods=['GET'])
+    app.add_url_rule('/api/readalong-epub/<abs_id>/remove', 'remove_readalong_epub_route', remove_readalong_epub_route, methods=['POST'])
     app.add_url_rule('/api/sync-now/<abs_id>', 'sync_now', sync_now, methods=['POST'])
     app.add_url_rule('/api/mark-complete/<abs_id>', 'mark_complete', mark_complete, methods=['POST'])
     app.add_url_rule('/api/me/kosync-documents', 'api_me_kosync_documents', api_me_kosync_documents, methods=['GET'])

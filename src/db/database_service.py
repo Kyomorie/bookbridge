@@ -690,6 +690,23 @@ class DatabaseService:
                 .filter(BookAlignment.align_method == "ctc").all()
             }
 
+    def get_readalong_alignment_book_ids(self) -> set[str]:
+        """Book IDs whose alignment map is fine-grained enough for read-along
+        generation ('ctc' or 'lexical'), in one query without loading map blobs.
+
+        Mirrors `get_ctc_aligned_book_ids`. Coarser methods ('linear',
+        'llm_anchor', 'storyteller'/'storyteller_linear', legacy NULL) are
+        excluded even though `build_readalong_epub` would not itself refuse
+        them -- their timing is not fine enough to be worth surfacing as an
+        eligible book in the UI (see docs/PLAN_READALONG_EPUB3_GENERATION.md
+        Sec. 0).
+        """
+        with self.get_session() as session:
+            return {
+                row[0] for row in session.query(BookAlignment.abs_id)
+                .filter(BookAlignment.align_method.in_(("ctc", "lexical"))).all()
+            }
+
     def set_alignment_total_chars_if_missing(self, abs_id: str, total_chars: int) -> bool:
         """Record an ebook length on a map that has none. Returns whether it wrote.
 

@@ -115,7 +115,14 @@ def test_reset_menu_renders_complete_click_handlers():
     assert [button.get("onclick") for button in buttons] == [
         'clearPosition("bookorbit:5204")',
         'remapAlignment("bookorbit:5204", this)',
+        'generateReadalongEpub("bookorbit:5204", this)',
     ]
+    # No readalong_eligible/readalong_audio_ok keys on this bare fixture mapping
+    # -> Jinja Undefined is falsy, so the read-along button renders disabled
+    # (never a silent no-op on click) and the "Remove" button is omitted
+    # entirely rather than rendered against unknown eligibility.
+    readalong_btn = buttons[2]
+    assert readalong_btn.get("disabled") is not None
 
 
 class MockContainer:

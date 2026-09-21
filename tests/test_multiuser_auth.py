@@ -1300,6 +1300,32 @@ class TestMultiUserAuth(unittest.TestCase):
         self.assertIsNotNone(self.svc.get_book("admin-book"))
         self.assertEqual(self.svc.get_book_user_ids("admin-book"), [admin.id])
 
+    def test_regular_user_cannot_trigger_readalong_epub_on_another_users_book(self):
+        """Phase 6a: the read-along actions are per-book, gated the same way as
+        remap-alignment/clear-progress/mark-complete -- a user who has not
+        claimed the book gets 403 on all three new endpoints, and no job row
+        or background work is ever queued for it."""
+        admin = self.svc.get_user_by_username("admin")
+        self.svc.save_book(Book(abs_id="admin-book", abs_title="Admin Book",
+                                ebook_filename="a.epub", audio_source="BookOrbit",
+                                status="active", user_id=admin.id))
+        self.svc.create_user("reg", "pw", role="user")
+        self.client.post('/login', data={'username': 'reg', 'password': 'pw'})  # not a claimant
+
+        with patch("src.web_server._spawn_user_background") as mock_spawn:
+            resp = self.client.post('/api/readalong-epub/admin-book', follow_redirects=False)
+            self.assertEqual(resp.status_code, 403)
+            mock_spawn.assert_not_called()
+
+        self.assertEqual(
+            self.client.get('/api/readalong-epub/admin-book/status', follow_redirects=False).status_code, 403
+        )
+        self.assertEqual(
+            self.client.post('/api/readalong-epub/admin-book/remove', follow_redirects=False).status_code, 403
+        )
+        # No job was ever recorded for the book the requester doesn't own.
+        self.assertIsNone(self.svc.get_latest_job("admin-book"))
+
     def test_match_queue_stamps_owner_and_deduplicates_per_user(self):
         import src.web_server as web_server
 
