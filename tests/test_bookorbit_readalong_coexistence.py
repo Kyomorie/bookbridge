@@ -155,7 +155,10 @@ class TestActiveDetection(unittest.TestCase):
         client = BookOrbitClient.__new__(BookOrbitClient)
         client.get_book_detail = MagicMock(return_value={"id": 5180, "readAloudSync": SYNC_ENABLED})
         self.assertEqual(client.get_read_aloud_sync(5180), SYNC_ENABLED)
-        client.get_book_detail.assert_called_once_with(5180)
+        # Phase 5 (read-along delivery) added an explicit `force` passthrough
+        # so a caller polling right after triggering a scan can bypass the
+        # detail cache; the default call still resolves to force=False.
+        client.get_book_detail.assert_called_once_with(5180, force=False)
 
     def test_get_read_aloud_sync_tolerates_a_missing_block(self):
         client = BookOrbitClient.__new__(BookOrbitClient)

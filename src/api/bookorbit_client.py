@@ -609,7 +609,7 @@ class BookOrbitClient:
     # Read-along progress sync (BookOrbit v3.0.0+)
     # ------------------------------------------------------------------
 
-    def get_read_aloud_sync(self, book_id) -> Optional[dict]:
+    def get_read_aloud_sync(self, book_id, force: bool = False) -> Optional[dict]:
         """BookOrbit's own read-along sync status for one book entry, or None.
 
         v3.0.0 added an internal audiobook<->EPUB progress sync that runs within a
@@ -618,8 +618,13 @@ class BookOrbitClient:
         bridge has to know when BookOrbit is already mirroring a position it just
         pushed. Reads off the TTL-cached detail payload, so it costs no extra
         request; a pre-v3 server reports no such block and yields None.
+
+        ``force`` bypasses the detail cache -- needed right after triggering a
+        library scan (:meth:`scan_library`), since the scan runs asynchronously
+        and a caller polling for the result must see fresh data, not whatever
+        was cached up to an hour ago.
         """
-        detail = self.get_book_detail(book_id)
+        detail = self.get_book_detail(book_id, force=force)
         if not isinstance(detail, dict):
             return None
         sync = detail.get("readAloudSync")
@@ -667,6 +672,70 @@ class BookOrbitClient:
             return False
         with self._cache_lock:
             self._detail_cache.pop(book_id, None)
+        return True
+
+    # ------------------------------------------------------------------
+    # Libraries & scanning (used by read-along delivery, Phase 5)
+    # ------------------------------------------------------------------
+
+    def get_libraries(self) -> list:
+        """All configured BookOrbit libraries, each with its ``folders`` list.
+
+        Used to derive a library id from a filesystem folder when a book
+        detail's own ``libraryId`` is unavailable. Not cached: called at most
+        once per read-along delivery, unlike book detail/audiobook info which
+        sit on the hot sync-cycle path.
+        """
+        resp = self._make_request("GET", "/api/v1/libraries")
+        if not resp or resp.status_code != 200:
+            status = resp.status_code if resp else "no response"
+            logger.warning("BookOrbit: could not fetch libraries: status=%s", status)
+            return []
+        data = self._parse_json(resp)
+        return data if isinstance(data, list) else []
+
+    def scan_library(self, library_id) -> bool:
+        """Trigger a BookOrbit library scan so newly-written files get indexed.
+
+        Fire-and-forget: BookOrbit runs the scan asynchronously and returns
+        202 once the request is accepted, before the scan itself finishes.
+        Returning ``True`` here confirms only that BookOrbit *accepted* the
+        request -- a caller that needs to know the scan's actual outcome
+        (e.g. whether a newly-placed file was indexed) must poll
+        :meth:`get_book_detail` / :meth:`get_read_aloud_sync` with
+        ``force=True`` afterward rather than trust this return value alone.
+        """
+        if library_id is None:
+            return False
+        resp = self._make_request("POST", f"/api/v1/scanner/libraries/{library_id}/scan")
+        if not resp or resp.status_code not in (200, 202, 204):
+            status = resp.status_code if resp else "no response"
+            logger.warning(
+                "BookOrbit: library scan request failed for library %s: status=%s",
+                library_id, status,
+            )
+            return False
+        return True
+
+    def delete_book_file(self, file_id) -> bool:
+        """Remove a single file from a BookOrbit book entry (not the whole entry).
+
+        Used to clean up a read-along EPUB this bridge generated without
+        touching the rest of the entry (its real audio tracks, cover,
+        metadata) -- unlike ``DELETE /api/v1/books``, which deletes the whole
+        book. Invalidates no cache entry directly since the caller does not
+        have the owning book id here; callers that immediately re-read detail
+        for that book should pass ``force=True``.
+        """
+        if file_id is None:
+            return False
+        resp = self._make_request("DELETE", f"/api/v1/books/files/{file_id}")
+        if not resp or resp.status_code not in (200, 204):
+            status = resp.status_code if resp else "no response"
+            logger.warning(
+                "BookOrbit: could not delete file %s: status=%s", file_id, status,
+            )
+            return False
         return True
 
     # ------------------------------------------------------------------
