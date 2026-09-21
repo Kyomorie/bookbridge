@@ -139,6 +139,13 @@ _CFI_DEPENDENT_CLIENTS: frozenset[str] = frozenset({
     "CWA",
 })
 
+# How BookBridge behaves when BookOrbit's own read-along sync (v3.0.0+) already
+# mirrors a book's position between the two formats of a single BookOrbit entry.
+# 'defer'    — BookBridge writes the ebook side only and lets BookOrbit fan out
+# 'takeover' — BookBridge disables BookOrbit's sync for that entry and drives both
+# 'ignore'   — pre-v3 behaviour; both sides written, echoes unguarded
+_BOOKORBIT_READALONG_POLICIES: frozenset[str] = frozenset({"defer", "takeover", "ignore"})
+
 # Multi-user: per-cycle override of the active sync-client bundle. Set by
 # sync_cycle when running for a specific user; None => use the global clients.
 import contextvars as _contextvars
@@ -1003,6 +1010,110 @@ class SyncManager:
             return abs(float(written_pct) - float(observed_pct)) <= margin
         except (TypeError, ValueError):
             return False
+
+    @staticmethod
+    def _bookorbit_readalong_policy() -> str:
+        """'defer' | 'takeover' | 'ignore' — read per call so Settings applies live."""
+        raw = (os.environ.get('BOOKORBIT_READALONG_POLICY', 'defer') or 'defer').strip().lower()
+        if raw not in _BOOKORBIT_READALONG_POLICIES:
+            logger.warning(
+                f"⚠️ BOOKORBIT_READALONG_POLICY={sanitize_log_data(raw)} is not one of "
+                f"{'/'.join(sorted(_BOOKORBIT_READALONG_POLICIES))} — using 'defer'"
+            )
+            return 'defer'
+        return raw
+
+    def _mark_bookorbit_readalong_mirror(self, book, config, abs_id: str, title_snip: str) -> None:
+        """Flag the BookOrbit audio state as BookOrbit's own mirror of our writes.
+
+        BookOrbit v3.0.0 keeps one book entry's audiobook and media-overlay EPUB
+        positions in step, and it does so from the very endpoints BookBridge
+        writes to: a push to `POST /books/files/{id}/progress` moves that entry's
+        audio position, and a push to `PATCH /books/{id}/audio-progress` moves its
+        EPUB. When the bridge maps BOTH of a book's formats onto that ONE entry,
+        every write it makes is answered by a second, BookOrbit-authored write to
+        the other format.
+
+        That second write is invisible to the echo guards: `record_write` recorded
+        'BookOrbit', the movement surfaces under 'BookOrbitAudio', and
+        `_peer_position_is_own_writeback` matches by value — which BookOrbit's own
+        SMIL mapping of our position will not reproduce. So the next cycle reads
+        it as user movement and round-trips a text position through the audio
+        timeline.
+
+        Rather than weaken a value-matched guard, stop creating the second writer:
+        mark the audio side as a mirror, which excludes it from leading and from
+        being written. BookBridge drives the ebook side (a CFI and an xpointer,
+        against the audio side's single scalar) and BookOrbit fans it out.
+
+        Only fires when both formats resolve to the same BookOrbit entry AND
+        BookOrbit itself reports `readAloudSync.state == 'enabled'` for it — a
+        pre-v3 server, a disabled entry, a missing media overlay or mismatched
+        durations all leave the cycle exactly as it was.
+        """
+        audio_state = config.get('BookOrbitAudio')
+        if audio_state is None or 'BookOrbit' not in config:
+            return
+
+        policy = self._bookorbit_readalong_policy()
+        if policy == 'ignore':
+            return
+
+        ebook_client = self.sync_clients.get('BookOrbit')
+        audio_client = self.sync_clients.get('BookOrbitAudio')
+        if ebook_client is None or audio_client is None:
+            return
+
+        try:
+            ebook_entry = ebook_client.resolve_bookorbit_book_id(book)
+            audio_entry = audio_client.resolve_bookorbit_book_id(book)
+        except Exception as e:
+            logger.debug(f"'{abs_id}' BookOrbit read-along entry resolution failed: {e}", exc_info=True)
+            return
+
+        if ebook_entry is None or audio_entry is None:
+            return
+        if str(ebook_entry) != str(audio_entry):
+            # The common shape: audio and text are separate BookOrbit entries, and
+            # BookOrbit's sync never spans entries. Nothing to defer to.
+            return
+
+        key = f"bookorbit_readalong:{abs_id}"
+        try:
+            sync = ebook_client.client.get_read_aloud_sync(audio_entry)
+        except Exception as e:
+            logger.debug(f"'{abs_id}' BookOrbit readAloudSync lookup failed: {e}", exc_info=True)
+            return
+
+        if not ebook_client.client.read_aloud_sync_is_active(sync):
+            get_persistent_condition_logger().resolve(
+                logger, key,
+                f"🔗 '{abs_id}' '{title_snip}' BookOrbit read-along sync is no longer "
+                f"active on entry {audio_entry} — BookBridge drives both formats again",
+            )
+            return
+
+        if policy == 'takeover':
+            if ebook_client.client.set_read_aloud_sync_mode(audio_entry, 'disabled'):
+                logger.info(
+                    f"🔗 '{abs_id}' '{title_snip}' BOOKORBIT_READALONG_POLICY=takeover — "
+                    f"disabled BookOrbit's read-along sync on entry {audio_entry}; "
+                    f"BookBridge now drives both formats"
+                )
+                return
+            logger.warning(
+                f"⚠️ '{abs_id}' '{title_snip}' Could not disable BookOrbit's read-along sync "
+                f"on entry {audio_entry} — deferring to it for this cycle instead"
+            )
+
+        audio_state.current['_readalong_mirror'] = True
+        get_persistent_condition_logger().warn(
+            logger, key,
+            f"🔗 '{abs_id}' '{title_snip}' BookOrbit read-along sync is active on entry "
+            f"{audio_entry} — writing the ebook side only; the audio position is "
+            f"BookOrbit's mirror of that write, so it cannot lead or be written",
+            level=logging.INFO,
+        )
 
     def _build_text_anchors(self, full_text: str, char_offset: int):
         if not full_text:
@@ -3597,6 +3708,12 @@ class SyncManager:
         vals = {}
         for k, v in config.items():
             client = self.sync_clients[k]
+            # A client another service keeps in step with a position BookBridge
+            # itself wrote holds no independent evidence of where the reader is —
+            # letting it lead would elect our own write-back (see
+            # _mark_bookorbit_readalong_mirror). Shrinks the candidate set only.
+            if v.current.get('_readalong_mirror'):
+                continue
             if client.can_be_leader():
                 pct = v.current.get('pct')
                 if pct is not None:
@@ -4652,6 +4769,17 @@ class SyncManager:
                 if not config:
                     continue  # No valid states to process
 
+                # BookOrbit v3 may already be mirroring this book's position between
+                # its own two formats. Decide before leader selection reads the
+                # candidate set or the dispatch loop picks write targets.
+                try:
+                    self._mark_bookorbit_readalong_mirror(book, config, abs_id, title_snip)
+                except Exception as e:
+                    logger.warning(
+                        f"⚠️ '{abs_id}' '{title_snip}' BookOrbit read-along check failed: {e}",
+                        exc_info=True,
+                    )
+
                 # StoryGraph and Hardcover are driven by an idle cooldown rather than the
                 # per-cycle dispatch. Evaluate them for every active book each cycle
                 # (including idle books that early-skip below) so the trailing-edge post
@@ -5027,6 +5155,14 @@ class SyncManager:
                             # Driven by the idle-cooldown handlers, not the dispatch loop.
                             continue
                         client_state = config.get(client_name)
+                        if client_state and client_state.current.get('_readalong_mirror'):
+                            # BookOrbit mirrors this format from the one we do write;
+                            # writing it too would race its own derived position.
+                            logger.debug(
+                                f"'{abs_id}' '{title_snip}' Skipping '{client_name}' write — "
+                                f"BookOrbit's read-along sync mirrors it from the ebook side"
+                            )
+                            continue
                         if client_state and self._should_skip_deadband_rollback(
                             book, leader, leader_state, client_name, client_state, abs_id, title_snip
                         ):

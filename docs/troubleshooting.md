@@ -76,6 +76,32 @@ as a bonus alignment source.
 - If a book exists in BookOrbit but will not link, make sure it is visible in BookOrbit and that the bridge can reach the BookOrbit server.
 - If you switched from Grimmory to BookOrbit, you do not need to rematch — run `scripts/migrate_grimmory_to_bookorbit.py` (see the [Configuration Guide](configuration.md#bookorbit)).
 
+### A read-along book keeps shifting position, or BookOrbit and BookBridge disagree
+
+BookOrbit 3.0.0 and later syncs read-along books by itself. When one BookOrbit entry holds
+an EPUB 3 with media overlays *and* audio of matching length, BookOrbit keeps that entry's
+audiobook position, EPUB position, Kobo state and KOReader progress in step — and it does
+so from the same endpoints BookBridge writes to. On a book where BookBridge maps **both**
+formats onto that **one** entry, both would be writing it.
+
+BookBridge detects this and steps back: it writes the ebook side only and lets BookOrbit
+move the audio position. You will see a line like:
+
+```
+🔗 'ebook-1a2b…' 'Title' BookOrbit read-along sync is active on entry 5180 —
+   writing the ebook side only; the audio position is BookOrbit's mirror of that
+   write, so it cannot lead or be written
+```
+
+- This only applies when a book's audio and text are the **same** BookOrbit entry. If they
+  are separate entries — the usual arrangement — nothing changes.
+- To have BookBridge drive both sides instead, set **BookOrbit → Read-Along Sync** to
+  *Turn BookOrbit's off and drive both sides*, or switch the book's own read-along toggle
+  off on its Details tab in BookOrbit. Note that BookOrbit's per-book default is **on**.
+- Point your KOReader devices at **one** sync server, not both. BookOrbit is a KOSync
+  server in its own right, so a device syncing to BookOrbit *and* to BookBridge for the
+  same book will see the two servers hand back different positions.
+
 ### Highlights or notes are not syncing
 
 - Update the **Bridge Sync** KOReader plugin to the current release or newer on every KOReader device that should sync annotations.

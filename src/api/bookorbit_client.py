@@ -38,6 +38,7 @@ from src.utils.file_transfers import (
     response_declares_size,
     stream_response_to_path,
 )
+from src.utils.logging_utils import sanitize_log_data
 from src.utils.user_config import resolve_setting
 
 logger = logging.getLogger(__name__)
@@ -603,6 +604,70 @@ class BookOrbitClient:
             if kind is None:
                 return f
         return None
+
+    # ------------------------------------------------------------------
+    # Read-along progress sync (BookOrbit v3.0.0+)
+    # ------------------------------------------------------------------
+
+    def get_read_aloud_sync(self, book_id) -> Optional[dict]:
+        """BookOrbit's own read-along sync status for one book entry, or None.
+
+        v3.0.0 added an internal audiobook<->EPUB progress sync that runs within a
+        single book entry holding a media-overlay EPUB and audio files of matching
+        duration. It fires from the very endpoints BookBridge writes to, so the
+        bridge has to know when BookOrbit is already mirroring a position it just
+        pushed. Reads off the TTL-cached detail payload, so it costs no extra
+        request; a pre-v3 server reports no such block and yields None.
+        """
+        detail = self.get_book_detail(book_id)
+        if not isinstance(detail, dict):
+            return None
+        sync = detail.get("readAloudSync")
+        return sync if isinstance(sync, dict) else None
+
+    @staticmethod
+    def read_aloud_sync_is_active(sync: Optional[dict]) -> bool:
+        """Whether BookOrbit will mirror a write between this entry's formats.
+
+        BookOrbit resolves the whole question itself and reports the verdict as
+        `state`: 'enabled' only once the mode is on, a media-overlay EPUB exists,
+        audio exists, and the durations agree within its own tolerance. Every
+        other value - 'disabled', 'unavailable', or a pre-v3 payload carrying no
+        block at all - means BookBridge remains the only writer.
+        """
+        if not isinstance(sync, dict):
+            return False
+        return str(sync.get("state") or "").strip().lower() == "enabled"
+
+    def set_read_aloud_sync_mode(self, book_id, mode: str) -> bool:
+        """Set BookOrbit's per-entry read-along sync mode ('auto' or 'disabled').
+
+        Used only by the 'takeover' policy, which hands the mapping back to
+        BookBridge. Invalidates the cached detail so the new mode is observed on
+        the next read rather than an hour later.
+        """
+        if book_id is None:
+            return False
+        normalized = (mode or "").strip().lower()
+        if normalized not in ("auto", "disabled"):
+            logger.warning(
+                "BookOrbit: refusing to set read-along sync mode to an unknown value %s",
+                sanitize_log_data(mode),
+            )
+            return False
+        resp = self._make_request(
+            "PATCH", f"/api/v1/books/{book_id}/read-aloud-sync", {"mode": normalized}
+        )
+        if not resp or resp.status_code not in (200, 204):
+            status = resp.status_code if resp else "no response"
+            logger.warning(
+                "BookOrbit: could not set read-along sync mode for book %s: status=%s",
+                book_id, status,
+            )
+            return False
+        with self._cache_lock:
+            self._detail_cache.pop(book_id, None)
+        return True
 
     # ------------------------------------------------------------------
     # Resolution

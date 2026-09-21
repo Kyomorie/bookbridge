@@ -1288,6 +1288,26 @@
                             username &amp; password set in Settings → Users → (user) → Integrations — the same
                             credentials BookOrbit's own KOReader plugin uses.</div>
                     </div>
+
+                    <!-- Read-along sync coexistence -->
+                    <div class="full-width" style="margin: 10px 0; border-top: 1px solid rgba(255,255,255,0.1);"></div>
+                    <h4 class="full-width" style="font-size: 14px; color: #fff; margin-bottom: -10px;">Read-Along Sync</h4>
+                    <div class="form-group">
+                        <label>When BookOrbit syncs read-along books itself</label>
+                        <select name="BOOKORBIT_READALONG_POLICY">
+                            <option value="defer" {% if get_val('BOOKORBIT_READALONG_POLICY', 'defer') == 'defer' %}selected{% endif %}>Let BookOrbit handle it (recommended)</option>
+                            <option value="takeover" {% if get_val('BOOKORBIT_READALONG_POLICY') == 'takeover' %}selected{% endif %}>Turn BookOrbit's off and drive both sides</option>
+                            <option value="ignore" {% if get_val('BOOKORBIT_READALONG_POLICY') == 'ignore' %}selected{% endif %}>Ignore (both write — may conflict)</option>
+                        </select>
+                        <div class="help-text">BookOrbit 3.0.0 and later keeps the audiobook and the EPUB of a
+                            <em>single</em> BookOrbit entry in step by itself, when that entry holds an EPUB 3 with
+                            media overlays (a read-along book) and audio of matching length. Because it does that from
+                            the same endpoints BookBridge writes to, both would be writing the same book.
+                            <strong>Let BookOrbit handle it</strong> writes only the ebook side and lets BookOrbit
+                            move the audio position; <strong>Turn BookOrbit's off</strong> switches its per-book
+                            read-along sync to disabled so BookBridge owns both. Books whose audio and text live in
+                            separate BookOrbit entries — the usual arrangement — are unaffected either way.</div>
+                    </div>
                 </div>
             </div>
 

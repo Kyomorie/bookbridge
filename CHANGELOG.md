@@ -79,6 +79,18 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **BookBridge and BookOrbit 3.0 no longer both write a read-along book.** BookOrbit
+  3.0.0 added its own sync that keeps one entry's audiobook and EPUB in step, for entries
+  holding an EPUB 3 with media overlays plus audio of matching length — and it runs off
+  the same endpoints BookBridge writes to. On a book whose audio and text are the *same*
+  BookOrbit entry, each side would answer the other's write and the position could drift.
+  BookBridge now recognises when BookOrbit has a book in hand, writes only the ebook side,
+  and treats the audio position as BookOrbit's mirror of that write rather than as
+  somewhere you moved to. Books whose audio and text live in separate BookOrbit entries —
+  the usual arrangement — are untouched. A new **BookOrbit → Read-Along Sync** setting can
+  instead switch BookOrbit's per-book sync off so BookBridge drives both sides. Note that
+  BookOrbit's own default for a qualifying book is **on**.
+
 - **BookOrbit progress now reads and writes the same primary ebook when a book
   contains multiple ebook formats (#443).** A secondary KEPUB listed before the
   primary EPUB could receive every update while the EPUB stayed at its old
