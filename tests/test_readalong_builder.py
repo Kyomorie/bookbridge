@@ -987,13 +987,15 @@ def test_refuses_when_alignment_map_does_not_fit_epub():
         assert not output_path.exists()
 
 
-def test_refuses_epub2_source_instead_of_emitting_a_still_epub2_package():
-    """Finding 2 (independent review): appending SMIL media overlays to an
-    EPUB 2 package (``<package version="2.0">``) without upgrading it to
-    EPUB 3 navigation/metadata produces output that is not EPUB-3-conformant,
-    even though a lenient reader (e.g. BookOrbit) accepts the SMIL anyway.
-    Rather than implement that upgrade, this refuses EPUB 2 input outright
-    with a clear log reason."""
+def test_epub2_source_is_converted_to_epub3_not_refused():
+    """Finding 2 (independent review) originally refused EPUB 2 input
+    outright; ``docs/PLAN_READALONG_EPUB3_GENERATION.md``'s follow-up work
+    replaces that refusal with an actual EPUB 2 -> EPUB 3 conversion
+    (``src/services/epub3_upgrade.py``), applied to a private temporary copy
+    before assembly (:func:`~src.services.readalong_builder._resolve_epub3_source`).
+    The final generated read-along package must itself be a conformant
+    EPUB 3 (version bumped, a nav document registered), and the original
+    library file must be completely untouched."""
     with tempfile.TemporaryDirectory() as tmp_str:
         tmp = Path(tmp_str)
         parser = _parser(tmp)
@@ -1003,12 +1005,73 @@ def test_refuses_epub2_source_instead_of_emitting_a_still_epub2_package():
             {"ch1": b"<html><body><p>Alpha bravo. Charlie delta.</p></body></html>"},
             opf_version="2.0",
         )
+        original_bytes = epub_path.read_bytes()
         combined_text, _ = parser.extract_text_and_map(str(epub_path))
         audio_path = _make_audio(tmp)
 
         result, output_path = _build(tmp, parser, epub_path, audio_path, combined_text)
+
+        assert result is not None
+        assert output_path.exists()
+        # Source file untouched (Finding 5's exact failure mode -- never
+        # regress on this, whatever else changes about conversion).
+        assert epub_path.read_bytes() == original_bytes
+
+        with zipfile.ZipFile(output_path) as zf:
+            opf_bytes = zf.read("OEBPS/content.opf")
+            pkg = etree.fromstring(opf_bytes)
+            assert pkg.get("version") == "3.0"
+            manifest = pkg.find("{http://www.idpf.org/2007/opf}manifest")
+            nav_items = [
+                item for item in manifest.findall("{http://www.idpf.org/2007/opf}item")
+                if "nav" in (item.get("properties") or "").split()
+            ]
+            assert len(nav_items) == 1
+            nav_href = nav_items[0].get("href")
+            assert zf.read(f"OEBPS/{nav_href}")  # the nav document itself was packaged
+            metadata = pkg.find("{http://www.idpf.org/2007/opf}metadata")
+            assert any(
+                meta.get("property") == "dcterms:modified"
+                for meta in metadata.findall("{http://www.idpf.org/2007/opf}meta")
+            )
+            spine = pkg.find("{http://www.idpf.org/2007/opf}spine")
+            assert "toc" not in spine.attrib
+
+
+def test_refuses_epub2_source_when_conversion_cannot_produce_valid_epub3():
+    """Keeps refusal as the fallback (per the plan): when
+    ``upgrade_epub2_to_epub3`` itself cannot convert the source (here: the
+    OPF has no ``<manifest>`` at all, so there is nothing to register a nav
+    document in), the whole build is refused rather than emitting a package
+    that merely claims to be EPUB 3."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        epub_path = tmp / "books" / "book.epub"
+        epub_path.parent.mkdir(parents=True, exist_ok=True)
+        broken_opf = (
+            '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" '
+            'version="2.0" unique-identifier="id"><metadata '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Test</dc:title>'
+            "</metadata></package>"
+        )
+        with zipfile.ZipFile(epub_path, "w") as z:
+            z.writestr("mimetype", "application/epub+zip")
+            z.writestr("META-INF/container.xml", _CONTAINER_XML)
+            z.writestr("OEBPS/content.opf", broken_opf)
+            z.writestr("OEBPS/ch1.xhtml", b"<html><body><p>Alpha bravo.</p></body></html>")
+        original_bytes = epub_path.read_bytes()
+
+        parser = _parser(tmp)
+        audio_path = _make_audio(tmp)
+        output_path = tmp / "out.epub"
+        alignment_service = _linear_alignment(40, 100.0)
+        result = build_readalong_epub(
+            parser=parser, alignment_service=alignment_service, epub_path=epub_path,
+            audio_paths=audio_path, abs_id="abs1", output_path=output_path,
+        )
         assert result is None
         assert not output_path.exists()
+        assert epub_path.read_bytes() == original_bytes
 
 
 def test_output_reused_epub_has_no_leftover_markers_from_prior_run():

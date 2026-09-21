@@ -92,9 +92,10 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple, Union, TYPE_CHECKING
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple, Union, TYPE_CHECKING
 from urllib.parse import quote, unquote
 
 from bs4 import BeautifulSoup, NavigableString
@@ -110,6 +111,7 @@ from src.utils.ebook_dom_map import (
     parse_original_spine_xml,
     runs_from_nodes,
 )
+from src.services.epub3_upgrade import upgrade_epub2_to_epub3
 from src.services.readalong_segments import SentenceClip, build_sentence_clips
 
 if TYPE_CHECKING:
@@ -798,6 +800,25 @@ def _resolve_spine_injection_target(
                 parent = grandparent
             return tuple(reversed(path))
 
+        # Keyed by (structural path to the immediate parent tag, run text) --
+        # NOT unique. Two lone runs with identical text under the very same
+        # parent are a real, unremarkable shape in prose: e.g.
+        # ``<p>&mdash;<span class="epub-i">interruption</span>&mdash;</p>``
+        # (a dialogue interruption) produces two separate text-node children
+        # of the same ``<p>``, both stripping to the single character "--".
+        # ``node_path`` intentionally tracks only *element* ancestry (which
+        # ``<p>`` this is), not this text node's own position among its
+        # parent's children, so both dashes collide on the same key. Treating
+        # that as unresolvable (requiring exactly one candidate) refused the
+        # entire spine item -- and therefore the entire build -- over a
+        # correctly-matchable paragraph. Since both ``local_runs`` and
+        # ``canonical_runs`` are built by a single document-order walk
+        # (``runs_from_nodes`` only ever advances forward), the Nth time a key
+        # recurs in canonical order corresponds to the Nth candidate recorded
+        # for that key in original order, as long as the two documents agree
+        # on structure -- which the node/text-count and per-run equality
+        # checks around this loop already establish. Candidates are therefore
+        # consumed in FIFO order per key instead of demanding a single match.
         original_by_key: Dict[Tuple[Tuple[Tuple[str, int], ...], str], List[DomRun]] = {}
         for run in local_runs:
             key = (node_path(nodes[run.node_index], body), run.text)
@@ -805,15 +826,21 @@ def _resolve_spine_injection_target(
 
         mapped_runs = []
         previous_node_index = -1
+        consumed_by_key: Dict[Tuple[Tuple[Tuple[str, int], ...], str], int] = {}
         for canonical_run, ref_run in zip(canonical_runs, ref_entry.runs):
             if (canonical_run.node_index, canonical_run.text) != (ref_run.node_index, ref_run.text):
                 return None
             key = (node_path(canonical_nodes[canonical_run.node_index], canonical_body), canonical_run.text)
             candidates = original_by_key.get(key, [])
-            if len(candidates) != 1 or candidates[0].node_index <= previous_node_index:
+            next_index = consumed_by_key.get(key, 0)
+            if next_index >= len(candidates):
                 return None
-            mapped_runs.append((ref_run, candidates[0]))
-            previous_node_index = candidates[0].node_index
+            candidate = candidates[next_index]
+            if candidate.node_index <= previous_node_index:
+                return None
+            consumed_by_key[key] = next_index + 1
+            mapped_runs.append((ref_run, candidate))
+            previous_node_index = candidate.node_index
 
     # `ref_run.start`/`ref_run.end` are already GLOBAL offsets: `ref_entry.runs`
     # comes from `build_dom_anchor_map`, which stores `start=spine_start + local_run.start`
@@ -1161,6 +1188,57 @@ def _package_epub(
         raise
 
 
+@contextmanager
+def _resolve_epub3_source(epub_path: Path, abs_id: str) -> Iterator[Optional[Path]]:
+    """Yield an EPUB 3 source path for ``epub_path``, converting in a private
+    temporary copy if it is EPUB 2 -- never modifies ``epub_path`` itself
+    (see ``src/services/epub3_upgrade.py``'s module docstring on why that
+    conversion never touches spine content and so cannot invalidate an
+    alignment map fitted against the original file).
+
+    Yields the original ``epub_path`` unchanged (no copying at all) when it
+    is already EPUB 3 -- the common case for the 63 books that predate this
+    conversion. Yields ``None`` if ``epub_path`` is EPUB 2 and
+    :func:`~src.services.epub3_upgrade.upgrade_epub2_to_epub3` refuses to
+    convert it; the caller must treat that the same as any other build
+    refusal. The temporary conversion copy, if one was made, is removed on
+    exit regardless of outcome.
+    """
+    version: Optional[str] = None
+    try:
+        with zipfile.ZipFile(epub_path) as zf:
+            opf_path = _find_opf_path(zf)
+            if opf_path and opf_path in set(zf.namelist()):
+                version = _opf_package_version(zf.read(opf_path))
+    except (OSError, zipfile.BadZipFile) as e:
+        logger.warning(
+            "Read-along build: could not read '%s' to check its EPUB "
+            "package version: %s", epub_path, e, exc_info=True,
+        )
+
+    if version and version.startswith("3"):
+        yield epub_path
+        return
+
+    with tempfile.TemporaryDirectory(prefix="readalong-epub3-") as tmp_dir:
+        converted_path = Path(tmp_dir) / f"{epub_path.stem}.epub3.epub"
+        result = upgrade_epub2_to_epub3(epub_path, converted_path)
+        if result is None:
+            logger.warning(
+                "🚫 Refusing to build read-along EPUB for '%s': could not "
+                "upgrade source EPUB (package version %s) to EPUB 3",
+                abs_id, version or "<missing>",
+            )
+            yield None
+            return
+        logger.info(
+            "📖 Converted EPUB 2 source to EPUB 3 for read-along build '%s' "
+            "(%d TOC entries, %d landmarks) before assembly",
+            abs_id, result.toc_entry_count, result.landmark_count,
+        )
+        yield converted_path
+
+
 def build_readalong_epub(
     parser: "EbookParser",
     alignment_service: "AlignmentService",
@@ -1171,6 +1249,14 @@ def build_readalong_epub(
     standalone_audio_output_path: Optional[Union[str, Path]] = None,
 ) -> Optional[ReadalongBuildResult]:
     """Assemble a read-along EPUB 3 (SMIL media overlays) for one book.
+
+    **EPUB 2 source is converted, not refused** (see
+    ``src/services/epub3_upgrade.py``): this thin wrapper resolves
+    ``epub_path`` to an EPUB 3 file -- the original if it already is one, or
+    a private temporary conversion copy that is cleaned up when the build
+    finishes -- via :func:`_resolve_epub3_source`, then delegates to
+    :func:`_build_readalong_epub_impl` for the actual assembly. The original
+    file at ``epub_path`` is never modified either way.
 
     Combines Phase 1's DOM anchor map with Phase 2's sentence/clip table to:
     inject an empty ``<span id="...">`` marker at each sentence's start
@@ -1220,6 +1306,32 @@ def build_readalong_epub(
         same transcode this build already paid for, instead of running
         ffmpeg a second time.
     :return: the build result, or ``None`` if refused.
+    """
+    epub_path = Path(epub_path)
+    with _resolve_epub3_source(epub_path, abs_id) as resolved_epub_path:
+        if resolved_epub_path is None:
+            return None
+        return _build_readalong_epub_impl(
+            parser, alignment_service, resolved_epub_path, audio_paths, abs_id,
+            output_path, standalone_audio_output_path,
+        )
+
+
+def _build_readalong_epub_impl(
+    parser: "EbookParser",
+    alignment_service: "AlignmentService",
+    epub_path: Union[str, Path],
+    audio_paths: Union[str, Path, Sequence[Union[str, Path]]],
+    abs_id: str,
+    output_path: Union[str, Path],
+    standalone_audio_output_path: Optional[Union[str, Path]] = None,
+) -> Optional[ReadalongBuildResult]:
+    """The actual read-along assembly, run against an ``epub_path`` already
+    guaranteed to be EPUB 3 -- see :func:`build_readalong_epub`, the public
+    entry point, for the EPUB 2 conversion step and the full docstring this
+    function shares. Kept as a separate function purely so that conversion's
+    temporary-directory lifetime (:func:`_resolve_epub3_source`) can wrap a
+    single delegating call instead of this whole body.
     """
     epub_path = Path(epub_path)
     output_path = Path(output_path)
