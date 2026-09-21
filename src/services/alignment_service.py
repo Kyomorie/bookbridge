@@ -21,7 +21,7 @@ from src.db.models import BookAlignment, BookAlignmentBackup
 from src.services import map_quality
 from src.services.segment_fit import Segment, fit_segments, select_anchors
 from src.utils.config_loader import env_truthy
-from src.utils.ebook_utils import LRUCache
+from src.utils.ebook_utils import INLINE_TEXT_JOINER, LRUCache
 from src.utils.polisher import Polisher
 from src.utils.logging_utils import time_execution
 
@@ -1377,11 +1377,12 @@ class AlignmentService:
             return True
 
         transcript_text = " ".join((s.get("text") or "").strip() for s in segments).strip()
+        content_text = full_text.replace(INLINE_TEXT_JOINER, "")
 
         if self._ollama_ready():
             min_sim = self._env_float("OLLAMA_ALIGN_CONTENT_MIN_SIM", 0.45)
             t_samples = self._sample_passages(transcript_text)
-            b_samples = self._sample_passages(full_text)
+            b_samples = self._sample_passages(content_text)
             vectors = None
             if t_samples and b_samples:
                 vectors = self.ollama_client.embed(t_samples + b_samples)
@@ -1426,7 +1427,7 @@ class AlignmentService:
             return True
 
         min_overlap = self._env_float("CONTENT_MATCH_MIN_OVERLAP", 0.15)
-        overlap = map_quality.transcript_text_overlap(transcript_text, full_text)
+        overlap = map_quality.transcript_text_overlap(transcript_text, content_text)
         if overlap < min_overlap:
             logger.warning(
                 "🚫 Lexical content-match guard: audio/ebook n-gram overlap too low for %s "
