@@ -80,16 +80,25 @@ class _FakeAlignmentService:
         terminal_char: Optional[int],
         time_for_char: Callable[[int], Optional[float]],
         total_chars: Optional[int] = None,
+        segments: Optional[List[Dict]] = None,
     ):
         self._terminal_char = terminal_char
         self._time_for_char = time_for_char
         self.database_service = self._FakeDatabaseService(total_chars)
+        self._segments = segments
 
     def get_map_terminal_char(self, abs_id: str) -> Optional[int]:
         return self._terminal_char
 
     def get_time_for_char(self, abs_id: str, char_offset: int) -> Optional[float]:
         return self._time_for_char(char_offset)
+
+    def _get_segments(self, abs_id: str) -> Optional[List[Dict]]:
+        """Same "friend" access pattern this repo's own AlignmentService
+        tests use directly on the real class (see e.g. test_segmented_map.py) --
+        None means an unsegmented (single, in-order narration) map, matching
+        the real AlignmentService._get_segments contract."""
+        return self._segments
 
 
 def _linear_interpolator(points: List[Dict]) -> Callable[[int], Optional[float]]:
@@ -419,10 +428,20 @@ def test_fitted_epub_guard_tolerates_small_extraction_drift():
 
 
 def test_out_of_order_timestamps_are_clamped_monotonic_and_non_overlapping():
-    """A backward jump in the raw per-boundary timestamps (as an out-of-order
-    narration segment could produce -- see AlignmentService.get_time_for_char's
-    own segment clamp) must never surface as a clip that ends before it
-    starts, or overlaps its predecessor."""
+    """A backward jump in the raw per-boundary timestamps with NO segment
+    structure behind it (``_get_segments`` returns ``None`` -- an
+    unsegmented/legacy map, or noise within what is otherwise one single
+    narration) must still never surface as a clip that ends before it
+    starts, or overlaps its predecessor: without segment boundaries to
+    explain a backward jump, clamping to the running floor is the only safe
+    interpretation.
+
+    This is deliberately narrower than it looks: it is NOT a claim that any
+    backward jump should always be clamped to the whole-book floor -- see
+    ``test_out_of_order_segments_preserve_reordered_narration_timestamps``
+    directly below for the case (real ``segments_json``, issue #426) where
+    clamping across the jump would be Finding 3's corruption instead. This
+    test's own fake supplies no segments, so it never exercises that branch."""
     with tempfile.TemporaryDirectory() as tmp_str:
         tmp = Path(tmp_str)
         parser = _parser(tmp)
@@ -455,6 +474,64 @@ def test_out_of_order_timestamps_are_clamped_monotonic_and_non_overlapping():
             assert clip.ts_start >= prev_end  # monotonic, non-overlapping
             assert clip.ts_end >= clip.ts_start  # no negative duration
             prev_end = clip.ts_end
+
+
+def test_out_of_order_segments_preserve_reordered_narration_timestamps():
+    """Finding 3 (independent review of Phases 1-4, fixed): a book with
+    genuinely out-of-order narration (issue #426 segmented maps -- 15 of 324
+    books on the reference install) must not have a later-reading-order-but-
+    earlier-narrated segment's legitimate, small timestamps clamped up to an
+    earlier-reading-order segment's floor. Before the fix, a single running
+    floor across the whole book collapsed the second (earlier-narrated)
+    segment's sentence into a zero-length clip -- the reviewer's own
+    reproduction: correct ranges [10, 20] and [0, 9] became [10, 20] and
+    [20, 20]. Fixed by scoping the monotonic floor to a segment and resetting
+    it on every segment transition."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "reordered_segments.epub"
+        _write_epub(epub_path, {
+            "ch1": b"<html><body><p>First sentence here. Second sentence follows.</p></body></html>",
+        })
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        spans = split_sentences(combined_text)
+        assert len(spans) == 2
+        s0_start, s0_end = spans[0]
+        s1_start, s1_end = spans[1]
+
+        # Segment A (reading-order first, narrated LATER -- ts 10..20) covers
+        # sentence 0; Segment B (reading-order second, narrated EARLIER --
+        # ts 0..9) covers sentence 1. This is exactly the out-of-order shape
+        # issue #426's segmented maps exist to represent.
+        segments = [
+            {"char_start": s0_start, "char_end": s0_end, "ts_start": 10.0, "ts_end": 20.0},
+            {"char_start": s1_start, "char_end": s1_end, "ts_start": 0.0, "ts_end": 9.0},
+        ]
+
+        def raw(char_offset: int) -> float:
+            if s0_start <= char_offset <= s0_end:
+                frac = (char_offset - s0_start) / max(1, s0_end - s0_start)
+                return 10.0 + frac * 10.0
+            frac = (char_offset - s1_start) / max(1, s1_end - s1_start)
+            return 0.0 + frac * 9.0
+
+        fake = _FakeAlignmentService(
+            terminal_char=len(combined_text), time_for_char=raw, segments=segments,
+        )
+
+        result = build_sentence_clips(parser, str(epub_path), fake, "abs1")
+        assert result is not None
+        assert len(result.clips) == 2
+
+        clip0, clip1 = result.clips
+        assert clip0.ts_start == 10.0
+        assert clip0.ts_end == 20.0
+        # The bug collapsed this to (20.0, 20.0) -- a zero-length, unreachable
+        # clip. Fixed: segment B's own legitimate, earlier timestamps survive.
+        assert clip1.ts_start == 0.0
+        assert clip1.ts_end == 9.0
+        assert clip1.ts_end > clip1.ts_start  # not a zero-length clip
 
 
 def test_dropped_sentence_when_alignment_returns_no_timestamp():

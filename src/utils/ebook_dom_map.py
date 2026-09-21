@@ -38,13 +38,15 @@ with the same parser is deterministic, so that index is a stable, reproducible
 way to relocate the node later (e.g. to insert a SMIL marker span in Phase 3) --
 no fragile CSS-selector or XPath scheme required.
 """
+import html.entities
 import logging
+import re
 from bisect import bisect_right
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Tuple, Union, TYPE_CHECKING
 
-from bs4 import BeautifulSoup, CData, NavigableString
+from bs4 import BeautifulSoup, CData, NavigableString, Tag
 
 if TYPE_CHECKING:
     from src.utils.ebook_utils import EbookParser
@@ -57,6 +59,31 @@ logger = logging.getLogger(__name__)
 # Kept as our own copy (rather than reaching into `soup.interesting_string_types`
 # per call) so behaviour is pinned regardless of a given document's tag names.
 _CONTENT_STRING_TYPES = (NavigableString, CData)
+
+# Tags whose text content bs4's HTML-mode builders never surface as ordinary
+# content strings (they get the special ``Script``/``Stylesheet`` subclasses
+# instead, which fail the exact-type check above -- see this module's
+# docstring). ``TreeBuilder.string_containers`` only carries that mapping for
+# HTML-flavoured builders; the XML builder :func:`parse_original_spine_xml`
+# uses for read-along fidelity (Finding 1) inherits the base class's *empty*
+# mapping, so without this explicit parent-tag check, ``<script>``/``<style>``
+# text would leak into the node list when parsing a spine item's ORIGINAL
+# archive bytes as XML, even though it never did when parsing the (lossy)
+# ebooklib-reconstructed content ``extract_text_and_map`` builds ``combined_text``
+# from. Filtering by parent tag name is redundant (but harmless) for the HTML
+# path, since those nodes are already excluded there by type; it is load-bearing
+# for the XML path.
+_EXCLUDED_STRING_PARENTS = frozenset({"script", "style", "template", "head"})
+
+# XML's five predefined entities -- the only named entity references a strict
+# XML parser understands without an external/internal DTD. Left untouched by
+# :func:`escape_named_html_entities` (rewriting ``&amp;`` to ``&#38;`` would be
+# harmless in isolation, but the point of that function is to touch only the
+# entities a bare XML parser cannot already resolve).
+_XML_BUILTIN_ENTITY_NAMES = frozenset({"amp", "lt", "gt", "apos", "quot"})
+
+# A named entity reference, e.g. ``&nbsp;`` or ``&mdash;``.
+_NAMED_ENTITY_RE = re.compile(r'&([a-zA-Z][a-zA-Z0-9]*);')
 
 
 @dataclass(frozen=True)
@@ -110,23 +137,70 @@ def content_string_nodes(soup: BeautifulSoup) -> List[NavigableString]:
     considers for a top-level document (excludes ``Comment``, ``Doctype``,
     ``ProcessingInstruction``, and the ``Script``/``Stylesheet``/``TemplateString``
     subclasses used for ``<script>``/``<style>``/``<template>`` content -- all are
-    ``NavigableString`` subclasses but not of the exact filtered types).
+    ``NavigableString`` subclasses but not of the exact filtered types), PLUS an
+    explicit parent-tag-name check for the same three tags (see
+    :data:`_EXCLUDED_STRING_PARENTS`) -- a no-op for an HTML-flavoured parser
+    (those nodes are already excluded by type there) but load-bearing when
+    ``soup`` was built by the XML builder :func:`parse_original_spine_xml` uses,
+    which has no HTML-specific string-container knowledge and would otherwise
+    surface ``<script>``/``<style>`` text as ordinary content.
     """
-    return [node for node in soup.descendants if type(node) in _CONTENT_STRING_TYPES]
+    nodes = []
+    for node in soup.descendants:
+        if type(node) not in _CONTENT_STRING_TYPES:
+            continue
+        if _has_excluded_ancestor(node):
+            continue
+        nodes.append(node)
+    return nodes
 
 
-def _spine_item_runs(content: Union[str, bytes]) -> Tuple[List[DomRun], int, str]:
-    """Build provenance-carrying runs for one spine item's raw XHTML ``content``.
+def _has_excluded_ancestor(node: NavigableString) -> bool:
+    """Whether ``node`` sits under a tag whose text never reaches the canonical
+    character space.
 
-    Returns ``(runs, node_count, item_text)`` where ``item_text`` is
-    ``" ".join(run.text for run in runs)`` -- the reconstruction of what
-    ``soup.get_text(separator=' ', strip=True)`` would have returned for the same
-    ``content``. Offsets in the returned runs are *local* to this item (0-based);
-    the caller shifts them into the book's global char space.
+    ``<script>``/``<style>``/``<template>`` are excluded for the reason given in
+    :func:`content_string_nodes`. ``<head>`` is excluded for a different and
+    less obvious one: ebooklib's reconstruction, which is what
+    ``extract_text_and_map`` builds ``combined_text`` from, empties the head
+    outright -- a real book's
+
+        <head><link rel="stylesheet" .../><title>c2T</title></head>
+
+    comes back as ``<head/>``. So the canonical text contains no ``<title>``
+    text, while parsing the ORIGINAL archive bytes does surface it. Left
+    unfiltered that put four extra characters (``"c2T "``) at offset 0 of the
+    affected spine item, shifting every marker in it and tripping the builder's
+    own injection self-check. That discarded head is also where the stylesheet
+    links live, which is the root of the styling loss this XML path exists to
+    repair.
     """
-    soup = BeautifulSoup(content, 'html.parser')
-    nodes = content_string_nodes(soup)
+    parent = node.parent
+    while parent is not None:
+        name = getattr(parent, "name", None)
+        if name and name.lower() in _EXCLUDED_STRING_PARENTS:
+            return True
+        parent = parent.parent
+    return False
 
+
+def runs_from_nodes(nodes: List[NavigableString]) -> List[DomRun]:
+    """Build local-offset :class:`DomRun`\\ s from an already-enumerated content-
+    string node list, in the same order/offset scheme :func:`_spine_item_runs`
+    uses.
+
+    Public and separated from parsing so the read-along builder can run this
+    exact algorithm a second time over a spine item's ORIGINAL archive bytes
+    (parsed with :func:`parse_original_spine_xml` rather than ebooklib's lossy
+    reconstruction) and get directly comparable ``node_offset_start``/
+    ``node_offset_end`` values -- those are computed fresh from each node's own
+    (unstripped) string, so they are only ever valid relative to the exact
+    node list they were built from. Reusing offsets computed against one
+    document's nodes against a *different* document's (even structurally
+    equivalent) nodes would silently misplace a marker if the two documents'
+    whitespace serialization differs, which is why this is a function on a node
+    list rather than something baked into the offsets stored anywhere.
+    """
     runs: List[DomRun] = []
     local_idx = 0
     for node_index, node in enumerate(nodes):
@@ -151,9 +225,126 @@ def _spine_item_runs(content: Union[str, bytes]) -> Tuple[List[DomRun], int, str
             end=end,
         ))
         local_idx = end
+    return runs
 
+
+def _spine_item_runs(content: Union[str, bytes]) -> Tuple[List[DomRun], int, str]:
+    """Build provenance-carrying runs for one spine item's raw XHTML ``content``.
+
+    Returns ``(runs, node_count, item_text)`` where ``item_text`` is
+    ``" ".join(run.text for run in runs)`` -- the reconstruction of what
+    ``soup.get_text(separator=' ', strip=True)`` would have returned for the same
+    ``content``. Offsets in the returned runs are *local* to this item (0-based);
+    the caller shifts them into the book's global char space.
+    """
+    soup = BeautifulSoup(content, 'html.parser')
+    nodes = content_string_nodes(soup)
+    runs = runs_from_nodes(nodes)
     item_text = " ".join(run.text for run in runs)
     return runs, len(nodes), item_text
+
+
+def _resolve_named_entity(match: "re.Match") -> str:
+    """Replace one named HTML entity reference with numeric character
+    reference(s) an XML parser can resolve without a DTD.
+
+    A bare XML parser only understands the five entities in
+    :data:`_XML_BUILTIN_ENTITY_NAMES`; everything else (``&nbsp;``, ``&mdash;``,
+    ``&hellip;`` ...) requires either network/DTD resolution (which
+    :func:`parse_original_spine_xml` deliberately never does) or pre-conversion
+    to the character it names. Real-world EPUB content documents -- especially
+    ones produced by tools like ``pdftohtml`` -- routinely use these bare,
+    un-substituted, without declaring them in an internal DTD subset. Left
+    unresolvable names untouched (returns the original match) rather than
+    guessing; the caller's own text-equality verification against
+    ``extract_text_and_map``'s combined text will catch the resulting parse
+    failure or mismatch and fall back to the lossy reconstructed-content path
+    for that one spine item.
+    """
+    name = match.group(1)
+    if name in _XML_BUILTIN_ENTITY_NAMES:
+        return match.group(0)
+    resolved = html.entities.html5.get(name + ";")
+    if resolved is None:
+        return match.group(0)
+    return "".join(f"&#{ord(ch)};" for ch in resolved)
+
+
+def escape_named_html_entities(content: bytes) -> bytes:
+    """Rewrite named HTML entity references in ``content`` to numeric character
+    references, leaving XML's five predefined entities alone.
+
+    Read-along fidelity (Finding 1 of the independent review) requires parsing
+    a spine item's ORIGINAL archive bytes with a case- and attribute-preserving
+    **XML** parser rather than the HTML-mode parser ``extract_text_and_map``
+    uses -- HTML mode is what silently lowercases XML-cased attributes like
+    ``viewBox``. A bare XML parser, though, only knows the five entities in
+    :data:`_XML_BUILTIN_ENTITY_NAMES` unless it resolves an external/internal
+    DTD; real EPUB content documents routinely use other named entities
+    (``&nbsp;``, ``&mdash;``, ...) without declaring them. This pre-pass makes
+    those parseable without ever contacting a network for a DTD.
+
+    ``content`` is decoded as UTF-8 (EPUB content documents are required to be
+    UTF-8 or UTF-16, and this repo already treats spine content as UTF-8
+    elsewhere) with ``errors='replace'`` so a decoding hiccup degrades rather
+    than raises here -- the caller's downstream text-equality check is what
+    actually gates whether the result is trustworthy.
+    """
+    text = content.decode("utf-8", "replace")
+    text = _NAMED_ENTITY_RE.sub(_resolve_named_entity, text)
+    return text.encode("utf-8")
+
+
+def parse_original_spine_xml(content: bytes) -> Optional[BeautifulSoup]:
+    """Parse a spine item's ORIGINAL (un-reconstructed) archive bytes with a
+    case- and attribute-preserving XML parser.
+
+    ``extract_text_and_map`` (and this module's own :func:`_spine_item_runs`)
+    parse ``item.get_content()`` -- ebooklib's own from-scratch reconstruction
+    of the document, built by re-parsing the original bytes in **HTML** mode
+    (which lowercases every tag/attribute name, since HTML is case-insensitive)
+    and discarding the original ``<head>``'s stylesheet links and the original
+    ``<body>``'s own attributes (see ``EpubHtml.get_content``). None of that
+    reconstruction is fit to ship to a reader -- Finding 1 of the independent
+    review of this feature. This function instead parses the ORIGINAL bytes
+    with bs4's ``lxml-xml`` builder, which is namespace-aware and preserves
+    case exactly, so ``viewBox``/``linearGradient``/etc. survive untouched.
+
+    Returns ``None`` -- never raises -- on any parse failure (including a
+    document that is not well-formed XML at all, which some real-world "XHTML"
+    content documents are not): the caller falls back to the lossy
+    reconstructed-content path for that one spine item rather than risk
+    injecting a marker at a node index computed against a document structure
+    that may not correspond to this one.
+    """
+    try:
+        return BeautifulSoup(escape_named_html_entities(content), "lxml-xml")
+    except Exception as e:
+        logger.warning(
+            "Could not parse original spine XML for read-along fidelity: %s",
+            e, exc_info=True,
+        )
+        return None
+
+
+def original_body_scope(soup: BeautifulSoup) -> Union[BeautifulSoup, Tag]:
+    """The ``<body>`` element of ``soup``, or ``soup`` itself if none is found.
+
+    Content-string node enumeration for the ORIGINAL-bytes path is scoped to
+    ``<body>`` (rather than the whole document, as ``extract_text_and_map``'s
+    HTML-mode parse effectively is) because a spine item read via
+    ``ebooklib.epub.read_epub`` always has ``item.title == ""`` (nothing in the
+    reader ever sets it per-item), so ``EpubHtml.get_content()``'s reconstructed
+    ``<head>`` never contains a ``<title>`` -- its only contents are self-closing
+    ``<meta>``/``<link>`` tags, which contribute zero content-string nodes.
+    The reconstructed document's node list is therefore already exactly its
+    ``<body>``'s node list; scoping the original parse the same way keeps the
+    two directly comparable by node index, and additionally sidesteps the
+    original document's own (possibly real) ``<title>`` text, which would
+    otherwise shift every subsequent node index.
+    """
+    body = soup.find("body")
+    return body if body is not None else soup
 
 
 def build_dom_anchor_map(parser: "EbookParser", filepath: Union[str, Path]) -> List[SpineDomMap]:

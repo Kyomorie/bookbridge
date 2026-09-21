@@ -95,15 +95,20 @@ import zipfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union, TYPE_CHECKING
+from urllib.parse import quote, unquote
 
 from bs4 import BeautifulSoup, NavigableString
 from lxml import etree
 
 from src.utils.ebook_dom_map import (
+    DomRun,
     SpineDomMap,
     content_string_nodes,
     build_dom_anchor_map,
     locate_offset,
+    original_body_scope,
+    parse_original_spine_xml,
+    runs_from_nodes,
 )
 from src.services.readalong_segments import SentenceClip, build_sentence_clips
 
@@ -142,9 +147,8 @@ class SpineOverlayResult:
     ``href`` is the spine item's full archive path (matches
     ``extract_text_and_map``'s ``spine_map`` entry exactly). ``smil_href`` is
     the generated SMIL document's own full archive path. ``duration_seconds``
-    is this overlay's own temporal span (last par's ``clipEnd`` minus the
-    first par's ``clipBegin``) -- the per-overlay ``media:duration`` the OPF
-    records for it.
+    is the sum of its emitted clips' durations -- the per-overlay
+    ``media:duration`` the OPF records for it.
     """
     spine_index: int
     href: str
@@ -165,6 +169,13 @@ class ReadalongBuildResult:
     disagreed about which spine item it belongs to) -- both are excluded from
     the generated SMIL, since a ``<text>`` reference to a fragment id that was
     never inserted collapses playback to the chapter start.
+    ``dropped_spine_items_injection_failed`` counts whole spine items (not
+    individual sentences) excluded because marker injection could not be
+    verified on either the fidelity or the reconstructed-content path -- a
+    pre-existing, independent defect where certain non-ASCII whitespace at a
+    marker's split point is silently altered by bs4's own per-node
+    ``get_text(strip=True)``; the affected spine item is still carried
+    through byte-for-byte, just with no read-along overlay for its sentences.
 
     ``total_duration_seconds`` (Phase 4 Part A) is the summed *contiguous*
     overlay duration -- every clip's end already reaches the next one's start
@@ -186,6 +197,7 @@ class ReadalongBuildResult:
     total_duration_seconds: float
     audio_href: str
     audio_bitrate: str
+    dropped_spine_items_injection_failed: int = 0
 
 
 def _find_opf_path(zf: zipfile.ZipFile) -> Optional[str]:
@@ -200,6 +212,27 @@ def _find_opf_path(zf: zipfile.ZipFile) -> Optional[str]:
         return None
     match = re.search(r'full-path="([^"]+)"', container)
     return match.group(1) if match else None
+
+
+def _opf_package_version(opf_bytes: bytes) -> Optional[str]:
+    """The OPF ``<package version="...">`` attribute, or ``None`` if the OPF
+    fails to parse or the attribute is absent.
+
+    Used by the Finding 2 fix (independent review): an EPUB 2 ``package``
+    element is versioned ``"2.0"``; EPUB 3 is ``"3.0"`` (or a later 3.x).
+    ``build_readalong_epub`` refuses anything that does not start with
+    ``"3"`` rather than silently emitting a package that still claims to be
+    EPUB 2 while carrying EPUB-3-only media overlays and no EPUB 3
+    navigation document -- BookOrbit accepting the SMIL does not make the
+    package conformant.
+    """
+    try:
+        parser = etree.XMLParser(resolve_entities=False, no_network=True)
+        tree = etree.fromstring(opf_bytes, parser=parser)
+    except etree.XMLSyntaxError as e:
+        logger.warning("Could not parse OPF to read package version: %s", e, exc_info=True)
+        return None
+    return tree.get("version")
 
 
 def _unique_archive_dir(zip_names: set, opf_dir: str, base: str) -> str:
@@ -223,6 +256,22 @@ def _unique_manifest_id(existing_ids: set, base: str) -> str:
     while f"{base}-{n}" in existing_ids:
         n += 1
     return f"{base}-{n}"
+
+
+def _encode_href_path(path: str) -> str:
+    """Percent-encode a decoded, filesystem-style relative path into a valid
+    URI reference for use as an OPF/SMIL ``href``/``src`` attribute value.
+
+    Finding 4 (independent review): this module computes every generated
+    reference (SMIL ``<text src>``/``<audio src>``, the new manifest
+    ``<item href>`` for the SMIL and embedded audio files) with
+    ``posixpath.relpath`` against real, decoded filenames/directory names --
+    if any path segment contains a character a URI reference must escape
+    (a space, ``#``, ``?``, non-ASCII, ...), the generated XML would embed an
+    invalid or wrongly-interpreted reference. ``/`` is left unescaped since it
+    is the path separator, not itself part of any segment's name.
+    """
+    return quote(path, safe="/")
 
 
 def _audio_media_type(path: Union[str, Path]) -> str:
@@ -373,21 +422,90 @@ def _format_smil_clock(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{secs:02d}.{ms:03d}"
 
 
+# An existing element's `id="..."` attribute value, in any quoting style a
+# real-world (possibly not-strictly-XML) spine document might use. Used only
+# to collect the set of ids already in use in a spine item's markup -- a
+# plain regex scan over the raw content string, not a full parse, so it
+# works identically whichever bytes end up being injected into (the
+# ORIGINAL archive bytes for Finding 1's fidelity path, or the
+# ebooklib-reconstructed `content` for its fallback).
+_EXISTING_ID_RE = re.compile(r'\bid\s*=\s*(["\'])(.*?)\1')
+
+
+def _existing_ids_in_markup(content: Union[str, bytes]) -> set:
+    """Every ``id="..."`` value already present anywhere in ``content``.
+
+    Finding 6 (independent review): marker ids were allocated as
+    ``c<spine>-s<n>`` without checking whether that id already belongs to
+    some other element in the source document -- a source that happens to
+    contain e.g. ``<p id="c1-s0">`` would end up with two elements sharing
+    that id, making any SMIL fragment reference to it ambiguous (a real
+    reproduction: the source's own paragraph AND the injected marker span
+    both carrying ``id="c1-s0"``). This scans the whole spine item's markup
+    up front so :func:`_allocate_marker_id` can pick a guaranteed-unique
+    value.
+    """
+    if isinstance(content, bytes):
+        content = content.decode("utf-8", "replace")
+    return {match.group(2) for match in _EXISTING_ID_RE.finditer(content)}
+
+
+def _allocate_marker_id(desired_id: str, existing_ids: set) -> str:
+    """A collision-free id for a sentence marker, reserving it in
+    ``existing_ids`` (mutated in place) so a later call in the same spine
+    item never re-allocates the same fallback.
+
+    Deterministic: given the same ``desired_id`` and the same starting
+    ``existing_ids``, this always returns the same value -- the same
+    numeric-suffix scheme :func:`_unique_manifest_id` already uses elsewhere
+    in this module. Determinism matters here specifically (Finding 6):
+    regenerating the same book must allocate the same ids for the same
+    sentences, or a reader's stored position (a sentence id) silently starts
+    pointing at the wrong marker after a regeneration.
+    """
+    if desired_id not in existing_ids:
+        existing_ids.add(desired_id)
+        return desired_id
+    n = 2
+    while f"{desired_id}-{n}" in existing_ids:
+        n += 1
+    allocated = f"{desired_id}-{n}"
+    existing_ids.add(allocated)
+    return allocated
+
+
 def _markers_for_spine_item(
     dom_map: List[SpineDomMap],
     clips: List[SentenceClip],
     spine_index: int,
-) -> Tuple[List[Tuple[int, int, str]], int]:
+    existing_ids: set,
+) -> Tuple[List[Tuple[int, int, str]], int, Dict[str, str]]:
     """Resolve each clip's sentence-start char offset to a DOM insertion point.
 
-    Returns ``(markers, dropped)``: ``markers`` are ``(node_index,
-    node_offset, sentence_id)`` triples ready for :func:`_inject_markers`.
+    Returns ``(markers, dropped, sentence_id_to_marker_id)``: ``markers`` are
+    ``(node_index, node_offset, marker_id)`` triples ready for
+    :func:`_inject_markers`/:func:`_inject_markers_into_original`.
     ``dropped`` counts sentences excluded because ``locate_offset`` returned
     ``None`` (the offset landed in a synthetic separator gap -- should not
     happen for a real sentence start, see this module's docstring, but is not
     assumed) or resolved to a different spine item than expected.
+    ``sentence_id_to_marker_id`` maps each placed clip's stable
+    ``SentenceClip.sentence_id`` to the id actually allocated for it
+    (:func:`_allocate_marker_id`, seeded from ``existing_ids`` -- Finding 6)
+    -- almost always identical to ``sentence_id`` itself, differing only when
+    a collision was found. The caller must use the allocated value, not
+    ``sentence_id``, when building this spine item's SMIL, so the ``<par>``
+    id and its ``<text src="...#...">`` fragment agree with whatever id
+    actually landed in the XHTML.
+
+    :param existing_ids: every id already used in this spine item's own
+        markup (:func:`_existing_ids_in_markup`) -- mutated in place as ids
+        are allocated, so this must be a fresh set per spine item, never
+        shared across spine items (id uniqueness is a per-document XML
+        requirement, not a book-wide one).
     """
     markers: List[Tuple[int, int, str]] = []
+    sentence_id_to_marker_id: Dict[str, str] = {}
     dropped = 0
     for clip in clips:
         located = locate_offset(dom_map, clip.char_start)
@@ -400,8 +518,16 @@ def _markers_for_spine_item(
             dropped += 1
             continue
         _, node_index, node_offset = located
-        markers.append((node_index, node_offset, clip.sentence_id))
-    return markers, dropped
+        marker_id = _allocate_marker_id(clip.sentence_id, existing_ids)
+        if marker_id != clip.sentence_id:
+            logger.info(
+                "Read-along marker: id '%s' already used elsewhere in spine "
+                "item %d's markup; allocated '%s' instead",
+                clip.sentence_id, spine_index, marker_id,
+            )
+        markers.append((node_index, node_offset, marker_id))
+        sentence_id_to_marker_id[clip.sentence_id] = marker_id
+    return markers, dropped, sentence_id_to_marker_id
 
 
 def _extend_clips_to_contiguous(
@@ -421,31 +547,62 @@ def _extend_clips_to_contiguous(
     Phase 2 output. Extending against a sentence that never gets its own
     ``<par>`` would silently absorb its pause into the wrong neighbour.
 
-    ``ts_start`` is never touched; only ``ts_end`` grows. Phase 2's
-    :func:`~src.services.readalong_segments.build_sentence_clips` already
-    guarantees ``ts_start[i+1] >= ts_end[i]`` for consecutive clips, so
-    setting ``ts_end[i] = ts_start[i+1]`` can only grow ``ts_end[i]`` (or
-    leave it unchanged) -- it can never shrink it, push it past
-    ``ts_start[i+1]``, or otherwise violate the existing monotonic /
-    non-overlapping guarantee. Extended clips touch exactly at the boundary
-    (``ts_end[i] == ts_start[i+1]``); they never cross it.
-
-    The book's *last* clip has no "next" clip to extend to, so it is instead
-    extended to ``audio_duration_seconds`` -- the real embedded audio's own
-    probed length -- provided that is actually past the clip's own computed
-    end. When ``audio_duration_seconds`` is unavailable (the probe failed)
-    or is not itself past the last clip's end, the last clip is left as
-    Phase 2 computed it and a warning is logged: this never shrinks a clip,
-    and never guesses at a duration that isn't backed by a real probe.
+    ``ts_start`` is never touched; only ``ts_end`` ever grows. Segment metadata
+    keeps each extension inside its own narration block: same-segment gaps end
+    at the next clip, while a segment's terminal clip ends at that segment's
+    own boundary. The terminal clip of the latest narrated segment may reach
+    the probed audio end, even when it appears before another segment in EPUB
+    reading order. Clips without segment metadata retain the legacy behavior.
     """
     if not clips:
         return clips
+
+    def same_segment(first: SentenceClip, second: SentenceClip) -> bool:
+        if not first.segment_scoped and not second.segment_scoped:
+            return True
+        return (
+            first.segment_scoped
+            and second.segment_scoped
+            and first.segment_key is not None
+            and first.segment_key == second.segment_key
+        )
+
+    segment_ends = {
+        clip.segment_key: clip.segment_ts_end
+        for clip in clips
+        if clip.segment_scoped
+        and clip.segment_key is not None
+        and clip.segment_ts_end is not None
+    }
+    temporal_last_key = max(segment_ends, key=segment_ends.get) if segment_ends else None
+
     extended = list(clips)
     for i in range(len(extended) - 1):
-        extended[i] = replace(extended[i], ts_end=extended[i + 1].ts_start)
+        current = extended[i]
+        following = extended[i + 1]
+        if same_segment(current, following):
+            target_end = following.ts_start
+        elif current.segment_scoped and current.segment_ts_end is not None:
+            target_end = current.segment_ts_end
+            if (
+                current.segment_key is not None
+                and current.segment_key == temporal_last_key
+                and audio_duration_seconds is not None
+            ):
+                target_end = max(target_end, audio_duration_seconds)
+        else:
+            target_end = current.ts_end
+        if target_end >= current.ts_end:
+            extended[i] = replace(current, ts_end=target_end)
     last = extended[-1]
-    if audio_duration_seconds is not None and audio_duration_seconds > last.ts_end:
+    if not last.segment_scoped and audio_duration_seconds is not None and audio_duration_seconds > last.ts_end:
         extended[-1] = replace(last, ts_end=audio_duration_seconds)
+    elif last.segment_scoped:
+        target_end = last.segment_ts_end
+        if last.segment_key is not None and last.segment_key == temporal_last_key:
+            target_end = audio_duration_seconds if audio_duration_seconds is not None else target_end
+        if target_end is not None and target_end > last.ts_end:
+            extended[-1] = replace(last, ts_end=target_end)
     else:
         logger.warning(
             "Read-along: could not extend final clip %s to the real audio "
@@ -455,8 +612,17 @@ def _extend_clips_to_contiguous(
     return extended
 
 
-def _inject_markers(content: Union[str, bytes], markers: List[Tuple[int, int, str]]) -> bytes:
-    """Insert empty ``<span id="...">`` markers into one spine item's XHTML.
+def _splice_markers(
+    soup: BeautifulSoup, nodes: List[NavigableString], markers: List[Tuple[int, int, str]],
+) -> None:
+    """Insert empty ``<span id="...">`` markers into ``soup`` in place.
+
+    ``nodes`` is the exact content-string node list ``markers``' ``node_index``
+    values were computed against (either ``content_string_nodes(soup)`` for
+    the ebooklib-reconstructed-content path, or the ORIGINAL-bytes body-scoped
+    node list for the fidelity-preserving path -- see
+    :func:`_resolve_spine_injection_target`); this function is agnostic to
+    which, as long as ``soup`` is the document ``nodes`` was enumerated from.
 
     ``markers`` are ``(node_index, node_offset, marker_id)`` triples as
     :func:`_markers_for_spine_item` returns them. Multiple markers can
@@ -467,16 +633,7 @@ def _inject_markers(content: Union[str, bytes], markers: List[Tuple[int, int, st
     text/marker/text/marker/.../text pieces. This never touches any other
     node, so processing order between different ``node_index`` groups does
     not matter.
-
-    Re-parses ``content`` independently of ``ebook_dom_map`` (which discards
-    its soup after extracting text) with the identical parser
-    (``'html.parser'``) and node filter (``content_string_nodes``), so
-    ``node_index`` values line up exactly with what :func:`build_dom_anchor_map`
-    computed them against.
     """
-    soup = BeautifulSoup(content, "html.parser")
-    nodes = content_string_nodes(soup)
-
     by_node: Dict[int, List[Tuple[int, str]]] = {}
     for node_index, node_offset, marker_id in markers:
         by_node.setdefault(node_index, []).append((node_offset, marker_id))
@@ -505,7 +662,11 @@ def _inject_markers(content: Union[str, bytes], markers: List[Tuple[int, int, st
                 continue
             if node_offset > prev:
                 pieces.append(NavigableString(raw[prev:node_offset]))
-            marker = soup.new_tag("span")
+            parent_namespace = getattr(node.parent, "namespace", None)
+            marker = soup.new_tag("span", namespace=parent_namespace) if parent_namespace else soup.new_tag("span")
+            parent_prefix = getattr(node.parent, "prefix", None)
+            if parent_namespace and parent_prefix:
+                marker.prefix = parent_prefix
             marker["id"] = marker_id
             pieces.append(marker)
             prev = node_offset
@@ -515,7 +676,174 @@ def _inject_markers(content: Union[str, bytes], markers: List[Tuple[int, int, st
         if pieces:
             node.replace_with(*pieces)
 
+
+def _inject_markers(content: Union[str, bytes], markers: List[Tuple[int, int, str]]) -> bytes:
+    """Insert empty ``<span id="...">`` markers into one spine item's XHTML.
+
+    Re-parses ``content`` independently of ``ebook_dom_map`` (which discards
+    its soup after extracting text) with the identical parser
+    (``'html.parser'``) and node filter (``content_string_nodes``), so
+    ``node_index`` values line up exactly with what :func:`build_dom_anchor_map`
+    computed them against.
+
+    This is the fallback path used when a spine item's ORIGINAL archive bytes
+    could not be used (see :func:`_resolve_spine_injection_target`) -- it
+    reproduces this module's pre-fidelity-fix behaviour exactly (ebooklib's
+    lossy reconstruction), so a spine item that fails the fidelity path is no
+    worse off than before that fix, just not improved by it.
+    """
+    soup = BeautifulSoup(content, "html.parser")
+    nodes = content_string_nodes(soup)
+    _splice_markers(soup, nodes, markers)
     return str(soup).encode("utf-8")
+
+
+def _inject_markers_into_original(
+    soup: BeautifulSoup, nodes: List[NavigableString], markers: List[Tuple[int, int, str]],
+) -> bytes:
+    """Insert empty ``<span id="...">`` markers into an already-parsed,
+    ORIGINAL-archive-bytes ``soup`` (see :func:`_resolve_spine_injection_target`),
+    preserving every attribute, tag-name case, and stylesheet link the source
+    document had -- this is the fix for Finding 1 (styling/attributes lost via
+    ``spine_map``'s ebooklib-reconstructed ``content``).
+
+    ``soup`` must have been parsed with :func:`~src.utils.ebook_dom_map.parse_original_spine_xml`
+    (an XML-mode, case-preserving parser) and ``nodes`` must be the exact node
+    list ``markers``' ``node_index`` values were resolved against.
+    """
+    _splice_markers(soup, nodes, markers)
+    return str(soup).encode("utf-8")
+
+
+def _resolve_spine_injection_target(
+    original_bytes: Optional[bytes],
+    ref_entry: SpineDomMap,
+    expected_text: str,
+    reference_content: Optional[Union[str, bytes]] = None,
+) -> Optional[Tuple[SpineDomMap, BeautifulSoup, List[NavigableString]]]:
+    """Attempt to build a fidelity-preserving injection target for one spine
+    item from its ORIGINAL archive bytes (Finding 1's fix).
+
+    Parses ``original_bytes`` with :func:`~src.utils.ebook_dom_map.parse_original_spine_xml`
+    (case- and attribute-preserving XML mode), scopes node enumeration to the
+    ``<body>`` element, and rebuilds a local run table with
+    :func:`~src.utils.ebook_dom_map.runs_from_nodes` -- the same algorithm
+    Phase 1 uses, just computed fresh against the ORIGINAL nodes' own
+    (possibly differently-whitespaced) raw strings rather than reusing offsets
+    computed against ebooklib's reconstructed content, which would only be
+    valid if the two documents happened to serialize identical whitespace
+    around every text node.
+
+    Returns ``None`` -- never raises -- when ``original_bytes`` is unavailable,
+    fails to parse, or its body children cannot be mapped deterministically to
+    the canonical content. Direct text owned by ``<body>`` is intentionally
+    left unaligned because ebooklib drops it while building the canonical
+    content; it remains in the original document that is shipped.
+
+    On success, returns ``(dom_entry, soup, nodes)``: ``dom_entry`` is a new
+    ``SpineDomMap`` with the same ``spine_index``/``href``/``start``/``end`` as
+    ``ref_entry`` but runs computed fresh from the original document (global-
+    offset-shifted, matching :func:`~src.utils.ebook_dom_map.build_dom_anchor_map`'s
+    own shifting), ``soup`` is the parsed original document, and ``nodes`` is
+    its body-scoped content-string node list -- both needed by
+    :func:`_inject_markers_into_original`.
+    """
+    if not original_bytes:
+        return None
+    soup = parse_original_spine_xml(original_bytes)
+    if soup is None:
+        return None
+    body = original_body_scope(soup)
+    nodes = content_string_nodes(body)
+    local_runs = runs_from_nodes(nodes)
+    if reference_content is None:
+        reference_soup = None
+    else:
+        reference_soup = BeautifulSoup(reference_content, "html.parser")
+
+    if reference_soup is None:
+        if " ".join(run.text for run in local_runs) != expected_text:
+            return None
+        canonical_runs = ref_entry.runs
+        mapped_runs = list(zip(canonical_runs, local_runs))
+        if len(mapped_runs) != len(canonical_runs):
+            return None
+    else:
+        canonical_body = original_body_scope(reference_soup)
+        # Keep the full canonical node list: ``ref_entry.node_index`` was
+        # computed over the complete reconstructed document, including its
+        # whitespace nodes. Only the path scope is body-relative.
+        canonical_nodes = content_string_nodes(reference_soup)
+        canonical_runs = runs_from_nodes(canonical_nodes)
+        if " ".join(run.text for run in canonical_runs) != expected_text:
+            return None
+        if len(canonical_runs) != len(ref_entry.runs):
+            return None
+
+        def node_path(node: NavigableString, scope: object) -> Tuple[Tuple[str, int], ...]:
+            path: List[Tuple[str, int]] = []
+            parent = node.parent
+            while parent is not None and parent is not scope:
+                grandparent = parent.parent
+                if grandparent is None:
+                    return ()
+                siblings = [
+                    child for child in grandparent.children
+                    if getattr(child, "name", None) is not None
+                ]
+                sibling_index = next((i for i, child in enumerate(siblings) if child is parent), -1)
+                if sibling_index < 0:
+                    return ()
+                path.append((str(getattr(parent, "name", "")).lower(), sibling_index))
+                parent = grandparent
+            return tuple(reversed(path))
+
+        original_by_key: Dict[Tuple[Tuple[Tuple[str, int], ...], str], List[DomRun]] = {}
+        for run in local_runs:
+            key = (node_path(nodes[run.node_index], body), run.text)
+            original_by_key.setdefault(key, []).append(run)
+
+        mapped_runs = []
+        previous_node_index = -1
+        for canonical_run, ref_run in zip(canonical_runs, ref_entry.runs):
+            if (canonical_run.node_index, canonical_run.text) != (ref_run.node_index, ref_run.text):
+                return None
+            key = (node_path(canonical_nodes[canonical_run.node_index], canonical_body), canonical_run.text)
+            candidates = original_by_key.get(key, [])
+            if len(candidates) != 1 or candidates[0].node_index <= previous_node_index:
+                return None
+            mapped_runs.append((ref_run, candidates[0]))
+            previous_node_index = candidates[0].node_index
+
+    # `ref_run.start`/`ref_run.end` are already GLOBAL offsets: `ref_entry.runs`
+    # comes from `build_dom_anchor_map`, which stores `start=spine_start + local_run.start`
+    # (ebook_dom_map.py's own shift). Adding `ref_entry.start` again here doubled
+    # the shift for every spine item after the first one (`ref_entry.start != 0`),
+    # so `locate_offset` could never find these runs inside their own item's
+    # `[start, end)` range -- every clip in that spine item silently dropped as
+    # "no DOM location" while earlier, zero-offset spine items (where the bug
+    # was invisible: `0 + x == x`) built fine, so the build reported success
+    # with a whole chapter missing its narration.
+    global_runs = [
+        DomRun(
+            node_index=original_run.node_index,
+            node_offset_start=original_run.node_offset_start,
+            node_offset_end=original_run.node_offset_end,
+            text=ref_run.text,
+            start=ref_run.start,
+            end=ref_run.end,
+        )
+        for ref_run, original_run in mapped_runs
+    ]
+    dom_entry = SpineDomMap(
+        spine_index=ref_entry.spine_index,
+        href=ref_entry.href,
+        start=ref_entry.start,
+        end=ref_entry.end,
+        runs=global_runs,
+        node_count=len(nodes),
+    )
+    return dom_entry, soup, nodes
 
 
 def _xml_wellformed(data: bytes) -> bool:
@@ -531,11 +859,9 @@ def _verify_marker_injection(original: bytes, modified: bytes, spine_index: int,
     """Confirm marker injection did not alter this spine item's extracted text
     and did not turn well-formed XML into malformed XML.
 
-    An empty marker span contributes nothing to
-    ``BeautifulSoup.get_text(separator=' ', strip=True)``, so re-running the
-    same extraction ``extract_text_and_map``/Phase 1 use over the modified
-    content must reproduce the original text exactly -- this is the concrete
-    form of "the injected markup must stay valid XHTML" the plan calls for.
+    BeautifulSoup inserts separator spaces around an empty element. Remove
+    empty, id-bearing spans before comparing so a marker split does not turn a
+    significant non-breaking space into an ordinary separator.
     Raises rather than silently shipping a book whose markers landed in the
     wrong place or corrupted surrounding text.
 
@@ -545,8 +871,16 @@ def _verify_marker_injection(original: bytes, modified: bytes, spine_index: int,
     condition outside this phase's scope, not a regression -- only a
     previously-well-formed document turning invalid here raises.
     """
-    original_text = BeautifulSoup(original, "html.parser").get_text(separator=" ", strip=True)
-    modified_text = BeautifulSoup(modified, "html.parser").get_text(separator=" ", strip=True)
+    def canonical_text(content: bytes) -> str:
+        soup = BeautifulSoup(content, "html.parser")
+        for span in list(soup.find_all("span")):
+            if span.get("id") is not None and not span.get_text():
+                span.decompose()
+        soup.smooth()
+        return soup.get_text(separator=" ", strip=True)
+
+    original_text = canonical_text(original)
+    modified_text = canonical_text(modified)
     if original_text != modified_text:
         first_diff = next(
             (i for i, (a, b) in enumerate(zip(original_text, modified_text)) if a != b),
@@ -580,13 +914,20 @@ def _build_smil(
 ) -> bytes:
     """Build one spine item's SMIL media-overlay document.
 
-    ``xhtml_href_from_smil``/``audio_href_from_smil`` are paths relative to
-    the SMIL document's own location (computed by the caller via
-    ``posixpath.relpath``). Every ``<par>`` carries both ``clipBegin`` and
-    ``clipEnd`` -- required so BookOrbit's own duration inspector does not
-    collapse the whole overlay to a null total (see this module's docstring
-    and the plan's Phase 3 exit criteria).
+    ``xhtml_href_from_smil``/``audio_href_from_smil`` are decoded,
+    filesystem-style paths relative to the SMIL document's own location
+    (computed by the caller via ``posixpath.relpath``); this function
+    percent-encodes them (:func:`_encode_href_path`, Finding 4) before
+    embedding them as ``src``/``epub:textref`` attribute values, since a raw
+    filename containing e.g. a space is not a valid URI reference. Every
+    ``<par>`` carries both ``clipBegin`` and ``clipEnd`` -- required so
+    BookOrbit's own duration inspector does not collapse the whole overlay to
+    a null total (see this module's docstring and the plan's Phase 3 exit
+    criteria).
     """
+    xhtml_href_from_smil = _encode_href_path(xhtml_href_from_smil)
+    audio_href_from_smil = _encode_href_path(audio_href_from_smil)
+
     nsmap = {None: _SMIL_NS, "epub": _OPS_NS}
     smil = etree.Element(f"{{{_SMIL_NS}}}smil", nsmap=nsmap, attrib={"version": "3.0"})
     body = etree.SubElement(smil, f"{{{_SMIL_NS}}}body")
@@ -643,7 +984,16 @@ def _rewrite_opf(
     rather than rebuilding the document, per the plan's explicit instruction.
 
     Raises ``ValueError`` if the OPF has no ``<manifest>``/``<metadata>`` to
-    attach overlays to -- the caller treats this as a refusal, not a crash.
+    attach overlays to, or (Finding 4, independent review) if a spine item's
+    overlay cannot be matched to its own manifest ``<item>`` -- the caller
+    treats either as a refusal, not a crash. A manifest ``href`` attribute is
+    a URI reference and may be percent-encoded (``chapter%201.xhtml`` for an
+    archive member literally named ``chapter 1.xhtml``); comparing it
+    undecoded against ``overlay.href`` (always the plain, decoded archive
+    path -- see ``extract_text_and_map``'s ``href_resolver``) would silently
+    never match for such a book, producing a "successful" build with no
+    media overlay registered for that spine item. This decodes each
+    manifest ``href`` before comparing.
     """
     parser = etree.XMLParser(resolve_entities=False, no_network=True)
     tree = etree.fromstring(opf_bytes, parser=parser)
@@ -659,7 +1009,11 @@ def _rewrite_opf(
         href_attr = item.get("href")
         if not href_attr:
             continue
-        archive_href = posixpath.normpath(posixpath.join(opf_dir, href_attr)) if opf_dir else posixpath.normpath(href_attr)
+        decoded_href_attr = unquote(href_attr)
+        archive_href = (
+            posixpath.normpath(posixpath.join(opf_dir, decoded_href_attr))
+            if opf_dir else posixpath.normpath(decoded_href_attr)
+        )
         href_to_item[archive_href] = item
 
     def _append_with_tail(parent: etree._Element, child: etree._Element) -> None:
@@ -674,16 +1028,20 @@ def _rewrite_opf(
         if target is None:
             logger.error(
                 "Read-along OPF rewrite: no manifest <item> found for spine href "
-                "'%s'; media-overlay not recorded for this spine item",
+                "'%s'; refusing rather than silently producing a book with no "
+                "media overlay for this spine item",
                 overlay.href,
             )
-            continue
+            raise ValueError(
+                f"No manifest <item> found for spine href {overlay.href!r}; "
+                "cannot attach its media overlay"
+            )
 
         smil_item_id = _unique_manifest_id(existing_ids, f"c{overlay.spine_index}-overlay")
         existing_ids.add(smil_item_id)
         target.set("media-overlay", smil_item_id)
 
-        smil_manifest_href = posixpath.relpath(overlay.smil_href, opf_dir or ".")
+        smil_manifest_href = _encode_href_path(posixpath.relpath(overlay.smil_href, opf_dir or "."))
         smil_item = etree.Element(
             f"{{{_OPF_NS}}}item",
             attrib={"id": smil_item_id, "href": smil_manifest_href, "media-type": "application/smil+xml"},
@@ -699,7 +1057,7 @@ def _rewrite_opf(
 
     audio_item = etree.Element(
         f"{{{_OPF_NS}}}item",
-        attrib={"id": audio_manifest_id, "href": audio_manifest_href, "media-type": audio_media_type},
+        attrib={"id": audio_manifest_id, "href": _encode_href_path(audio_manifest_href), "media-type": audio_media_type},
     )
     _append_with_tail(manifest, audio_item)
 
@@ -726,32 +1084,81 @@ def _package_epub(
     (generated SMIL) are appended deflated; ``new_disk_files`` (the embedded
     audio) are streamed from disk with ``ZipFile.write`` rather than loaded
     into memory, stored uncompressed since audio is already compressed.
+
+    **Finding 5 (independent review):** raises ``ValueError`` -- without
+    touching either file -- when ``output_path`` and ``source_epub`` are the
+    same file. Opening the destination with ``zipfile.ZipFile(path, "w")``
+    truncates it immediately, but ``source_epub``'s own ``ZipFile`` is still
+    reading from that same underlying file for the copy loop below; a real
+    reproduction of this exact call with aliased paths truncated the source
+    to its first entry and then raised ``BadZipFile: Truncated file header``
+    reading the second one -- destroying the caller's only copy. Even for
+    non-aliased paths, ``output_path`` is never opened directly: the archive
+    is built into a temporary sibling file first and only ``os.replace()``d
+    onto ``output_path`` once fully and successfully written, so a failure
+    partway through (a disk-full ``OSError``, a KeyboardInterrupt, ...) never
+    leaves a truncated or half-written file at the real destination -- the
+    previous ``output_path``, if any, is left completely untouched.
     """
+    source_epub = Path(source_epub)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with zipfile.ZipFile(source_epub) as src, zipfile.ZipFile(output_path, "w") as dst:
-        dst.writestr(
-            zipfile.ZipInfo("mimetype", date_time=(1980, 1, 1, 0, 0, 0)),
-            b"application/epub+zip",
-            compress_type=zipfile.ZIP_STORED,
+    if source_epub.resolve() == output_path.resolve():
+        raise ValueError(
+            f"Read-along packaging refuses to write '{output_path}' over its "
+            "own source EPUB -- opening the destination for writing would "
+            "truncate the file the source archive is still being read from"
         )
 
-        for name in src.namelist():
-            if name == "mimetype":
-                continue
-            info = src.getinfo(name)
-            data = modified_files.get(name, src.read(name))
-            new_info = zipfile.ZipInfo(name, date_time=info.date_time)
-            new_info.compress_type = info.compress_type
-            new_info.external_attr = info.external_attr
-            dst.writestr(new_info, data)
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{output_path.name}.", suffix=".tmp", dir=str(output_path.parent),
+    )
+    os.close(tmp_fd)
+    tmp_path = Path(tmp_name)
+    # tempfile.mkstemp() deliberately creates the file mode 0600 (owner-only)
+    # for security when the destination might be a shared/multi-user
+    # location. This file's destination is a generated artifact meant to be
+    # read by OTHER processes entirely (BookOrbit's own scanner, running in
+    # a different container) -- os.replace() preserves whatever mode the
+    # temp file had, so leaving it at 0600 would silently ship a read-along
+    # EPUB unreadable outside this container. Match the permissive mode a
+    # plain zipfile.ZipFile(path, "w") would have produced.
+    os.chmod(tmp_path, 0o644)
+    try:
+        with zipfile.ZipFile(source_epub) as src, zipfile.ZipFile(tmp_path, "w") as dst:
+            dst.writestr(
+                zipfile.ZipInfo("mimetype", date_time=(1980, 1, 1, 0, 0, 0)),
+                b"application/epub+zip",
+                compress_type=zipfile.ZIP_STORED,
+            )
 
-        for name, data in new_bytes_files.items():
-            dst.writestr(name, data, compress_type=zipfile.ZIP_DEFLATED)
+            for name in src.namelist():
+                if name == "mimetype":
+                    continue
+                info = src.getinfo(name)
+                data = modified_files.get(name, src.read(name))
+                new_info = zipfile.ZipInfo(name, date_time=info.date_time)
+                new_info.compress_type = info.compress_type
+                new_info.external_attr = info.external_attr
+                dst.writestr(new_info, data)
 
-        for name, disk_path in new_disk_files.items():
-            dst.write(str(disk_path), arcname=name, compress_type=zipfile.ZIP_STORED)
+            for name, data in new_bytes_files.items():
+                dst.writestr(name, data, compress_type=zipfile.ZIP_DEFLATED)
+
+            for name, disk_path in new_disk_files.items():
+                dst.write(str(disk_path), arcname=name, compress_type=zipfile.ZIP_STORED)
+
+        os.replace(tmp_path, output_path)
+    except BaseException:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            logger.warning(
+                "Read-along packaging: could not remove temporary file '%s' "
+                "after a failed build: %s", tmp_path, cleanup_error, exc_info=True,
+            )
+        raise
 
 
 def build_readalong_epub(
@@ -833,7 +1240,7 @@ def build_readalong_epub(
         return None
 
     dom_map = build_dom_anchor_map(parser, epub_path)
-    _combined_text, spine_map = parser.extract_text_and_map(epub_path)
+    combined_text, spine_map = parser.extract_text_and_map(epub_path)
     content_by_spine = {entry["spine_index"]: entry["content"] for entry in spine_map}
     href_by_spine = {entry["spine_index"]: entry["href"] for entry in spine_map}
 
@@ -841,6 +1248,13 @@ def build_readalong_epub(
     for clip in clip_result.clips:
         clips_by_spine.setdefault(clip.spine_index, []).append(clip)
 
+    # Finding 1 fix: read each candidate spine item's ORIGINAL archive bytes
+    # too (not just ebooklib's lossy `content` reconstruction), while the zip
+    # is open, so injection below can prefer them -- see
+    # _resolve_spine_injection_target. A missing/unreadable entry here just
+    # means that one spine item falls back to the pre-existing
+    # reconstructed-content path.
+    original_bytes_by_spine: Dict[int, bytes] = {}
     with zipfile.ZipFile(epub_path) as zf:
         zip_names = set(zf.namelist())
         opf_path = _find_opf_path(zf)
@@ -852,8 +1266,60 @@ def build_readalong_epub(
             return None
         opf_bytes = zf.read(opf_path)
 
+        opf_version = _opf_package_version(opf_bytes)
+        if not opf_version or not opf_version.startswith("3"):
+            logger.warning(
+                "🚫 Refusing to build read-along EPUB for '%s': source EPUB "
+                "package version is %s, not EPUB 3 (Finding 2, independent "
+                "review) -- appending SMIL media overlays to an EPUB 2 "
+                "package without upgrading it to EPUB 3 navigation/metadata "
+                "produces a package that is not EPUB-3-conformant, even if a "
+                "reader happens to play the overlay anyway",
+                abs_id, opf_version or "<missing>",
+            )
+            return None
+
+        for spine_index in clips_by_spine:
+            href = href_by_spine.get(spine_index)
+            if href and href in zip_names:
+                try:
+                    original_bytes_by_spine[spine_index] = zf.read(href)
+                except (KeyError, zipfile.BadZipFile) as e:
+                    logger.warning(
+                        "Read-along fidelity: could not read original archive "
+                        "bytes for spine item %d (href=%s): %s",
+                        spine_index, href, e, exc_info=True,
+                    )
+
     opf_dir = posixpath.dirname(opf_path)
     readalong_dir = _unique_archive_dir(zip_names, opf_dir, _READALONG_DIR_BASE)
+
+    # Finding 1 fix: every spine item with sentences must inject into its
+    # ORIGINAL archive bytes. A reconstructed fallback can silently discard
+    # styles, attributes, or body text, so an item that cannot be mapped is a
+    # whole-build refusal.
+    effective_dom_map: List[SpineDomMap] = []
+    injection_target_by_spine: Dict[int, Tuple[BeautifulSoup, List[NavigableString]]] = {}
+    for entry in dom_map:
+        if entry.spine_index not in clips_by_spine:
+            effective_dom_map.append(entry)
+            continue
+        resolved = _resolve_spine_injection_target(
+            original_bytes_by_spine.get(entry.spine_index),
+            entry,
+            combined_text[entry.start:entry.end],
+            content_by_spine.get(entry.spine_index),
+        )
+        if resolved is None:
+            logger.warning(
+                "🚫 Refusing to build read-along EPUB for '%s': could not "
+                "map original XHTML for spine item %d",
+                abs_id, entry.spine_index,
+            )
+            return None
+        dom_entry, soup, nodes = resolved
+        effective_dom_map.append(dom_entry)
+        injection_target_by_spine[entry.spine_index] = (soup, nodes)
 
     # Pass 1: DOM-locate every clip's marker per spine item. This determines
     # the actual, final sequence of sentences that will become SMIL <par>s (a
@@ -862,6 +1328,7 @@ def build_readalong_epub(
     # (potentially multi-minute, for a long audiobook) transcode below.
     located_by_spine: Dict[int, List[SentenceClip]] = {}
     markers_by_spine: Dict[int, List[Tuple[int, int, str]]] = {}
+    marker_id_map_by_spine: Dict[int, Dict[str, str]] = {}
     dropped_no_location = 0
     for spine_index, clips in sorted(clips_by_spine.items()):
         href = href_by_spine.get(spine_index)
@@ -881,14 +1348,27 @@ def build_readalong_epub(
             )
             continue
 
-        markers, item_dropped = _markers_for_spine_item(dom_map, clips, spine_index)
+        # Finding 6 fix: collision-free marker ids in the original markup.
+        id_scan_source = original_bytes_by_spine.get(spine_index)
+        if id_scan_source is None:
+            logger.warning(
+                "🚫 Refusing to build read-along EPUB for '%s': original "
+                "XHTML is unavailable for spine item %d",
+                abs_id, spine_index,
+            )
+            return None
+        existing_ids = _existing_ids_in_markup(id_scan_source)
+
+        markers, item_dropped, sentence_id_to_marker_id = _markers_for_spine_item(
+            effective_dom_map, clips, spine_index, existing_ids,
+        )
         dropped_no_location += item_dropped
-        located_ids = {marker_id for _, _, marker_id in markers}
-        located_clips = [c for c in clips if c.sentence_id in located_ids]
+        located_clips = [c for c in clips if c.sentence_id in sentence_id_to_marker_id]
         if not located_clips:
             continue
         located_by_spine[spine_index] = located_clips
         markers_by_spine[spine_index] = markers
+        marker_id_map_by_spine[spine_index] = sentence_id_to_marker_id
 
     if not located_by_spine:
         logger.warning(
@@ -935,29 +1415,54 @@ def build_readalong_epub(
 
         for spine_index, located_clips in extended_by_spine.items():
             href = href_by_spine[spine_index]
-            content = content_by_spine[spine_index]
             markers = markers_by_spine[spine_index]
 
-            modified_content = _inject_markers(content, markers)
-            _verify_marker_injection(content, modified_content, spine_index, href)
+            try:
+                soup, nodes = injection_target_by_spine[spine_index]
+                source_bytes = original_bytes_by_spine[spine_index]
+                modified_content = _inject_markers_into_original(soup, nodes, markers)
+                _verify_marker_injection(source_bytes, modified_content, spine_index, href)
+            except ValueError as e:
+                logger.warning(
+                    "🚫 Refusing to build read-along EPUB for '%s': marker "
+                    "injection failed verification for spine item %d "
+                    "(href=%s): %s",
+                    abs_id, spine_index, href, e, exc_info=True,
+                )
+                return None
             modified_files[href] = modified_content
 
             chapter_id = f"c{spine_index}"
             smil_archive_path = posixpath.join(readalong_dir, f"{spine_index}.smil")
             xhtml_href_from_smil = posixpath.relpath(href, readalong_dir)
             audio_href_from_smil = posixpath.relpath(audio_archive_path, readalong_dir)
-            smil_bytes = _build_smil(chapter_id, xhtml_href_from_smil, audio_href_from_smil, located_clips)
+            # Finding 6 fix: the SMIL must reference whatever id was actually
+            # allocated for each sentence (collision-free), not necessarily
+            # its own stable SentenceClip.sentence_id -- the two differ only
+            # when a collision with a pre-existing document id was found.
+            id_map = marker_id_map_by_spine[spine_index]
+            smil_clips = [
+                replace(c, sentence_id=id_map[c.sentence_id]) for c in located_clips
+            ]
+            smil_bytes = _build_smil(chapter_id, xhtml_href_from_smil, audio_href_from_smil, smil_clips)
             new_bytes_files[smil_archive_path] = smil_bytes
 
-            first_begin = min(c.ts_start for c in located_clips)
-            last_end = max(c.ts_end for c in located_clips)
             overlays.append(SpineOverlayResult(
                 spine_index=spine_index,
                 href=href,
                 smil_href=smil_archive_path,
                 par_count=len(located_clips),
-                duration_seconds=max(0.0, last_end - first_begin),
+                duration_seconds=sum(max(0.0, c.ts_end - c.ts_start) for c in located_clips),
             ))
+
+        if not overlays:
+            logger.warning(
+                "🚫 Refusing to build read-along EPUB for '%s': every spine "
+                "item that had sentences failed marker-injection verification "
+                "(%d refused)",
+                abs_id, len(located_by_spine),
+            )
+            return None
 
         audio_manifest_href = posixpath.relpath(audio_archive_path, opf_dir or ".")
         audio_media_type = _audio_media_type(transcoded_audio_path)
@@ -979,15 +1484,25 @@ def build_readalong_epub(
         modified_files[opf_path] = modified_opf
 
         new_disk_files = {audio_archive_path: transcoded_audio_path}
-        _package_epub(epub_path, output_path, modified_files, new_bytes_files, new_disk_files)
+        try:
+            _package_epub(epub_path, output_path, modified_files, new_bytes_files, new_disk_files)
+        except ValueError as e:
+            # Finding 5: source/destination aliasing -- _package_epub already
+            # refused before touching either file.
+            logger.warning(
+                "🚫 Refusing to build read-along EPUB for '%s': %s", abs_id, e,
+                exc_info=True,
+            )
+            return None
 
     total_sentences = sum(len(clips) for clips in clips_by_spine.values())
     logger.info(
         "📖 Built read-along EPUB for '%s': %d spine overlays, %d sentences "
-        "(%d dropped: no timestamp, %d dropped: no DOM location), "
+        "(%d dropped: no timestamp, %d dropped: no DOM location, %d spine "
+        "items refused: injection verification failed), "
         "%.1fs total overlay duration (bitrate=%s) -> '%s'",
         abs_id, len(overlays), total_sentences, clip_result.dropped_no_timestamp,
-        dropped_no_location, total_duration, audio_bitrate, output_path,
+        dropped_no_location, 0, total_duration, audio_bitrate, output_path,
     )
     return ReadalongBuildResult(
         abs_id=abs_id,
@@ -999,6 +1514,7 @@ def build_readalong_epub(
         total_duration_seconds=total_duration,
         audio_href=audio_manifest_href,
         audio_bitrate=audio_bitrate,
+        dropped_spine_items_injection_failed=0,
     )
 
 

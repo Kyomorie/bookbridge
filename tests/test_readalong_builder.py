@@ -25,6 +25,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
+from unittest.mock import patch
 from xml.etree import ElementTree
 
 import pytest
@@ -33,6 +34,7 @@ from lxml import etree
 from src.services.readalong_builder import (
     _DEFAULT_AUDIO_BITRATE,
     _extend_clips_to_contiguous,
+    _package_epub,
     _probe_duration_seconds,
     build_readalong_epub,
 )
@@ -54,6 +56,29 @@ _CONTAINER_XML = (
 _SMIL_NS = "{http://www.w3.org/ns/SMIL}"
 
 
+def _marker_match(xhtml: str, marker_id: str) -> re.Match:
+    """Find an injected ``<span id="...">`` marker regardless of whether it
+    serialized self-closed (``<span id="x"/>``) or open/close
+    (``<span id="x"></span>``) -- both are valid, equivalent XML for an empty
+    element, and which one comes out depends on which injection path built the
+    document (Finding 1's fix serializes via an XML-mode parser, which
+    self-closes empty elements, unlike the pre-fix HTML-mode path)."""
+    pattern = re.compile(
+        r'<span id="%s"\s*(?:/>|>\s*</span>)' % re.escape(marker_id)
+    )
+    match = pattern.search(xhtml)
+    assert match is not None, f"marker id={marker_id!r} not found in: {xhtml}"
+    return match
+
+
+def _marker_start(xhtml: str, marker_id: str) -> int:
+    return _marker_match(xhtml, marker_id).start()
+
+
+def _text_after_marker(xhtml: str, marker_id: str) -> str:
+    return xhtml[_marker_match(xhtml, marker_id).end():]
+
+
 def _parser(tmp: Path) -> EbookParser:
     books = tmp / "books"
     cache = tmp / "cache"
@@ -62,7 +87,8 @@ def _parser(tmp: Path) -> EbookParser:
     return EbookParser(books_dir=str(books), epub_cache_dir=str(cache))
 
 
-def _opf(manifest_ids: List[str], spine_idrefs: List[str], extra_manifest: str = "") -> str:
+def _opf(manifest_ids: List[str], spine_idrefs: List[str], extra_manifest: str = "",
+         opf_version: str = "3.0") -> str:
     manifest = "".join(
         f'<item id="{iid}" href="{iid}.xhtml" media-type="application/xhtml+xml"/>'
         for iid in manifest_ids
@@ -70,7 +96,7 @@ def _opf(manifest_ids: List[str], spine_idrefs: List[str], extra_manifest: str =
     spine = "".join(f'<itemref idref="{iid}"/>' for iid in spine_idrefs)
     return (
         '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" '
-        'version="3.0" unique-identifier="id"><metadata '
+        f'version="{opf_version}" unique-identifier="id"><metadata '
         'xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Test Book</dc:title>'
         '<dc:identifier id="id">urn:uuid:test-book-id</dc:identifier></metadata>'
         f'<manifest>{manifest}{extra_manifest}</manifest><spine>{spine}</spine></package>'
@@ -78,16 +104,20 @@ def _opf(manifest_ids: List[str], spine_idrefs: List[str], extra_manifest: str =
 
 
 def _write_epub(path: Path, items: Dict[str, bytes], extra_manifest: str = "",
-                 extra_files: Optional[Dict[str, bytes]] = None) -> None:
+                 extra_files: Optional[Dict[str, bytes]] = None,
+                 opf_version: str = "3.0") -> None:
     """``items``: {item_id: xhtml_bytes}. Spine order is dict order.
     ``extra_manifest`` lets a test add a pre-existing, unrelated manifest item
     (e.g. a cover image) to verify it survives the OPF rewrite untouched.
     ``extra_files`` writes additional raw zip entries (e.g. that cover's
-    bytes)."""
+    bytes). ``opf_version`` lets a test build an EPUB 2 fixture (Finding 2)."""
     with zipfile.ZipFile(path, "w") as z:
         z.writestr("mimetype", "application/epub+zip")
         z.writestr("META-INF/container.xml", _CONTAINER_XML)
-        z.writestr("OEBPS/content.opf", _opf(list(items.keys()), list(items.keys()), extra_manifest))
+        z.writestr(
+            "OEBPS/content.opf",
+            _opf(list(items.keys()), list(items.keys()), extra_manifest, opf_version=opf_version),
+        )
         for item_id, content in items.items():
             z.writestr(f"OEBPS/{item_id}.xhtml", content)
         for name, data in (extra_files or {}).items():
@@ -109,16 +139,25 @@ class _FakeAlignmentService:
         terminal_char: Optional[int],
         time_for_char: Callable[[int], Optional[float]],
         total_chars: Optional[int] = None,
+        segments: Optional[list] = None,
     ):
         self._terminal_char = terminal_char
         self._time_for_char = time_for_char
         self.database_service = self._FakeDatabaseService(total_chars)
+        self._segments = segments
 
     def get_map_terminal_char(self, abs_id: str) -> Optional[int]:
         return self._terminal_char
 
     def get_time_for_char(self, abs_id: str, char_offset: int) -> Optional[float]:
         return self._time_for_char(char_offset)
+
+    def _get_segments(self, abs_id: str) -> Optional[list]:
+        """Same "friend" access pattern this repo's own AlignmentService
+        tests use directly on the real class -- None means an unsegmented
+        (single, in-order narration) map, matching the real
+        AlignmentService._get_segments contract (Finding 3 fix)."""
+        return self._segments
 
 
 def _linear_alignment(total_chars: int, total_seconds: float) -> _FakeAlignmentService:
@@ -198,10 +237,8 @@ def test_marker_lands_at_correct_sentence_start_character():
         with zipfile.ZipFile(output_path) as zf:
             xhtml = zf.read("OEBPS/ch1.xhtml").decode("utf-8")
 
-        soup_text_after_s0 = xhtml.split('<span id="c1-s0">', 1)[1]
-        assert soup_text_after_s0.split("</span>", 1)[1].lstrip().startswith("First sentence here.")
-        soup_text_after_s1 = xhtml.split('<span id="c1-s1">', 1)[1]
-        assert soup_text_after_s1.split("</span>", 1)[1].lstrip().startswith("Second sentence follows.")
+        assert _text_after_marker(xhtml, "c1-s0").lstrip().startswith("First sentence here.")
+        assert _text_after_marker(xhtml, "c1-s1").lstrip().startswith("Second sentence follows.")
 
 
 def test_marker_injection_into_node_with_inline_tags():
@@ -232,15 +269,73 @@ def test_marker_injection_into_node_with_inline_tags():
         # The <em>/<strong> structure around "brave new" is untouched.
         assert "<em>brave <strong>new</strong></em>" in xhtml
         # Sentence 0's marker precedes "Hello", sentence 1's precedes "A second".
-        assert xhtml.index('<span id="c1-s0">') < xhtml.index("Hello")
-        assert xhtml.index('<span id="c1-s1">') < xhtml.index("A second sentence")
+        assert _marker_start(xhtml, "c1-s0") < xhtml.index("Hello")
+        assert _marker_start(xhtml, "c1-s1") < xhtml.index("A second sentence")
         # Only one marker was needed for sentence 0 even though it spans two
         # inline elements -- no marker was injected inside <em>/<strong>.
-        assert xhtml.count('<span id="c1-s0">') == 1
+        assert len(re.findall(r'<span id="c1-s0"', xhtml)) == 1
         em_start = xhtml.index("<em>brave")
         em_end = xhtml.index("</em>", em_start)
         assert "c1-s0" not in xhtml[em_start:em_end]
         assert "c1-s1" not in xhtml[em_start:em_end]
+
+
+def test_finding1_preserves_stylesheet_links_body_attrs_and_xml_case():
+    """Finding 1 (independent review of Phases 1-4): spine content was
+    sourced from ``spine_map['content']`` -- ebooklib's ``EpubHtml.get_content()``,
+    which reconstructs the document from scratch, dropping the original
+    ``<head>``'s stylesheet ``<link>``s and the original ``<body>``'s own
+    attributes entirely, and (via its HTML-mode reparse of the original bytes)
+    lowercasing XML-cased attributes like SVG's ``viewBox``. The fix injects
+    into the spine item's ORIGINAL archive bytes via a case-preserving XML
+    parser instead, falling back to the old (lossy) path only when the
+    original bytes cannot be verified to reproduce the same extracted text.
+    This must survive marker injection: both stylesheet links, the body's
+    ``lang``/``xml:lang``/``class`` attributes, and the SVG's ``viewBox``
+    case all appear unchanged in the generated output."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(epub_path, {
+            "ch1": (
+                b'<?xml version="1.0" encoding="utf-8"?>'
+                b'<html xmlns="http://www.w3.org/1999/xhtml">'
+                b'<head>'
+                b'<link href="../css/style1.css" rel="stylesheet" type="text/css"/>'
+                b'<link href="../css/style2.css" rel="stylesheet" type="text/css"/>'
+                b'</head>'
+                b'<body lang="en-US" xml:lang="en-US" class="calibre">'
+                b'<p>First sentence here. Second sentence follows.</p>'
+                b'<svg viewBox="0 0 10 10"><linearGradient id="g1"/></svg>'
+                b'</body></html>'
+            ),
+        })
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp)
+
+        result, output_path = _build(tmp, parser, epub_path, audio_path, combined_text)
+        assert result is not None
+        assert result.dropped_no_location == 0
+
+        with zipfile.ZipFile(output_path) as zf:
+            xhtml = zf.read("OEBPS/ch1.xhtml").decode("utf-8")
+
+        assert xhtml.count('rel="stylesheet"') == 2, (
+            "stylesheet <link>s were dropped -- Finding 1 regression"
+        )
+        assert 'lang="en-US"' in xhtml, "body lang attribute was dropped"
+        assert 'class="calibre"' in xhtml, "body class attribute was dropped"
+        assert 'viewBox="0 0 10 10"' in xhtml, (
+            "SVG viewBox was lowercased by an HTML-mode reparse -- Finding 1 regression"
+        )
+        assert "linearGradient" in xhtml, (
+            "SVG linearGradient tag name was lowercased -- Finding 1 regression"
+        )
+        # Marker injection still landed correctly despite using the
+        # original-bytes path.
+        assert _text_after_marker(xhtml, "c1-s0").lstrip().startswith("First sentence here.")
+        assert _text_after_marker(xhtml, "c1-s1").lstrip().startswith("Second sentence follows.")
 
 
 def test_multiple_sentences_in_one_text_node():
@@ -264,11 +359,68 @@ def test_multiple_sentences_in_one_text_node():
         with zipfile.ZipFile(output_path) as zf:
             xhtml = zf.read("OEBPS/ch1.xhtml").decode("utf-8")
 
-        assert xhtml.index('<span id="c1-s0">') < xhtml.index("Alpha")
-        assert xhtml.index('<span id="c1-s1">') < xhtml.index("Delta")
-        assert xhtml.index('<span id="c1-s2">') < xhtml.index("Golf")
-        assert xhtml.index("Alpha") < xhtml.index('<span id="c1-s1">')
-        assert xhtml.index("Delta") < xhtml.index('<span id="c1-s2">')
+        assert _marker_start(xhtml, "c1-s0") < xhtml.index("Alpha")
+        assert _marker_start(xhtml, "c1-s1") < xhtml.index("Delta")
+        assert _marker_start(xhtml, "c1-s2") < xhtml.index("Golf")
+        assert xhtml.index("Alpha") < _marker_start(xhtml, "c1-s1")
+        assert xhtml.index("Delta") < _marker_start(xhtml, "c1-s2")
+
+
+def test_finding6_marker_id_collision_with_preexisting_document_id_is_avoided():
+    """Finding 6 (independent review): marker ids were allocated as
+    ``c<spine>-s<n>`` without checking whether that id already belongs to
+    some other element in the source document. A real reproduction: a
+    source containing ``<p id="c1-s0">`` "succeeded" with two elements both
+    carrying ``id="c1-s0"`` (the pre-existing paragraph and the injected
+    marker), making any SMIL fragment reference to that id ambiguous. Fixed
+    by allocating a deterministic, collision-free id instead, and using that
+    SAME allocated value in both the XHTML marker and the SMIL's own
+    ``<par id>``/``<text src="...#...">`` fragment."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        # The document already has an element using exactly the id our
+        # marker scheme would generate for the very first sentence.
+        _write_epub(epub_path, {
+            "ch1": b'<html><body>'
+                   b'<p id="c1-s0">A pre-existing paragraph with this exact id.</p>'
+                   b'<p>First real sentence here. Second real sentence follows.</p>'
+                   b'</body></html>',
+        })
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp)
+
+        result, output_path = _build(tmp, parser, epub_path, audio_path, combined_text)
+        assert result is not None
+        # 3 sentences: the pre-existing paragraph's own text is itself a
+        # sentence, plus the two "real" ones.
+        assert result.total_sentences == 3
+        assert result.dropped_no_location == 0
+
+        with zipfile.ZipFile(output_path) as zf:
+            xhtml = zf.read("OEBPS/ch1.xhtml").decode("utf-8")
+            smil_name = next(n for n in zf.namelist() if n.endswith(".smil"))
+            smil_bytes = zf.read(smil_name).decode("utf-8")
+
+        all_ids = re.findall(r'id="([^"]*)"', xhtml)
+        from collections import Counter
+        dupes = {k: v for k, v in Counter(all_ids).items() if v > 1}
+        assert not dupes, f"duplicate ids in generated XHTML: {dupes}"
+
+        # The pre-existing paragraph's id survives untouched...
+        assert 'id="c1-s0"' in xhtml
+        # ...and the first sentence's marker got a DIFFERENT, allocated id
+        # instead of colliding with it.
+        allocated_ids = [i for i in all_ids if i != "c1-s0" and i.startswith("c1-s0")]
+        assert len(allocated_ids) == 1, f"expected exactly one reallocated id, got {allocated_ids}"
+        allocated_id = allocated_ids[0]
+
+        # The SMIL references the SAME allocated id, not the original
+        # (colliding) "c1-s0" -- both the <par id> and the <text src> fragment.
+        assert f'id="{allocated_id}"' in smil_bytes
+        assert f'#{allocated_id}"' in smil_bytes
+        assert f'id="c1-s0"' not in smil_bytes
 
 
 def test_verify_marker_injection_catches_xml_regression_without_text_change():
@@ -428,6 +580,68 @@ def test_smil_text_fragment_matches_an_actual_injected_marker_id():
 # OPF rewriting
 # ---------------------------------------------------------------------------
 
+def test_finding4_percent_encoded_manifest_href_still_gets_its_overlay():
+    """Finding 4 (independent review): a manifest ``<item href="...">`` is a
+    URI reference and may be percent-encoded (``chapter%201.xhtml``) even
+    when the archive member it points to is literally named with the
+    decoded characters (``chapter 1.xhtml``) -- comparing the encoded and
+    decoded forms directly (as the OPF rewrite's href-to-manifest-item
+    lookup used to) never matches, so a book "succeeds" with no media
+    overlay attached to that spine item. Verified against the real library:
+    5 books (Virgil Knightley/Micky Carre's "Unicorn Breeder"; Jeff Noon's
+    "Vurt" and "Nymphomation") have percent-encoded manifest hrefs.
+
+    Also covers the other half of Finding 4: the generated SMIL's own
+    references to that same file must themselves be percent-encoded (not
+    the raw, space-containing archive name), since a raw space is not a
+    valid URI reference either."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        archive_name = "chapter 1.xhtml"  # literal space in the actual archive member
+        manifest_href = "chapter%201.xhtml"  # percent-encoded in the OPF
+        opf = (
+            '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" '
+            'version="3.0" unique-identifier="id"><metadata '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title>'
+            '<dc:identifier id="id">x</dc:identifier></metadata>'
+            f'<manifest><item id="ch1" href="{manifest_href}" '
+            'media-type="application/xhtml+xml"/></manifest>'
+            '<spine><itemref idref="ch1"/></spine></package>'
+        )
+        with zipfile.ZipFile(epub_path, "w") as z:
+            z.writestr("mimetype", "application/epub+zip")
+            z.writestr("META-INF/container.xml", _CONTAINER_XML)
+            z.writestr("OEBPS/content.opf", opf)
+            z.writestr(
+                f"OEBPS/{archive_name}",
+                b"<html><body><p>Alpha bravo. Charlie delta.</p></body></html>",
+            )
+
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp)
+
+        result, output_path = _build(tmp, parser, epub_path, audio_path, combined_text)
+        assert result is not None, (
+            "the overlay must still attach for a percent-encoded manifest href"
+        )
+        assert len(result.spine_overlays) == 1
+        assert result.spine_overlays[0].href == f"OEBPS/{archive_name}"
+
+        with zipfile.ZipFile(output_path) as zf:
+            opf_out = zf.read("OEBPS/content.opf").decode("utf-8")
+            smil_name = next(n for n in zf.namelist() if n.endswith(".smil"))
+            smil_bytes = zf.read(smil_name)
+
+        assert "media-overlay=" in opf_out  # the spine item's own manifest entry
+        # The generated SMIL's own textref/src reference the ENCODED form of
+        # the archive member's actual (space-containing) name -- never the
+        # raw space.
+        assert b"chapter%201.xhtml" in smil_bytes
+        assert b"chapter 1.xhtml" not in smil_bytes
+
+
 def test_opf_preserves_preexisting_manifest_items_and_adds_overlay_refs():
     """A pre-existing, unrelated manifest item (e.g. a cover image) survives
     the OPF rewrite untouched; the content document gets media-overlay=,
@@ -563,6 +777,120 @@ def test_package_carries_through_untouched_files_byte_identical():
             assert zf.read("META-INF/container.xml").decode("utf-8") == _CONTAINER_XML
 
 
+def test_finding5_refuses_output_path_aliasing_the_source_epub():
+    """Finding 5 (independent review): using the source EPUB's own path as
+    the output destroys the source -- opening it with
+    ``zipfile.ZipFile(path, "w")`` truncates it while the source archive's
+    own ``ZipFile`` is still reading from that same underlying file. A real
+    reproduction of this exact call truncated the source to its first entry
+    and then raised ``BadZipFile`` reading the second. This must instead
+    refuse (via ``build_readalong_epub`` returning ``None``) without
+    touching the source file at all."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(epub_path, {"ch1": b"<html><body><p>Alpha bravo. Charlie delta.</p></body></html>"})
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp)
+        original_bytes = epub_path.read_bytes()
+
+        alignment_service = _linear_alignment(len(combined_text), 100.0)
+        result = build_readalong_epub(
+            parser=parser, alignment_service=alignment_service, epub_path=epub_path,
+            audio_paths=audio_path, abs_id="abs1", output_path=epub_path,  # ALIASED
+        )
+        assert result is None
+        # The source EPUB must be completely untouched, not truncated.
+        assert epub_path.read_bytes() == original_bytes
+        assert zipfile.is_zipfile(epub_path)
+
+
+def test_finding5_package_epub_rejects_source_output_aliasing_directly():
+    """Unit-level version of the aliasing guard, isolating _package_epub
+    itself from the rest of the pipeline."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        epub_path = tmp / "book.epub"
+        with zipfile.ZipFile(epub_path, "w") as z:
+            z.writestr("mimetype", "application/epub+zip")
+            z.writestr("OEBPS/ch1.xhtml", b"<html><body><p>Hello.</p></body></html>")
+        original_bytes = epub_path.read_bytes()
+
+        try:
+            _package_epub(epub_path, epub_path, modified_files={}, new_bytes_files={}, new_disk_files={})
+            assert False, "expected ValueError for aliased source/output paths"
+        except ValueError:
+            pass
+
+        assert epub_path.read_bytes() == original_bytes
+        assert zipfile.is_zipfile(epub_path)
+
+
+def test_finding5_failed_package_leaves_existing_output_untouched_and_no_temp_litter():
+    """Finding 5's other half: the destination is built into a temporary
+    sibling and only atomically replaced on success, so a failure partway
+    through (here: a new_disk_files entry pointing at a nonexistent file)
+    never leaves a truncated/partial file at output_path, and never leaves
+    the temporary file behind either."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        src_path = tmp / "book.epub"
+        with zipfile.ZipFile(src_path, "w") as z:
+            z.writestr("mimetype", "application/epub+zip")
+            z.writestr("OEBPS/ch1.xhtml", b"<html><body><p>Hello.</p></body></html>")
+
+        out_path = tmp / "existing_output.epub"
+        out_path.write_bytes(b"PRE-EXISTING CONTENT THAT MUST SURVIVE A FAILED BUILD")
+
+        try:
+            _package_epub(
+                src_path, out_path, modified_files={}, new_bytes_files={},
+                new_disk_files={"audio.m4a": tmp / "does_not_exist.m4a"},
+            )
+            assert False, "expected an exception for a missing new_disk_files source"
+        except OSError:
+            pass
+
+        assert out_path.read_bytes() == b"PRE-EXISTING CONTENT THAT MUST SURVIVE A FAILED BUILD"
+        leftover = [p for p in tmp.iterdir() if p.name.startswith(".existing_output.epub.")]
+        assert leftover == []
+
+
+def test_finding5_temp_file_permissions_widened_before_replace():
+    """Bug in the Finding 5 fix itself, found during live verification:
+    tempfile.mkstemp() deliberately creates its file mode 0600 (owner-only)
+    for shared-location safety, and os.replace() preserves that mode on the
+    renamed file -- silently shipping a read-along EPUB that OTHER processes
+    (BookOrbit's own scanner, running in a different container) cannot read.
+    Reproduced live: BookOrbit's scan indexed the sibling standalone audio
+    file but never the generated EPUB at all, with
+    'EACCES: permission denied, unlink ...' in its own logs once its
+    permission model rejected the 0600 file. _package_epub must widen the
+    temp file's permissions to a normal, world-readable mode before the
+    atomic rename. Verified by asserting os.chmod is actually called with a
+    permissive mode -- an assertion on file mode BITS would not be
+    meaningful on Windows, where this suite also runs, since Windows does
+    not enforce POSIX permission bits the same way."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        src_path = tmp / "book.epub"
+        with zipfile.ZipFile(src_path, "w") as z:
+            z.writestr("mimetype", "application/epub+zip")
+            z.writestr("OEBPS/ch1.xhtml", b"<html><body><p>Hello.</p></body></html>")
+        out_path = tmp / "out.epub"
+
+        with patch("src.services.readalong_builder.os.chmod") as mock_chmod:
+            _package_epub(src_path, out_path, modified_files={}, new_bytes_files={}, new_disk_files={})
+
+        assert mock_chmod.call_count >= 1, "_package_epub must chmod its temp file to a permissive mode"
+        widened_modes = [call.args[1] for call in mock_chmod.call_args_list]
+        assert any(mode & 0o044 == 0o044 for mode in widened_modes), (
+            f"expected a chmod call widening group/other read access, got {widened_modes!r}"
+        )
+        assert out_path.exists()
+
+
 def test_embedded_audio_is_transcoded_aac_not_the_original_bytes():
     """Phase 4 replaces Phase 3's "embed as-is" with a real ffmpeg transcode
     to mono AAC -- the embedded audio must NOT be byte-identical to the
@@ -597,6 +925,39 @@ def test_embedded_audio_is_transcoded_aac_not_the_original_bytes():
 
 
 # ---------------------------------------------------------------------------
+# Injection-failure hardening (added to unblock live BookOrbit verification
+# of the six findings above -- not one of the six itself; see the module
+# docstring's discussion in the fix pass's report for the full mechanism)
+# ---------------------------------------------------------------------------
+
+def test_nonbreaking_space_at_marker_split_preserves_chapter_text():
+    """Removing generated empty markers before verification preserves a
+    non-breaking space at a sentence boundary."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        nbsp = " "
+        _write_epub(epub_path, {
+            "ch1": (
+                f"<html><body><p>First sentence here.{nbsp} Second sentence follows. "
+                f"Third one too.</p></body></html>"
+            ).encode("utf-8"),
+        })
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp)
+
+        result, output_path = _build(tmp, parser, epub_path, audio_path, combined_text)
+        assert result is not None
+
+        with zipfile.ZipFile(output_path) as zf:
+            ch1_bytes = zf.read("OEBPS/ch1.xhtml")
+
+        assert 'id="c1-s0"' in ch1_bytes.decode("utf-8")
+        assert b"\xc2\xa0" in ch1_bytes
+
+
+# ---------------------------------------------------------------------------
 # Fitted-EPUB guard passthrough (Phase 2) and empty-result refusal
 # ---------------------------------------------------------------------------
 
@@ -622,6 +983,30 @@ def test_refuses_when_alignment_map_does_not_fit_epub():
             parser=parser, alignment_service=alignment_service, epub_path=epub_path,
             audio_paths=audio_path, abs_id="abs1", output_path=output_path,
         )
+        assert result is None
+        assert not output_path.exists()
+
+
+def test_refuses_epub2_source_instead_of_emitting_a_still_epub2_package():
+    """Finding 2 (independent review): appending SMIL media overlays to an
+    EPUB 2 package (``<package version="2.0">``) without upgrading it to
+    EPUB 3 navigation/metadata produces output that is not EPUB-3-conformant,
+    even though a lenient reader (e.g. BookOrbit) accepts the SMIL anyway.
+    Rather than implement that upgrade, this refuses EPUB 2 input outright
+    with a clear log reason."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(
+            epub_path,
+            {"ch1": b"<html><body><p>Alpha bravo. Charlie delta.</p></body></html>"},
+            opf_version="2.0",
+        )
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp)
+
+        result, output_path = _build(tmp, parser, epub_path, audio_path, combined_text)
         assert result is None
         assert not output_path.exists()
 
@@ -716,6 +1101,37 @@ def test_extend_clips_to_contiguous_single_clip_only_gets_tail_extension():
     extended = _extend_clips_to_contiguous(clips, audio_duration_seconds=5.0)
     assert extended[0].ts_start == 0.0
     assert extended[0].ts_end == 5.0
+
+
+def test_extend_clips_to_contiguous_does_not_corrupt_a_legitimate_backward_segment_transition():
+    """Finding 3 follow-on: build_sentence_clips now legitimately allows
+    ts_start[i+1] < ts_end[i] across a genuine out-of-order-narration segment
+    transition (see test_readalong_segments.py's
+    test_out_of_order_segments_preserve_reordered_narration_timestamps).
+    Blindly extending clip i's ts_end to clip i+1's ts_start in that case
+    would produce a NEGATIVE-duration clip (ts_end < ts_start) -- worse than
+    the pause this function exists to close. The earlier clip's own computed
+    end must survive untouched instead."""
+    clips = [
+        SentenceClip(
+            sentence_id="c1-s0", spine_index=1, href="c1.xhtml",
+            char_start=0, char_end=1, ts_start=10.0, ts_end=20.0,
+            segment_key=1, segment_ts_start=10.0, segment_ts_end=20.0,
+            segment_scoped=True,
+        ),
+        SentenceClip(
+            sentence_id="c1-s1", spine_index=1, href="c1.xhtml",
+            char_start=1, char_end=2, ts_start=0.0, ts_end=9.0,
+            segment_key=2, segment_ts_start=0.0, segment_ts_end=9.0,
+            segment_scoped=True,
+        ),  # a different, earlier-narrated segment
+    ]
+    extended = _extend_clips_to_contiguous(clips, audio_duration_seconds=25.0)
+    assert extended[0].ts_start == 10.0
+    assert extended[0].ts_end == 25.0  # temporal-last segment gets the real audio tail
+    assert extended[0].ts_end >= extended[0].ts_start  # never negative duration
+    assert extended[1].ts_start == 0.0
+    assert extended[1].ts_end == 9.0  # no tail extension across a later reading-order segment
 
 
 # ---------------------------------------------------------------------------

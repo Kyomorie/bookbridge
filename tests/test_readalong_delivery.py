@@ -115,6 +115,11 @@ class _FakeAlignmentService:
         frac = max(0.0, min(1.0, char_offset / self._total_chars)) if self._total_chars else 0.0
         return frac * self._total_seconds
 
+    def _get_segments(self, abs_id: str) -> Optional[list]:
+        """None -- an unsegmented (single, in-order narration) map, matching
+        the real AlignmentService._get_segments contract (Finding 3 fix)."""
+        return None
+
 
 class _FakeAudioSyncClient:
     def __init__(self, book_id):
@@ -466,3 +471,46 @@ def test_deliver_falls_back_to_library_folder_match_when_libraryid_missing(tmp_p
     assert result is not None
     assert result.library_id == 9
     assert client.scan_calls == [9]
+
+
+def test_failed_chapter_preserves_delivered_book_and_does_not_scan(tmp_path, monkeypatch):
+    """An unrecoverable chapter must not replace or publish an existing readalong."""
+    parser, alignment_service, book, tracks, audio_folder = _setup(tmp_path, monkeypatch)
+    source_path = Path(parser.resolve_book_path(book.ebook_filename))
+    with zipfile.ZipFile(source_path) as source:
+        members = {name: source.read(name) for name in source.namelist()}
+    members["OEBPS/content.opf"] = members["OEBPS/content.opf"].replace(
+        b"</manifest>",
+        b'<item id="ch2" href="ch2.xhtml" media-type="application/xhtml+xml"/></manifest>',
+    ).replace(b"</spine>", b'<itemref idref="ch2"/></spine>')
+    members["OEBPS/ch2.xhtml"] = b"<html><body><p>Healthy chapter.</p></body></html>"
+    with zipfile.ZipFile(source_path, "w") as source:
+        for name, data in members.items():
+            source.writestr(name, data)
+    text, _ = parser.extract_text_and_map(source_path)
+    alignment_service = _FakeAlignmentService(len(text), total_seconds=1.0)
+    client = _FakeBookOrbitClient(tracks)
+    output_path = audio_folder / _readalong_filename(Path(book.ebook_filename))
+    previous = b"previous complete readalong"
+    output_path.write_bytes(previous)
+
+    from src.services.readalong_builder import _verify_marker_injection
+
+    def reject_injection(original, modified, spine_index, href):
+        if spine_index == 1:
+            raise ValueError("chapter cannot preserve original text")
+        return _verify_marker_injection(original, modified, spine_index, href)
+
+    monkeypatch.setattr(
+        "src.services.readalong_builder._verify_marker_injection", reject_injection,
+    )
+    result = deliver_readalong_epub(
+        parser, alignment_service, client,
+        _FakeEbookSyncClient("ebook-1"), _FakeAudioSyncClient("audio-1"), book,
+        confirm_poll_interval_seconds=0.01,
+    )
+
+    assert result is None
+    assert output_path.read_bytes() == previous
+    assert client.scan_calls == []
+    assert not list(audio_folder.glob("*.tmp"))

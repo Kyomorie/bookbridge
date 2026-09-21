@@ -42,7 +42,9 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple, Union, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, Union, TYPE_CHECKING
+
+from src.services.alignment_service import _segment_for_char
 
 if TYPE_CHECKING:
     from src.services.alignment_service import AlignmentService
@@ -85,6 +87,37 @@ _SENTENCE_START_CHARS = frozenset('"\'‘’“”([{—–')
 # short sentence: extraction drift moves a handful of characters, a different
 # edition moves thousands. See `_map_fits_epub` for the measurement behind it.
 _TOTAL_CHARS_DRIFT_TOLERANCE = 16
+
+# Sentinel for "no segment floor has been established yet" -- distinct from
+# `None`, which is itself a valid, real segment-key value (a sentence whose
+# chars land in a gap between segments, see `_segment_key_for_char`). Using a
+# dedicated object means the very first sentence of a segmented book always
+# triggers `build_sentence_clips`'s floor-reset branch, even when that first
+# sentence's own segment key happens to be `None`.
+_UNSET_SEGMENT = object()
+
+
+def _segment_key_for_char(segments: List[Dict], char_start: int, char_end: int) -> object:
+    """A hashable/comparable identity for whichever segment ``char_start``
+    (falling back to ``char_end``) belongs to, or ``None`` if neither lands
+    in any segment (a gap -- front/back matter with no narration
+    correlation, typically).
+
+    Used by :func:`build_sentence_clips` to detect when consecutive
+    sentences cross a segment boundary, so its monotonic floor can reset
+    instead of carrying a timestamp forward from audio the new segment has
+    no ordering relationship with (Finding 3 of the independent review).
+    Keyed on ``id()`` of the segment dict itself rather than its char/ts
+    values: :meth:`AlignmentService._get_segments` returns the same list
+    (and the same dicts) for the lifetime of one ``build_sentence_clips``
+    call, so identity is stable and cheaper than a value comparison, and
+    never ambiguous between two segments that might coincidentally share
+    edge values.
+    """
+    segment = _segment_for_char(segments, char_start)
+    if segment is None:
+        segment = _segment_for_char(segments, char_end)
+    return id(segment) if segment is not None else None
 
 
 def _preceding_token(text: str, pos: int) -> str:
@@ -189,8 +222,9 @@ class SentenceClip:
     ``char_start``/``char_end`` are half-open, in the same character space as
     ``EbookParser.extract_text_and_map``'s combined text (and
     ``ebook_dom_map.SpineDomMap``). ``ts_start``/``ts_end`` are seconds into
-    the book's audio; monotonically non-decreasing and non-overlapping across
-    the whole book by construction -- see :func:`build_sentence_clips`.
+    the book's audio; they are monotonic and non-overlapping within a segment.
+    Segmented maps carry the segment identity and audio bounds so later EPUB
+    assembly can preserve reordered narration blocks.
     """
     sentence_id: str
     spine_index: int
@@ -199,6 +233,12 @@ class SentenceClip:
     char_end: int
     ts_start: float
     ts_end: float
+    # Present for segmented maps so later assembly can distinguish a real
+    # within-segment pause from a jump to an unrelated narration block.
+    segment_key: Optional[int] = None
+    segment_ts_start: Optional[float] = None
+    segment_ts_end: Optional[float] = None
+    segment_scoped: bool = False
 
 
 @dataclass(frozen=True)
@@ -307,14 +347,36 @@ def build_sentence_clips(
     :func:`_map_fits_epub`). A wrong map produces a read-along that drifts
     further the longer it plays, so this never emits output for one.
 
-    Interpolated timestamps are additionally clamped to be monotonically
-    non-decreasing and non-overlapping across the whole book (a running
-    floor at the previous clip's end): a sentence whose two boundaries fall
-    in two different out-of-order segments can otherwise resolve to an end
+    Interpolated timestamps are clamped to be monotonically non-decreasing
+    and non-overlapping *within whatever segment each sentence's own start
+    belongs to* (a running floor at the previous clip's end, reset whenever
+    the current sentence's segment differs from the previous one's -- see
+    :func:`_segment_key_for_char`). A sentence whose two boundaries fall in
+    two different out-of-order segments can still resolve to an end
     timestamp before its own start (each edge clamps independently to its
-    *own* nearest segment edge). This never silently emits a sentence with no
-    timestamp at all -- one is only ever dropped, and counted, when the
-    alignment map itself returns ``None`` for a boundary.
+    *own* nearest segment edge); that is handled per-sentence, comparing only
+    against that sentence's own start, never against a floor inherited from
+    a different segment.
+
+    **Finding 3 of the independent review of Phases 1-4 (fixed here):** an
+    earlier version of this function kept a single running floor across the
+    *whole book*, in spine/reading order. For a book with genuinely
+    out-of-order narration (issue #426 segmented maps -- 15 of 324 books on
+    the reference install), a chapter narrated *earlier* in the audio than a
+    chapter that precedes it in reading order would have its legitimate
+    (small) timestamps clamped up to the previous (reading-order) chapter's
+    floor, collapsing it to a zero-length clip and making that chapter's
+    audio unreachable. The floor is now scoped to a segment: crossing into a
+    different segment (or into/out of unsegmented territory) starts a fresh
+    floor at 0.0 rather than carrying forward a floor from audio the new
+    segment has no ordering relationship with. For a book with no
+    ``segments_json`` (the common case -- a single, in-order narration), this
+    is unchanged from before: one segment spans the whole book, so the floor
+    is still the single running one across all its sentences.
+
+    This never silently emits a sentence with no timestamp at all -- one is
+    only ever dropped, and counted, when the alignment map itself returns
+    ``None`` for a boundary.
 
     :param parser: the ``EbookParser`` to source the book's spine text from.
     :param filepath: the EPUB path, exactly as ``extract_text_and_map`` accepts
@@ -333,10 +395,13 @@ def build_sentence_clips(
         )
         return None
 
+    segments = alignment_service._get_segments(abs_id)
+
     clips: List[SentenceClip] = []
     dropped = 0
     clamped = 0
     floor_ts = 0.0
+    floor_segment_key: object = _UNSET_SEGMENT
 
     for entry in spine_map:
         item_text = combined_text[entry["start"]:entry["end"]]
@@ -356,6 +421,30 @@ def build_sentence_clips(
                 )
                 continue
 
+            segment = None
+            if segments:
+                segment_key = _segment_key_for_char(segments, char_start, char_end)
+                segment = _segment_for_char(segments, char_start)
+                if segment is None:
+                    segment = _segment_for_char(segments, char_end)
+                if segment is not None:
+                    # ``char_end`` is half-open. At an exact segment boundary
+                    # the alignment lookup may land in the next segment; a
+                    # sentence belongs to the segment containing its start.
+                    segment_start = float(segment["ts_start"])
+                    segment_end = float(segment["ts_end"])
+                    raw_start = min(max(float(raw_start), segment_start), segment_end)
+                    raw_end = min(max(float(raw_end), segment_start), segment_end)
+                if segment_key != floor_segment_key:
+                    # A genuine narration-order jump to a different segment
+                    # (or the very first sentence): the previous segment's
+                    # ending timestamp has no ordering relationship with this
+                    # one, so start a fresh floor instead of forcing this
+                    # sentence to not go "backward" relative to audio it
+                    # doesn't share a segment with (Finding 3).
+                    floor_ts = 0.0
+                    floor_segment_key = segment_key
+
             ts_start = max(float(raw_start), floor_ts)
             ts_end = max(float(raw_end), ts_start)
             if ts_start > float(raw_start) or ts_end > float(raw_end):
@@ -369,6 +458,10 @@ def build_sentence_clips(
                 char_end=char_end,
                 ts_start=ts_start,
                 ts_end=ts_end,
+                segment_key=segment_key if segments else None,
+                segment_ts_start=float(segment["ts_start"]) if segment is not None else None,
+                segment_ts_end=float(segment["ts_end"]) if segment is not None else None,
+                segment_scoped=bool(segments),
             ))
             floor_ts = ts_end
 

@@ -6,6 +6,13 @@ All notable changes to BookBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Readalong EPUB generation preserves original chapter markup and nonbreaking
+  whitespace, keeps audio clips within their narration segments, and refuses
+  incomplete exports instead of publishing a book with missing chapters. A failed
+  regeneration leaves the previous EPUB in place and does not trigger a library scan.
+
 ### Added
 
 - **Recently-read books can now be shared between your devices.** KOReader writes its
