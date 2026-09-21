@@ -1308,6 +1308,19 @@
                             read-along sync to disabled so BookBridge owns both. Books whose audio and text live in
                             separate BookOrbit entries — the usual arrangement — are unaffected either way.</div>
                     </div>
+                    <div class="form-group">
+                        <label>Read-Along Audio Bitrate</label>
+                        <input type="text" name="READALONG_AUDIO_BITRATE"
+                            value="{{ get_val('READALONG_AUDIO_BITRATE', '32k') }}"
+                            placeholder="32k">
+                        <div class="help-text">Bitrate ffmpeg encodes into a generated read-along EPUB's embedded
+                            audio (mono AAC) — e.g. <code>32k</code>, <code>48k</code>. Spoken-word audio stays
+                            intelligible well below music bitrates; Storyteller's own read-along files run about
+                            31kbps. Lower saves storage and download size across the library (roughly 14MB per hour
+                            of audio at the default); higher improves quality at the cost of both. An invalid value
+                            falls back to the default rather than failing generation. Applies the next time a
+                            read-along EPUB is generated — existing generated files are not re-encoded.</div>
+                    </div>
                 </div>
             </div>
 

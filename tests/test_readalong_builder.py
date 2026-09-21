@@ -1,23 +1,48 @@
 """Unit tests for EPUB 3 read-along assembly (Phase 3:
 docs/PLAN_READALONG_EPUB3_GENERATION.md) -- marker injection, SMIL emission,
-OPF rewriting, and zip packaging.
+OPF rewriting, and zip packaging. Phase 4 adds: clip contiguity
+(_extend_clips_to_contiguous), the READALONG_AUDIO_BITRATE setting, and real
+ffmpeg audio transcoding/concatenation.
 
 Builds small inline EPUB fixtures with zipfile (same pattern as
 test_ebook_dom_map.py / test_readalong_segments.py). Alignment maps are
 supplied via the same minimal fake AlignmentService double
 test_readalong_segments.py uses.
+
+Every test drives build_readalong_epub end to end, which (since Phase 4)
+always transcodes through real ffmpeg -- there is no mock seam for it, mirroring
+this repo's existing precedent in test_forced_aligner.py
+(test_load_audio_decodes_to_mono_16k_via_ffmpeg) of calling the real binary
+and skipping if it is not on PATH, rather than mocking subprocess. _make_audio
+below generates real, tiny, silent audio via ffmpeg's lavfi anullsrc source so
+every test's input is something ffmpeg can actually decode.
 """
+import os
 import re
+import shutil
+import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 from xml.etree import ElementTree
 
+import pytest
 from lxml import etree
 
-from src.services.readalong_builder import build_readalong_epub
+from src.services.readalong_builder import (
+    _DEFAULT_AUDIO_BITRATE,
+    _extend_clips_to_contiguous,
+    _probe_duration_seconds,
+    build_readalong_epub,
+)
+from src.services.readalong_segments import SentenceClip
 from src.utils.ebook_utils import EbookParser
+
+pytestmark = pytest.mark.skipif(
+    not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
+    reason="ffmpeg/ffprobe not on PATH -- Phase 4 always transcodes real audio",
+)
 
 _CONTAINER_XML = (
     '<?xml version="1.0"?><container version="1.0" '
@@ -108,24 +133,40 @@ def _linear_alignment(total_chars: int, total_seconds: float) -> _FakeAlignmentS
     )
 
 
-def _make_audio(tmp: Path, suffix: str = ".mp3", size: int = 256) -> Path:
-    audio_path = tmp / f"audio{suffix}"
-    audio_path.write_bytes(b"\x00" * size)
+def _make_audio(tmp: Path, suffix: str = ".mp3", duration: float = 1.0, name: str = "audio") -> Path:
+    """A tiny, real, silent audio file ffmpeg can actually decode.
+
+    Phase 3's fixture wrote raw zero bytes -- fine when audio was embedded
+    as-is, but Phase 4 always transcodes through real ffmpeg, which cannot
+    decode that. Silence keeps the fixture fast and deterministic; duration
+    is intentionally short (tests care about contiguity/bitrate behavior,
+    not matching any particular audiobook length).
+    """
+    audio_path = tmp / f"{name}{suffix}"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-nostdin", "-loglevel", "error",
+            "-f", "lavfi", "-i", "anullsrc=r=8000:cl=mono",
+            "-t", str(duration), str(audio_path),
+        ],
+        check=True,
+    )
     return audio_path
 
 
-def _build(tmp: Path, parser: EbookParser, epub_path: Path, audio_path: Path,
+def _build(tmp: Path, parser: EbookParser, epub_path: Path, audio_path,
            combined_text: str, abs_id: str = "abs1", total_seconds: float = 100.0,
-           output_name: str = "out.epub"):
+           output_name: str = "out.epub", standalone_audio_output_path=None):
     alignment_service = _linear_alignment(len(combined_text), total_seconds)
     output_path = tmp / output_name
     result = build_readalong_epub(
         parser=parser,
         alignment_service=alignment_service,
         epub_path=epub_path,
-        audio_path=audio_path,
+        audio_paths=audio_path,
         abs_id=abs_id,
         output_path=output_path,
+        standalone_audio_output_path=standalone_audio_output_path,
     )
     return result, output_path
 
@@ -522,22 +563,37 @@ def test_package_carries_through_untouched_files_byte_identical():
             assert zf.read("META-INF/container.xml").decode("utf-8") == _CONTAINER_XML
 
 
-def test_embedded_audio_is_present_and_byte_identical():
+def test_embedded_audio_is_transcoded_aac_not_the_original_bytes():
+    """Phase 4 replaces Phase 3's "embed as-is" with a real ffmpeg transcode
+    to mono AAC -- the embedded audio must NOT be byte-identical to the
+    source file anymore (that was Phase 3's own guarantee, deliberately
+    superseded here), and must itself be valid, decodable audio."""
     with tempfile.TemporaryDirectory() as tmp_str:
         tmp = Path(tmp_str)
         parser = _parser(tmp)
         epub_path = tmp / "books" / "book.epub"
         _write_epub(epub_path, {"ch1": b"<html><body><p>Alpha bravo.</p></body></html>"})
         combined_text, _ = parser.extract_text_and_map(str(epub_path))
-        audio_path = _make_audio(tmp, size=4096)
-        audio_bytes = audio_path.read_bytes()
+        audio_path = _make_audio(tmp, suffix=".wav")
+        original_bytes = audio_path.read_bytes()
 
         result, output_path = _build(tmp, parser, epub_path, audio_path, combined_text)
         assert result is not None
+        assert result.audio_bitrate == _DEFAULT_AUDIO_BITRATE
 
         with zipfile.ZipFile(output_path) as zf:
             audio_name = next(n for n in zf.namelist() if n.startswith("OEBPS/readalong/audio"))
-            assert zf.read(audio_name) == audio_bytes
+            embedded_bytes = zf.read(audio_name)
+            assert embedded_bytes != original_bytes
+            assert audio_name.endswith(".m4a")
+            extracted_path = tmp / "extracted.m4a"
+            extracted_path.write_bytes(embedded_bytes)
+
+        # Decodable and roughly the source duration (silence encodes fast,
+        # AAC frame quantization means it won't be exact).
+        duration = _probe_duration_seconds(extracted_path)
+        assert duration is not None
+        assert 0.5 < duration < 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -564,7 +620,7 @@ def test_refuses_when_alignment_map_does_not_fit_epub():
         output_path = tmp / "out.epub"
         result = build_readalong_epub(
             parser=parser, alignment_service=alignment_service, epub_path=epub_path,
-            audio_path=audio_path, abs_id="abs1", output_path=output_path,
+            audio_paths=audio_path, abs_id="abs1", output_path=output_path,
         )
         assert result is None
         assert not output_path.exists()
@@ -589,3 +645,310 @@ def test_output_reused_epub_has_no_leftover_markers_from_prior_run():
 
         with zipfile.ZipFile(output1) as z1, zipfile.ZipFile(output2) as z2:
             assert z1.read("OEBPS/ch1.xhtml") == z2.read("OEBPS/ch1.xhtml")
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 Part A: clip contiguity (_extend_clips_to_contiguous)
+# ---------------------------------------------------------------------------
+
+def _clip(sentence_id: str, spine_index: int, ts_start: float, ts_end: float) -> SentenceClip:
+    return SentenceClip(
+        sentence_id=sentence_id, spine_index=spine_index, href=f"c{spine_index}.xhtml",
+        char_start=0, char_end=1, ts_start=ts_start, ts_end=ts_end,
+    )
+
+
+def test_extend_clips_to_contiguous_closes_internal_gaps():
+    """Each non-last clip's end is pulled forward to exactly the next clip's
+    start -- the fix for Phase 3's measured 4.28% short overlay total."""
+    clips = [
+        _clip("c1-s0", 1, 0.0, 1.0),
+        _clip("c1-s1", 1, 1.5, 2.5),   # 0.5s gap before this clip
+        _clip("c1-s2", 1, 3.0, 4.0),   # 0.5s gap before this clip
+    ]
+    extended = _extend_clips_to_contiguous(clips, audio_duration_seconds=10.0)
+    assert extended[0].ts_end == extended[1].ts_start == 1.5
+    assert extended[1].ts_end == extended[2].ts_start == 3.0
+
+
+def test_extend_clips_to_contiguous_preserves_ts_start():
+    """Only ts_end is ever changed -- ts_start (the true sentence onset) is
+    identical before and after for every clip, including the last."""
+    clips = [
+        _clip("c1-s0", 1, 0.0, 1.0),
+        _clip("c1-s1", 1, 1.5, 2.5),
+        _clip("c1-s2", 1, 3.0, 4.0),
+    ]
+    extended = _extend_clips_to_contiguous(clips, audio_duration_seconds=10.0)
+    assert [c.ts_start for c in extended] == [c.ts_start for c in clips]
+    assert [c.sentence_id for c in extended] == [c.sentence_id for c in clips]
+    assert [c.char_start for c in extended] == [c.char_start for c in clips]
+
+
+def test_extend_clips_to_contiguous_extends_last_clip_to_audio_duration():
+    """The book's final clip has no "next" clip, so it is extended all the
+    way to the real (probed) audio duration instead."""
+    clips = [_clip("c1-s0", 1, 0.0, 1.0), _clip("c1-s1", 1, 1.5, 2.5)]
+    extended = _extend_clips_to_contiguous(clips, audio_duration_seconds=10.0)
+    assert extended[-1].ts_end == 10.0
+    assert extended[0].ts_end == 1.5  # internal gap still closed
+
+
+def test_extend_clips_to_contiguous_never_shrinks_when_duration_too_short_or_missing():
+    """If the probed duration is unavailable, or isn't actually past the last
+    clip's own computed end, the last clip is left untouched -- this never
+    shrinks a clip or guesses at an unbacked duration."""
+    clips = [_clip("c1-s0", 1, 0.0, 1.0), _clip("c1-s1", 1, 1.5, 5.0)]
+
+    extended_no_probe = _extend_clips_to_contiguous(clips, audio_duration_seconds=None)
+    assert extended_no_probe[-1].ts_end == 5.0
+
+    extended_short_probe = _extend_clips_to_contiguous(clips, audio_duration_seconds=3.0)
+    assert extended_short_probe[-1].ts_end == 5.0  # 3.0 < 5.0, so left alone
+
+
+def test_extend_clips_to_contiguous_empty_list():
+    assert _extend_clips_to_contiguous([], 10.0) == []
+
+
+def test_extend_clips_to_contiguous_single_clip_only_gets_tail_extension():
+    clips = [_clip("c1-s0", 1, 0.0, 1.0)]
+    extended = _extend_clips_to_contiguous(clips, audio_duration_seconds=5.0)
+    assert extended[0].ts_start == 0.0
+    assert extended[0].ts_end == 5.0
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 Part A: contiguity end to end, via build_readalong_epub
+# ---------------------------------------------------------------------------
+
+def _all_pars_in_order(output_path: Path) -> List[Dict[str, float]]:
+    """Every <par>'s (clipBegin, clipEnd), across every .smil in the archive,
+    ordered by spine index then position within the file -- i.e. book
+    reading order, matching how _extend_clips_to_contiguous consumes them."""
+    pairs = []
+    with zipfile.ZipFile(output_path) as zf:
+        smil_names = sorted(
+            (n for n in zf.namelist() if n.endswith(".smil")),
+            key=lambda n: int(Path(n).stem),
+        )
+        for name in smil_names:
+            root = etree.fromstring(zf.read(name))
+            for par in root.findall(f".//{_SMIL_NS}par"):
+                audio = par.find(f"{_SMIL_NS}audio")
+                pairs.append({
+                    "id": par.get("id"),
+                    "begin": float(audio.get("clipBegin")[:-1]),
+                    "end": float(audio.get("clipEnd")[:-1]),
+                })
+    return pairs
+
+
+def test_no_gap_between_consecutive_pars_within_one_spine_item():
+    """Adjacent sentences in the same chapter: clipEnd of one exactly equals
+    clipBegin of the next -- no inter-sentence pause is left uncovered."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(epub_path, {
+            "ch1": b"<html><body><p>Alpha bravo. Charlie delta. Echo foxtrot.</p></body></html>",
+        })
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp)
+
+        result, output_path = _build(tmp, parser, epub_path, audio_path, combined_text, total_seconds=0.5)
+        assert result is not None
+
+        pars = _all_pars_in_order(output_path)
+        assert len(pars) == 3
+        for i in range(len(pars) - 1):
+            assert pars[i]["end"] == pars[i + 1]["begin"], pars
+
+
+def test_no_gap_across_spine_item_boundary():
+    """The last sentence of chapter 1 and the first sentence of chapter 2 are
+    also contiguous -- the fix applies across spine items, not just within
+    one, per the plan's explicit instruction."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(epub_path, {
+            "ch1": b"<html><body><p>Alpha bravo. Charlie delta.</p></body></html>",
+            "ch2": b"<html><body><p>Echo foxtrot. Golf hotel.</p></body></html>",
+        })
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp)
+
+        result, output_path = _build(tmp, parser, epub_path, audio_path, combined_text, total_seconds=0.5)
+        assert result is not None
+
+        pars = _all_pars_in_order(output_path)
+        assert len(pars) == 4
+        for i in range(len(pars) - 1):
+            assert pars[i]["end"] == pars[i + 1]["begin"], pars
+
+
+def test_last_clip_of_book_reaches_the_real_embedded_audio_duration():
+    """The very last <par> in the whole book has clipEnd equal to the
+    embedded (transcoded) audio's own real, probed duration -- not the raw
+    interpolated end Phase 2 computed, which stops short of the real audio
+    by however long the trailing pause/silence runs."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(epub_path, {
+            "ch1": b"<html><body><p>Alpha bravo. Charlie delta.</p></body></html>",
+        })
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp, duration=1.0)
+
+        # total_seconds well under the real ~1.0s audio, so the tail
+        # extension actually has room to grow into.
+        result, output_path = _build(tmp, parser, epub_path, audio_path, combined_text, total_seconds=0.2)
+        assert result is not None
+
+        with zipfile.ZipFile(output_path) as zf:
+            audio_name = next(n for n in zf.namelist() if n.startswith("OEBPS/readalong/audio"))
+            extracted_path = tmp / "extracted.m4a"
+            extracted_path.write_bytes(zf.read(audio_name))
+        real_duration = _probe_duration_seconds(extracted_path)
+        assert real_duration is not None
+
+        pars = _all_pars_in_order(output_path)
+        assert pars[-1]["end"] == pytest.approx(real_duration, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 Part B: READALONG_AUDIO_BITRATE (read per call, invalid degrades safely)
+# ---------------------------------------------------------------------------
+
+def test_bitrate_setting_read_per_call():
+    """Two builds in the same process with different
+    READALONG_AUDIO_BITRATE values each pick up their own setting -- proof
+    it is read per call, not cached at import or in a Singleton."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(epub_path, {"ch1": b"<html><body><p>Alpha bravo.</p></body></html>"})
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp)
+
+        old = os.environ.get("READALONG_AUDIO_BITRATE")
+        try:
+            os.environ["READALONG_AUDIO_BITRATE"] = "24k"
+            result1, _ = _build(tmp, parser, epub_path, audio_path, combined_text, output_name="a.epub")
+            assert result1 is not None
+            assert result1.audio_bitrate == "24k"
+
+            os.environ["READALONG_AUDIO_BITRATE"] = "64k"
+            result2, _ = _build(tmp, parser, epub_path, audio_path, combined_text, output_name="b.epub")
+            assert result2 is not None
+            assert result2.audio_bitrate == "64k"
+        finally:
+            if old is None:
+                os.environ.pop("READALONG_AUDIO_BITRATE", None)
+            else:
+                os.environ["READALONG_AUDIO_BITRATE"] = old
+
+
+def test_invalid_bitrate_degrades_to_default_instead_of_crashing():
+    """An admin typo in READALONG_AUDIO_BITRATE must not abort generation --
+    it falls back to the safe default and the build still succeeds."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(epub_path, {"ch1": b"<html><body><p>Alpha bravo.</p></body></html>"})
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp)
+
+        old = os.environ.get("READALONG_AUDIO_BITRATE")
+        try:
+            os.environ["READALONG_AUDIO_BITRATE"] = "not-a-bitrate"
+            result, output_path = _build(tmp, parser, epub_path, audio_path, combined_text)
+            assert result is not None
+            assert result.audio_bitrate == _DEFAULT_AUDIO_BITRATE
+            assert output_path.exists()
+        finally:
+            if old is None:
+                os.environ.pop("READALONG_AUDIO_BITRATE", None)
+            else:
+                os.environ["READALONG_AUDIO_BITRATE"] = old
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 Part B: multi-file audio concatenation
+# ---------------------------------------------------------------------------
+
+def test_multi_file_audio_is_concatenated_into_one_embedded_file():
+    """A multi-file audiobook's parts, given in order, are concatenated into
+    the single physical file the SMIL references -- the embedded audio's
+    real duration should be close to the sum of the two source parts'
+    durations (loose tolerance: AAC frame quantization on re-encode)."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(epub_path, {"ch1": b"<html><body><p>Alpha bravo.</p></body></html>"})
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        part1 = _make_audio(tmp, duration=1.0, name="part1")
+        part2 = _make_audio(tmp, duration=1.5, name="part2")
+
+        result, output_path = _build(tmp, parser, epub_path, [part1, part2], combined_text, total_seconds=0.1)
+        assert result is not None
+
+        with zipfile.ZipFile(output_path) as zf:
+            audio_name = next(n for n in zf.namelist() if n.startswith("OEBPS/readalong/audio"))
+            extracted_path = tmp / "extracted.m4a"
+            extracted_path.write_bytes(zf.read(audio_name))
+        duration = _probe_duration_seconds(extracted_path)
+        assert duration is not None
+        assert 2.0 < duration < 3.0  # ~2.5s (1.0 + 1.5), generous tolerance
+
+
+def test_refuses_with_no_audio_paths():
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(epub_path, {"ch1": b"<html><body><p>Alpha bravo.</p></body></html>"})
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+
+        alignment_service = _linear_alignment(len(combined_text), 10.0)
+        output_path = tmp / "out.epub"
+        result = build_readalong_epub(
+            parser=parser, alignment_service=alignment_service, epub_path=epub_path,
+            audio_paths=[], abs_id="abs1", output_path=output_path,
+        )
+        assert result is None
+        assert not output_path.exists()
+
+
+def test_standalone_audio_output_path_gets_a_copy_of_the_transcoded_audio():
+    """standalone_audio_output_path receives the same transcoded bytes that
+    got embedded -- Phase 3's live finding is that BookOrbit's file scanner
+    needs a standalone sibling audio file next to the generated EPUB; this is
+    how a caller gets that file without re-running ffmpeg."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(epub_path, {"ch1": b"<html><body><p>Alpha bravo.</p></body></html>"})
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp)
+        standalone_path = tmp / "standalone.m4a"
+
+        result, output_path = _build(
+            tmp, parser, epub_path, audio_path, combined_text,
+            standalone_audio_output_path=standalone_path,
+        )
+        assert result is not None
+        assert standalone_path.exists()
+
+        with zipfile.ZipFile(output_path) as zf:
+            audio_name = next(n for n in zf.namelist() if n.startswith("OEBPS/readalong/audio"))
+            assert zf.read(audio_name) == standalone_path.read_bytes()

@@ -70,6 +70,9 @@ ALL_SETTINGS = [
     'BOOKORBIT_ANNOTATION_SYNC_MINUTES', 'BOOKORBIT_KOSYNC_OWNER',
     'BOOKORBIT_READALONG_POLICY',
 
+    # Read-along EPUB 3 generation (docs/PLAN_READALONG_EPUB3_GENERATION.md)
+    'READALONG_AUDIO_BITRATE',
+
     # Kavita
     'KAVITA_ENABLED', 'KAVITA_SERVER', 'KAVITA_WEB_URL', 'KAVITA_API_KEY',
     'KAVITA_LIBRARY_ID', 'KAVITA_COLLECTION_NAME',
@@ -338,6 +341,11 @@ DEFAULT_CONFIG = {
     'BOOKORBIT_ANNOTATION_SYNC_MINUTES': '15',
     'BOOKORBIT_KOSYNC_OWNER': '',
     'BOOKORBIT_READALONG_POLICY': 'defer',
+    # 32kbps mono AAC -- see src/services/readalong_builder.py's
+    # _DEFAULT_AUDIO_BITRATE (must match), which documents the reference
+    # data point (Storyteller ships 141MB for a 10.1h book, ~31kbps) behind
+    # this default.
+    'READALONG_AUDIO_BITRATE': '32k',
     'KAVITA_ENABLED': 'false',
     'KAVITA_SERVER': '',
     'KAVITA_WEB_URL': '',
