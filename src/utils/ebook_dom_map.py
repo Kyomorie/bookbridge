@@ -98,8 +98,13 @@ class SpineDomMap:
     node_count: int = 0
 
 
-def _content_string_nodes(soup: BeautifulSoup) -> List[NavigableString]:
+def content_string_nodes(soup: BeautifulSoup) -> List[NavigableString]:
     """All descendants of ``soup`` that ``soup.get_text()`` would enumerate.
+
+    Public because the read-along builder re-parses the same ``content`` bytes to
+    splice in markers and must enumerate nodes in exactly the order
+    :func:`locate_offset` indexed them. Re-deriving this filter there would risk a
+    silent divergence that misplaces every marker in the item.
 
     Mirrors ``Tag._all_strings`` filtering to the exact types ``get_text()``
     considers for a top-level document (excludes ``Comment``, ``Doctype``,
@@ -120,7 +125,7 @@ def _spine_item_runs(content: Union[str, bytes]) -> Tuple[List[DomRun], int, str
     the caller shifts them into the book's global char space.
     """
     soup = BeautifulSoup(content, 'html.parser')
-    nodes = _content_string_nodes(soup)
+    nodes = content_string_nodes(soup)
 
     runs: List[DomRun] = []
     local_idx = 0
