@@ -134,7 +134,11 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
         self.assertIn("alignment map", resp.get_json()["error"])
 
     def test_accepts_ctc_or_lexical(self):
-        for method in ("ctc", "lexical"):
+        """Finding 4: 'lexical_timed' (measured word timings) is accepted
+        alongside 'ctc'/'lexical' -- it was previously rejected here even
+        though it is fine-grained enough, giving a disabled dashboard button
+        and an HTTP 400 for books whose alignment pipeline emitted it."""
+        for method in ("ctc", "lexical", "lexical_timed"):
             with self.subTest(method=method):
                 self.mock_database_service.get_alignment_method.return_value = method
                 with patch("src.web_server._spawn_user_background"):
@@ -165,6 +169,11 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
         saved_job = self.mock_database_service.save_job.call_args[0][0]
         self.assertEqual(saved_job.abs_id, "rl-book-1")
         self.assertEqual(saved_job.progress, 0.0)
+        # Finding 2: tagged as a read-along job, not the undifferentiated
+        # "alignment" kind, so a normal sync cycle's alignment-repair pass
+        # can never mistake it for the alignment-build job it's meant to
+        # promote and mark it falsely "done".
+        self.assertEqual(saved_job.kind, ws.JOB_KIND_READALONG)
 
     def test_no_direct_thread_bypasses_user_scoping(self):
         """A naive `threading.Thread(target=...).start()` would run with
@@ -201,7 +210,7 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
         self.assertEqual(self.book.ebook_filename, before_ebook)
         self.assertEqual(self.book.original_ebook_filename, before_original)
         self.mock_database_service.update_latest_job.assert_called_once_with(
-            "rl-book-1", progress=1.0, last_error=None
+            "rl-book-1", kind=ws.JOB_KIND_READALONG, progress=1.0, last_error=None
         )
 
     def test_worker_never_mutates_ebook_filename_on_refusal(self):
@@ -252,6 +261,18 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
         self.assertIn("not confirmed", kwargs.get("last_error", ""))
 
     # ---- status polling ---------------------------------------------------
+
+    def test_status_route_filters_by_readalong_kind(self):
+        """Finding 2: the status poll must scope its `Job` lookup to
+        `kind=JOB_KIND_READALONG` -- without it, a newer Forge & Match or
+        alignment-repair job on the same book (sharing the same `jobs`
+        table) could be read here as if it were this action's own status."""
+        import src.web_server as ws
+        self.mock_database_service.get_latest_job.return_value = None
+        self.client.get('/api/readalong-epub/rl-book-1/status')
+        self.mock_database_service.get_latest_job.assert_called_once_with(
+            "rl-book-1", kind=ws.JOB_KIND_READALONG
+        )
 
     def test_status_idle_when_no_job_exists(self):
         self.mock_database_service.get_latest_job.return_value = None

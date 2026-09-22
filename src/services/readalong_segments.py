@@ -248,7 +248,10 @@ class SentenceClipResult:
     ``dropped_no_timestamp`` counts sentences excluded from ``clips`` because
     the alignment map returned no timestamp for one of their boundaries
     (``AlignmentService.get_time_for_char`` returning ``None`` -- only
-    possible for a degenerate empty map). ``clamped_count`` counts sentences
+    possible for a degenerate empty map), or -- for a segmented, out-of-order
+    map -- because neither boundary landed inside any fitted segment at all
+    (a genuinely unnarrated stretch; see :func:`build_sentence_clips`).
+    ``clamped_count`` counts sentences
     whose interpolated start and/or end had to be pulled forward to keep the
     book monotonic and non-overlapping -- a diagnostic, not an error; see
     :func:`build_sentence_clips`.
@@ -378,6 +381,18 @@ def build_sentence_clips(
     only ever dropped, and counted, when the alignment map itself returns
     ``None`` for a boundary.
 
+    A segmented map additionally drops -- rather than emits -- a sentence
+    whose two boundaries land in a segment *gap*: chars no fitted segment
+    covers at all (front/back matter within an otherwise narrated book, or a
+    chapter that never fit). ``get_time_for_char`` has no notion of "no
+    coverage" and answers a gap with the char-nearest segment edge's
+    timestamp regardless, so trusting that value there would silently
+    replay a neighbouring segment's audio over text that was never narrated.
+    A sentence that crosses a segment boundary (one edge inside a segment,
+    the other outside it or inside a different one) is not dropped -- it is
+    clamped into the segment its own start belongs to, so it never reaches
+    into a different segment's unrelated timestamps.
+
     :param parser: the ``EbookParser`` to source the book's spine text from.
     :param filepath: the EPUB path, exactly as ``extract_text_and_map`` accepts
         (an existing path, or a bare filename ``resolve_book_path`` can find).
@@ -427,14 +442,36 @@ def build_sentence_clips(
                 segment = _segment_for_char(segments, char_start)
                 if segment is None:
                     segment = _segment_for_char(segments, char_end)
-                if segment is not None:
-                    # ``char_end`` is half-open. At an exact segment boundary
-                    # the alignment lookup may land in the next segment; a
-                    # sentence belongs to the segment containing its start.
-                    segment_start = float(segment["ts_start"])
-                    segment_end = float(segment["ts_end"])
-                    raw_start = min(max(float(raw_start), segment_start), segment_end)
-                    raw_end = min(max(float(raw_end), segment_start), segment_end)
+                if segment is None:
+                    # Neither boundary lands inside any fitted segment: a
+                    # genuinely unnarrated stretch (front/back matter, or an
+                    # out-of-order book's chapter that never fit -- the
+                    # independent review's own repro: reading order A,
+                    # unnarrated, B, C with fitted ranges A=0-2s, B=4-6s,
+                    # C=2-4s). `AlignmentService.get_time_for_char` still
+                    # answers with *some* timestamp here -- it has no notion
+                    # of "no coverage" and clamps to whichever segment edge
+                    # is char-nearest -- so trusting it would silently
+                    # duplicate that neighbour's audio onto text that was
+                    # never narrated (there the unnarrated span was assigned
+                    # C's own 2-4s). Drop it exactly like a missing-timestamp
+                    # boundary: from this book's real audio's perspective, it
+                    # is one.
+                    dropped += 1
+                    logger.warning(
+                        "'%s' sentence %s (chars %d-%d): falls outside every "
+                        "fitted alignment segment, dropping rather than "
+                        "reusing a neighbouring segment's audio",
+                        abs_id, sentence_id, char_start, char_end,
+                    )
+                    continue
+                # ``char_end`` is half-open. At an exact segment boundary
+                # the alignment lookup may land in the next segment; a
+                # sentence belongs to the segment containing its start.
+                segment_start = float(segment["ts_start"])
+                segment_end = float(segment["ts_end"])
+                raw_start = min(max(float(raw_start), segment_start), segment_end)
+                raw_end = min(max(float(raw_end), segment_start), segment_end)
                 if segment_key != floor_segment_key:
                     # A genuine narration-order jump to a different segment
                     # (or the very first sentence): the previous segment's

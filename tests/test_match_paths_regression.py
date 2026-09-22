@@ -2014,6 +2014,125 @@ class TestMatchPathsRegression(unittest.TestCase):
         )
         self.mock_container.mock_bookorbit_client.move_between_shelves.assert_not_called()
 
+    def test_add_to_queue_records_readalong_checkbox_for_bookorbit(self):
+        """The template only shows/enables the checkbox for a BookOrbit
+        audiobook selection, but _queue_item_from_match_form re-checks the
+        audio source itself as defense in depth."""
+        self.client.post(
+            "/add-book",
+            data={
+                "action": "add_to_queue",
+                "audiobook_id": "bookorbit:55",
+                "audio_source": "BookOrbit",
+                "audio_source_id": "55",
+                "audio_title": "Regression Book",
+                "ebook_filename": "source.epub",
+                "ebook_source": "BookOrbit",
+                "ebook_source_id": "99",
+                "readalong_epub_requested": "true",
+            },
+        )
+        queue = web_server._load_match_queue()
+        self.assertEqual(len(queue), 1)
+        self.assertTrue(queue[0]["readalong_epub_requested"])
+
+    def test_add_to_queue_ignores_readalong_checkbox_for_non_bookorbit(self):
+        """A checkbox value that somehow arrives despite being disabled/hidden
+        for a non-BookOrbit selection (e.g. a replayed/hand-crafted request)
+        must never be honored."""
+        self.client.post(
+            "/add-book",
+            data={
+                "action": "add_to_queue",
+                "audiobook_id": "ab-1",
+                "audio_source": "ABS",
+                "audio_source_id": "ab-1",
+                "ebook_filename": "source.epub",
+                "ebook_source": "Booklore",
+                "ebook_source_id": "42",
+                "readalong_epub_requested": "true",
+            },
+        )
+        queue = web_server._load_match_queue()
+        self.assertEqual(len(queue), 1)
+        self.assertFalse(queue[0]["readalong_epub_requested"])
+
+    def test_add_to_queue_defaults_readalong_checkbox_to_false(self):
+        self.client.post(
+            "/add-book",
+            data={
+                "action": "add_to_queue",
+                "audiobook_id": "bookorbit:55",
+                "audio_source": "BookOrbit",
+                "audio_source_id": "55",
+                "audio_title": "Regression Book",
+                "ebook_filename": "source.epub",
+                "ebook_source": "BookOrbit",
+                "ebook_source_id": "99",
+            },
+        )
+        queue = web_server._load_match_queue()
+        self.assertEqual(len(queue), 1)
+        self.assertFalse(queue[0]["readalong_epub_requested"])
+
+    @patch("src.web_server.get_kosync_id_for_ebook", return_value="hash-readalong-1")
+    def test_forge_queue_bookorbit_readalong_intent_recorded(self, _mock_kosync):
+        """Phase 6b (docs/PLAN_READALONG_EPUB3_GENERATION.md): a BookOrbit-audio
+        queue item queued with the read-along checkbox ticked records the
+        intent on the freshly-created Book row -- after it is saved (so the
+        UPDATE finds a row) and before the real forge pipeline starts. The
+        post-forge hook (ForgeService._maybe_generate_readalong_epub) is what
+        actually consumes it once forging completes."""
+        item = {
+            "audio_title": "Regression Book",
+            "audio_source": "BookOrbit",
+            "audio_source_id": "55",
+            "ebook_filename": "source.epub",
+            "ebook_source": "BookOrbit",
+            "ebook_source_id": "99",
+            "readalong_epub_requested": True,
+        }
+        web_server._process_forge_match_queue([item])
+
+        self.mock_container.mock_database_service.set_readalong_epub_requested.assert_called_once_with(
+            "bookorbit:55", True
+        )
+        self.mock_container.mock_forge_service.start_auto_forge_match.assert_called_once()
+
+    @patch("src.web_server.get_kosync_id_for_ebook", return_value="hash-readalong-2")
+    def test_forge_queue_bookorbit_readalong_intent_not_recorded_when_unchecked(self, _mock_kosync):
+        item = {
+            "audio_title": "Regression Book",
+            "audio_source": "BookOrbit",
+            "audio_source_id": "56",
+            "ebook_filename": "source.epub",
+            "ebook_source": "BookOrbit",
+            "ebook_source_id": "99",
+            "readalong_epub_requested": False,
+        }
+        web_server._process_forge_match_queue([item])
+
+        self.mock_container.mock_database_service.set_readalong_epub_requested.assert_not_called()
+        self.mock_container.mock_forge_service.start_auto_forge_match.assert_called_once()
+
+    @patch("src.web_server.get_kosync_id_for_ebook", return_value="hash-readalong-3")
+    def test_forge_queue_bookorbit_readalong_intent_never_recorded_for_booklore(self, _mock_kosync):
+        """The read-along option is BookOrbit-only (needs a resolvable BookOrbit
+        audio entry to deliver into). BookLore shares this same forge branch,
+        so guard on audio_source explicitly rather than trusting the flag."""
+        item = {
+            "audio_title": "Regression Book",
+            "audio_source": "BookLore",
+            "audio_source_id": "77",
+            "ebook_filename": "source.epub",
+            "ebook_source": "BookLore",
+            "ebook_source_id": "99",
+            "readalong_epub_requested": True,
+        }
+        web_server._process_forge_match_queue([item])
+
+        self.mock_container.mock_database_service.set_readalong_epub_requested.assert_not_called()
+
     def test_early_queue_mappings_complete_shelf_watch_approval_after_success(self):
         metadata = {
             "source_name": "BookOrbit",

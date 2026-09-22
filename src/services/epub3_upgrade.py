@@ -888,12 +888,43 @@ def build_nav_document(
 # ---------------------------------------------------------------------------
 
 def _find_opf_path(zf: zipfile.ZipFile) -> Optional[str]:
+    """The OPF's full archive path, read from ``META-INF/container.xml``.
+
+    Parses container.xml as XML (external entity resolution and network
+    access disabled, matching this module's own OPF-parsing precedent above)
+    rather than regex-matching ``full-path="..."`` directly. The regex
+    required a double-quoted attribute and left XML-escaped characters
+    (``&amp;``, ``&apos;``, ...) undecoded, so a perfectly valid
+    single-quoted or escaped container.xml was rejected as having no OPF at
+    all -- Defect 3, independent review. The ``rootfile`` element is matched
+    by local name regardless of namespace prefix/declaration (mirrors
+    ``smil_extractor.py``'s own already-existing, more tolerant lookup),
+    since real-world container.xml files are not always as strictly
+    namespaced as the OCF spec's own worked examples.
+
+    Shared with ``readalong_builder.py``, which imports this rather than
+    keeping its own copy -- both previously carried the identical regex bug.
+    """
     try:
-        container = zf.read("META-INF/container.xml").decode("utf-8", "replace")
+        container_bytes = zf.read("META-INF/container.xml")
     except KeyError:
         return None
-    match = re.search(r'full-path="([^"]+)"', container)
-    return match.group(1) if match else None
+    try:
+        parser = etree.XMLParser(resolve_entities=False, no_network=True)
+        tree = etree.fromstring(container_bytes, parser=parser)
+    except etree.XMLSyntaxError as e:
+        logger.warning(
+            "Could not parse container.xml to find the OPF path: %s", e, exc_info=True,
+        )
+        return None
+    for element in tree.iter():
+        tag = element.tag
+        local_name = tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
+        if local_name == "rootfile":
+            full_path = element.get("full-path")
+            if full_path:
+                return full_path
+    return None
 
 
 def _repackage_with_additions(

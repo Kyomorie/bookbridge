@@ -702,6 +702,52 @@ def test_opf_preserves_preexisting_manifest_items_and_adds_overlay_refs():
             assert m.text  # non-empty clock value
 
 
+def test_defect2_refuses_source_with_existing_media_overlays():
+    """Defect 2 (independent review): _rewrite_opf always appends its own new
+    publication-level media:duration meta without touching any existing
+    overlay metadata/assets. Building from a source that already has media
+    overlays (e.g. a Storyteller-produced read-along fed back into this
+    builder) would leave two global media:duration declarations, which
+    EPUB 3 disallows (exactly one is permitted --
+    https://www.w3.org/TR/epub-33/#sec-duration). Per this project's
+    refuse-over-partial policy, the whole build is refused instead, before
+    any output is written."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        epub_path.parent.mkdir(parents=True, exist_ok=True)
+        opf_with_existing_overlay = (
+            '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" '
+            'version="3.0" unique-identifier="id"><metadata '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Test Book</dc:title>'
+            '<dc:identifier id="id">urn:uuid:test-book-id</dc:identifier>'
+            '<meta refines="#existing-smil" property="media:duration">0:00:05.000</meta>'
+            '<meta property="media:duration">0:00:05.000</meta>'
+            "</metadata><manifest>"
+            '<item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml" '
+            'media-overlay="existing-smil"/>'
+            '<item id="existing-smil" href="ch1.smil" media-type="application/smil+xml"/>'
+            "</manifest><spine><itemref idref=\"ch1\"/></spine></package>"
+        )
+        with zipfile.ZipFile(epub_path, "w") as z:
+            z.writestr("mimetype", "application/epub+zip")
+            z.writestr("META-INF/container.xml", _CONTAINER_XML)
+            z.writestr("OEBPS/content.opf", opf_with_existing_overlay)
+            z.writestr("OEBPS/ch1.xhtml", b"<html><body><p>Alpha bravo. Charlie delta.</p></body></html>")
+            z.writestr("OEBPS/ch1.smil", b'<smil xmlns="http://www.w3.org/ns/SMIL"><body/></smil>')
+        original_bytes = epub_path.read_bytes()
+
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp)
+
+        result, output_path = _build(tmp, parser, epub_path, audio_path, combined_text)
+
+        assert result is None
+        assert not output_path.exists()
+        assert epub_path.read_bytes() == original_bytes
+
+
 def test_opf_spine_and_identifier_unchanged():
     """Spine order and the book's dc:identifier are untouched by the rewrite."""
     with tempfile.TemporaryDirectory() as tmp_str:
@@ -1036,6 +1082,42 @@ def test_epub2_source_is_converted_to_epub3_not_refused():
             )
             spine = pkg.find("{http://www.idpf.org/2007/opf}spine")
             assert "toc" not in spine.attrib
+
+
+def test_defect1_refuses_output_path_aliasing_an_epub2_source():
+    """Defect 1 (independent review): the EPUB 2 -> EPUB 3 conversion in
+    _resolve_epub3_source runs BEFORE _package_epub's own Finding 5 aliasing
+    check ever sees the call, and it converts into a private temporary file
+    -- so _package_epub's check compares that temp file against output_path,
+    never the real source_epub. Calling this public entry point with
+    output_path equal to the ORIGINAL EPUB 2 library path sailed straight
+    through that check and _package_epub then os.replace()'d the temporary
+    converted copy over the user's real library file. This must instead
+    refuse before _resolve_epub3_source is even entered, leaving the
+    original file completely untouched."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(
+            epub_path,
+            {"ch1": b"<html><body><p>Alpha bravo. Charlie delta.</p></body></html>"},
+            opf_version="2.0",
+        )
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp)
+        original_bytes = epub_path.read_bytes()
+
+        alignment_service = _linear_alignment(len(combined_text), 100.0)
+        result = build_readalong_epub(
+            parser=parser, alignment_service=alignment_service, epub_path=epub_path,
+            audio_paths=audio_path, abs_id="abs1", output_path=epub_path,  # ALIASED, EPUB 2
+        )
+        assert result is None
+        # The source EPUB must be completely untouched, not overwritten by
+        # the temporary EPUB 3 conversion copy.
+        assert epub_path.read_bytes() == original_bytes
+        assert zipfile.is_zipfile(epub_path)
 
 
 def test_refuses_epub2_source_when_conversion_cannot_produce_valid_epub3():

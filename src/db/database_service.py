@@ -692,19 +692,23 @@ class DatabaseService:
 
     def get_readalong_alignment_book_ids(self) -> set[str]:
         """Book IDs whose alignment map is fine-grained enough for read-along
-        generation ('ctc' or 'lexical'), in one query without loading map blobs.
+        generation ('ctc', 'lexical', or 'lexical_timed'), in one query
+        without loading map blobs.
 
         Mirrors `get_ctc_aligned_book_ids`. Coarser methods ('linear',
         'llm_anchor', 'storyteller'/'storyteller_linear', legacy NULL) are
         excluded even though `build_readalong_epub` would not itself refuse
         them -- their timing is not fine enough to be worth surfacing as an
         eligible book in the UI (see docs/PLAN_READALONG_EPUB3_GENERATION.md
-        Sec. 0).
+        Sec. 0). 'lexical_timed' (measured word timings) belongs alongside
+        'ctc'/'lexical' here, matching the route's own eligibility guard in
+        `web_server.generate_readalong_epub` and the post-forge hook in
+        `forge_service.py`.
         """
         with self.get_session() as session:
             return {
                 row[0] for row in session.query(BookAlignment.abs_id)
-                .filter(BookAlignment.align_method.in_(("ctc", "lexical"))).all()
+                .filter(BookAlignment.align_method.in_(("ctc", "lexical", "lexical_timed"))).all()
             }
 
     def set_alignment_total_chars_if_missing(self, abs_id: str, total_chars: int) -> bool:
@@ -1086,6 +1090,37 @@ class DatabaseService:
             session.refresh(existing)
             session.expunge(existing)
             return existing
+
+    def set_readalong_epub_requested(self, abs_id: str, requested: bool = True) -> bool:
+        """Record (or clear) the read-along-EPUB-generation intent for one book.
+
+        A direct, single-column UPDATE -- deliberately kept OUT of
+        ``save_book``'s generic attribute whitelist so an unrelated field save
+        elsewhere in the 400+ callers of ``Book(...)`` can never silently set
+        or clear this flag as a side effect. Returns True if a row was found
+        and updated.
+        """
+        with self.get_session() as session:
+            updated = session.query(Book).filter(Book.abs_id == abs_id).update(
+                {"readalong_epub_requested": bool(requested)},
+                synchronize_session=False,
+            )
+            return updated > 0
+
+    def consume_readalong_epub_intent(self, abs_id: str) -> bool:
+        """Atomically read-and-clear the read-along intent for one book.
+
+        Returns True exactly once per recorded intent: the flag is cleared in
+        the same UPDATE it is read from, so a second forge of the same book
+        (a manual re-forge, a restart-triggered resume) never re-fires
+        generation from a stale flag. Returns False when no intent was
+        recorded (the common case) or the book no longer exists.
+        """
+        with self.get_session() as session:
+            updated = session.query(Book).filter(
+                Book.abs_id == abs_id, Book.readalong_epub_requested.is_(True),
+            ).update({"readalong_epub_requested": False}, synchronize_session=False)
+            return updated > 0
 
     def backfill_ebook_source_id_if_unclaimed(
         self,
@@ -1894,10 +1929,21 @@ class DatabaseService:
             return count
 
     # Job operations
-    def get_latest_job(self, abs_id: str) -> Optional[Job]:
-        """Get the latest job for a book."""
+    def get_latest_job(self, abs_id: str, kind: Optional[str] = None) -> Optional[Job]:
+        """Get the latest job for a book.
+
+        `kind` is a filter, not the job attribute of the same name: omitted
+        (the default), it preserves the historical behavior of returning the
+        newest job row regardless of kind. Passing a kind (see
+        `src.db.models.JOB_KIND_ALIGNMENT` / `JOB_KIND_READALONG`) scopes the
+        lookup to jobs of that kind only, so an unrelated job type's newer
+        timestamp can never shadow the one the caller actually wants.
+        """
         with self.get_session() as session:
-            job = session.query(Job).filter(Job.abs_id == abs_id).order_by(Job.last_attempt.desc()).first()
+            query = session.query(Job).filter(Job.abs_id == abs_id)
+            if kind is not None:
+                query = query.filter(Job.kind == kind)
+            job = query.order_by(Job.last_attempt.desc()).first()
             if job:
                 session.expunge(job)
             return job
@@ -1927,10 +1973,20 @@ class DatabaseService:
             session.expunge(job)
             return job
 
-    def update_latest_job(self, abs_id: str, **kwargs) -> Optional[Job]:
-        """Update the latest job for a book."""
+    def update_latest_job(self, abs_id: str, kind: Optional[str] = None, **kwargs) -> Optional[Job]:
+        """Update the latest job for a book.
+
+        `kind` filters which job counts as "latest" the same way
+        `get_latest_job`'s does (see its docstring) -- it is not itself set
+        via `kwargs`. Omitted, the newest row regardless of kind is updated
+        (historical behavior); passed, only the newest row of that kind is
+        considered, and no update happens if none exists.
+        """
         with self.get_session() as session:
-            job = session.query(Job).filter(Job.abs_id == abs_id).order_by(Job.last_attempt.desc()).first()
+            query = session.query(Job).filter(Job.abs_id == abs_id)
+            if kind is not None:
+                query = query.filter(Job.kind == kind)
+            job = query.order_by(Job.last_attempt.desc()).first()
             if job:
                 for key, value in kwargs.items():
                     if hasattr(job, key):

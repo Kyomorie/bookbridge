@@ -850,3 +850,44 @@ def test_find_opf_path_missing_container_returns_none():
             z.writestr("placeholder", b"x")
         with zipfile.ZipFile(path) as zf:
             assert _find_opf_path(zf) is None
+
+
+def test_find_opf_path_single_quoted_full_path_resolves():
+    """Defect 3 (independent review): the previous implementation
+    regex-matched only a double-quoted ``full-path="..."`` attribute, so a
+    perfectly valid container.xml using single quotes (equally legal XML)
+    was rejected as having no OPF at all -- blocking EPUB 2 -> EPUB 3
+    conversion outright for such a book. Parsing as real XML (this test's
+    fix) has no such quote-style sensitivity."""
+    single_quoted_container = (
+        "<?xml version='1.0'?><container version='1.0' "
+        "xmlns='urn:oasis:names:tc:opendocument:xmlns:container'><rootfiles>"
+        "<rootfile full-path='OEBPS/content.opf' "
+        "media-type='application/oebps-package+xml'/></rootfiles></container>"
+    )
+    with tempfile.TemporaryDirectory() as tmp_str:
+        path = Path(tmp_str) / "book.epub"
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("META-INF/container.xml", single_quoted_container)
+        with zipfile.ZipFile(path) as zf:
+            assert _find_opf_path(zf) == "OEBPS/content.opf"
+
+
+def test_find_opf_path_xml_escaped_full_path_resolves():
+    """Defect 3's other half: the previous regex captured the attribute's
+    raw, still-escaped text verbatim, so a path containing a character that
+    must be XML-escaped in an attribute value (e.g. ``&`` -> ``&amp;``) came
+    back with the escape sequence still in it -- a path that does not exist
+    in the archive. Real XML parsing decodes it."""
+    escaped_container = (
+        '<?xml version="1.0"?><container version="1.0" '
+        'xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>'
+        '<rootfile full-path="OEBPS/Books &amp; Beyond/content.opf" '
+        'media-type="application/oebps-package+xml"/></rootfiles></container>'
+    )
+    with tempfile.TemporaryDirectory() as tmp_str:
+        path = Path(tmp_str) / "book.epub"
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("META-INF/container.xml", escaped_container)
+        with zipfile.ZipFile(path) as zf:
+            assert _find_opf_path(zf) == "OEBPS/Books & Beyond/content.opf"

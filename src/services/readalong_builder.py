@@ -111,7 +111,7 @@ from src.utils.ebook_dom_map import (
     parse_original_spine_xml,
     runs_from_nodes,
 )
-from src.services.epub3_upgrade import upgrade_epub2_to_epub3
+from src.services.epub3_upgrade import _find_opf_path, upgrade_epub2_to_epub3
 from src.services.readalong_segments import SentenceClip, build_sentence_clips
 
 if TYPE_CHECKING:
@@ -202,20 +202,6 @@ class ReadalongBuildResult:
     dropped_spine_items_injection_failed: int = 0
 
 
-def _find_opf_path(zf: zipfile.ZipFile) -> Optional[str]:
-    """The OPF's full archive path, read from ``META-INF/container.xml``.
-
-    Mirrors ``EbookParser._build_href_resolver``'s own container.xml read
-    (regex, not a full XML parse -- consistent with that existing precedent).
-    """
-    try:
-        container = zf.read("META-INF/container.xml").decode("utf-8", "replace")
-    except KeyError:
-        return None
-    match = re.search(r'full-path="([^"]+)"', container)
-    return match.group(1) if match else None
-
-
 def _opf_package_version(opf_bytes: bytes) -> Optional[str]:
     """The OPF ``<package version="...">`` attribute, or ``None`` if the OPF
     fails to parse or the attribute is absent.
@@ -235,6 +221,43 @@ def _opf_package_version(opf_bytes: bytes) -> Optional[str]:
         logger.warning("Could not parse OPF to read package version: %s", e, exc_info=True)
         return None
     return tree.get("version")
+
+
+def _opf_has_media_overlays(opf_bytes: bytes) -> bool:
+    """Whether the OPF already declares EPUB 3 media overlays.
+
+    Detected by either a manifest ``<item media-overlay="...">`` attribute
+    (a spine document already wired to a SMIL) or a publication-level
+    ``<meta property="media:duration">`` with no ``refines`` (the one global
+    duration EPUB 3 permits -- https://www.w3.org/TR/epub-33/#sec-duration).
+    Used by the Defect 2 fix (independent review): ``_rewrite_opf`` always
+    appends its own new global ``media:duration``, so building from a source
+    that already carries one would leave two, which the spec disallows. The
+    practical case is a Storyteller-produced read-along fed back into this
+    builder. Returns ``False`` (not refused) if the OPF fails to parse here
+    -- the existing, later parse in the caller is what actually surfaces a
+    parse failure.
+    """
+    try:
+        parser = etree.XMLParser(resolve_entities=False, no_network=True)
+        tree = etree.fromstring(opf_bytes, parser=parser)
+    except etree.XMLSyntaxError as e:
+        logger.warning(
+            "Could not parse OPF to check for existing media overlays: %s",
+            e, exc_info=True,
+        )
+        return False
+    manifest = tree.find(f"{{{_OPF_NS}}}manifest")
+    if manifest is not None:
+        for item in manifest.findall(f"{{{_OPF_NS}}}item"):
+            if item.get("media-overlay"):
+                return True
+    metadata = tree.find(f"{{{_OPF_NS}}}metadata")
+    if metadata is not None:
+        for meta in metadata.findall(f"{{{_OPF_NS}}}meta"):
+            if meta.get("property") == "media:duration" and not meta.get("refines"):
+                return True
+    return False
 
 
 def _unique_archive_dir(zip_names: set, opf_dir: str, base: str) -> str:
@@ -1308,6 +1331,28 @@ def build_readalong_epub(
     :return: the build result, or ``None`` if refused.
     """
     epub_path = Path(epub_path)
+
+    # Defect 1 (independent review): this aliasing check must run against the
+    # ORIGINAL source path, before any EPUB 2 -> EPUB 3 conversion, and before
+    # _resolve_epub3_source ever opens a temporary file. _package_epub's own
+    # aliasing guard (Finding 5) compares whatever epub_path it is actually
+    # handed against output_path -- for an EPUB 2 source that is a private
+    # temporary conversion copy, never the original, so calling this public
+    # entry point with output_path == the original EPUB 2 library path sailed
+    # straight through that check and _package_epub then overwrote the
+    # user's real library file via os.replace(). Refusing here, before
+    # _resolve_epub3_source is even entered, means a refused build never
+    # touches the filesystem at all.
+    if epub_path.resolve() == Path(output_path).resolve():
+        logger.warning(
+            "🚫 Refusing to build read-along EPUB for '%s': output_path '%s' "
+            "is the same file as the source EPUB -- writing the generated "
+            "read-along package there would overwrite the original library "
+            "book (Defect 1, independent review)",
+            abs_id, output_path,
+        )
+        return None
+
     with _resolve_epub3_source(epub_path, abs_id) as resolved_epub_path:
         if resolved_epub_path is None:
             return None
@@ -1388,6 +1433,19 @@ def _build_readalong_epub_impl(
                 "produces a package that is not EPUB-3-conformant, even if a "
                 "reader happens to play the overlay anyway",
                 abs_id, opf_version or "<missing>",
+            )
+            return None
+
+        if _opf_has_media_overlays(opf_bytes):
+            logger.warning(
+                "🚫 Refusing to build read-along EPUB for '%s': source EPUB "
+                "already has media overlays (Defect 2, independent review) "
+                "-- this builder always appends its own new publication-level "
+                "media:duration, so building from a source that already has "
+                "one would leave two, which EPUB 3 disallows (exactly one is "
+                "permitted); a Storyteller-produced read-along fed back into "
+                "this builder is the practical case",
+                abs_id,
             )
             return None
 

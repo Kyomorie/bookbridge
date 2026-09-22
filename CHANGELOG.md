@@ -8,6 +8,17 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Read-along EPUB generation now covers EPUB 2 books and no longer mis-times
+  unnarrated sections.** Several correctness fixes landed together: a stretch of text
+  with no narration behind it used to be given a nearby chapter's audio instead of
+  being left alone; a book whose audio and text were both already in hand could have
+  its generation job marked finished by an unrelated sync; and generating with the
+  output pointed at the source book could overwrite the original file. Books can also
+  now opt in to a read-along at match time, so it is built automatically once
+  alignment finishes. Books that already carry read-along narration are refused rather
+  than rebuilt.
+
+
 - Readalong EPUB generation preserves original chapter markup and nonbreaking
   whitespace, keeps audio clips within their narration segments, and refuses
   incomplete exports instead of publishing a book with missing chapters. A failed

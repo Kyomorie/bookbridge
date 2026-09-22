@@ -565,3 +565,147 @@ def test_dropped_sentence_when_alignment_returns_no_timestamp():
         assert result.dropped_no_timestamp == 1
         assert "c1-s0" not in [c.sentence_id for c in result.clips]
         assert "c1-s1" in [c.sentence_id for c in result.clips]
+
+
+def test_sentence_outside_every_segment_is_dropped_not_reassigned_neighbour_audio():
+    """Independent review's exact reproduction (P1): a sentence whose chars
+    fall entirely outside every fitted segment must be dropped, not handed a
+    neighbouring segment's audio.
+
+    Reading order is A, an unnarrated stretch, B, C. Fitted ranges: A =
+    0-2s, B = 4-6s, C = 2-4s (B and C are narrated out of reading order --
+    the issue #426 shape). The unnarrated stretch has no segment of its own
+    at all. Before the fix, `AlignmentService.get_time_for_char` still
+    answers a char with no covering segment (it clamps to whichever segment
+    edge is char-nearest -- see `_nearest_segment_edge_ts`), and nothing in
+    this module rejected that answer, so the unnarrated stretch was
+    assigned C's own 2-4s range verbatim -- a real 6-second audio file
+    (0-2 + 4-6 + 2-4, no overlaps) exporting 8 seconds of clips (0-2 + 4-6 +
+    2-4 + a duplicate 2-4)."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "gap.epub"
+        _write_epub(epub_path, {
+            "cha": b"<html><body><p>Alpha bravo charlie</p></body></html>",
+            "chb": b"<html><body><p>Delta echo foxtrot</p></body></html>",  # unnarrated
+            "chc": b"<html><body><p>Golf hotel india</p></body></html>",
+            "chd": b"<html><body><p>Juliet kilo lima</p></body></html>",
+        })
+
+        combined_text, spine_map = parser.extract_text_and_map(str(epub_path))
+        a_entry, gap_entry, b_entry, c_entry = spine_map
+
+        segments = [
+            {"char_start": a_entry["start"], "char_end": a_entry["end"], "ts_start": 0.0, "ts_end": 2.0},
+            {"char_start": b_entry["start"], "char_end": b_entry["end"], "ts_start": 4.0, "ts_end": 6.0},
+            {"char_start": c_entry["start"], "char_end": c_entry["end"], "ts_start": 2.0, "ts_end": 4.0},
+        ]
+
+        def raw(char_offset: int) -> float:
+            for entry, ts_start, ts_end in (
+                (a_entry, 0.0, 2.0), (b_entry, 4.0, 6.0), (c_entry, 2.0, 4.0),
+            ):
+                if entry["start"] <= char_offset <= entry["end"]:
+                    span = max(1, entry["end"] - entry["start"])
+                    frac = (char_offset - entry["start"]) / span
+                    return ts_start + frac * (ts_end - ts_start)
+            # The unnarrated stretch: simulate get_time_for_char's own
+            # nearest-segment-edge fallback landing squarely on C's range,
+            # exactly the reviewer's reproduction ("assigned 2-4s").
+            if char_offset == gap_entry["start"]:
+                return 2.0
+            if char_offset == gap_entry["end"]:
+                return 4.0
+            raise AssertionError(f"unexpected char_offset {char_offset}")
+
+        fake = _FakeAlignmentService(
+            terminal_char=len(combined_text), time_for_char=raw, segments=segments,
+        )
+
+        result = build_sentence_clips(parser, str(epub_path), fake, "abs1")
+        assert result is not None
+
+        clip_ids = [c.sentence_id for c in result.clips]
+        assert "c2-s0" not in clip_ids  # the unnarrated sentence is dropped
+        assert result.dropped_no_timestamp == 1
+        assert set(clip_ids) == {"c1-s0", "c3-s0", "c4-s0"}
+
+        by_id = {c.sentence_id: c for c in result.clips}
+        assert (by_id["c1-s0"].ts_start, by_id["c1-s0"].ts_end) == (0.0, 2.0)
+        assert (by_id["c3-s0"].ts_start, by_id["c3-s0"].ts_end) == (4.0, 6.0)
+        assert (by_id["c4-s0"].ts_start, by_id["c4-s0"].ts_end) == (2.0, 4.0)
+
+        # The real audio is 6 seconds (0-2, 4-6, 2-4, no overlap). Before the
+        # fix this summed to 8 seconds -- the dropped sentence's duplicate of
+        # C's own 2-4s range.
+        real_audio_duration = 6.0
+        total_clip_time = sum(c.ts_end - c.ts_start for c in result.clips)
+        assert total_clip_time <= real_audio_duration, (
+            f"summed clip time {total_clip_time}s exceeds the real audio's "
+            f"{real_audio_duration}s -- the unnarrated sentence duplicated a "
+            f"neighbouring segment"
+        )
+        # Specifically: the unnarrated sentence must not have been given
+        # any part of C's own [2.0, 4.0) range -- only c4-s0 may claim it.
+        for clip in result.clips:
+            if clip.sentence_id == "c4-s0":
+                continue
+            overlap_start = max(clip.ts_start, 2.0)
+            overlap_end = min(clip.ts_end, 4.0)
+            assert overlap_end <= overlap_start, (
+                f"{clip.sentence_id} [{clip.ts_start}, {clip.ts_end}) overlaps "
+                f"c4-s0's real audio [2.0, 4.0)"
+            )
+
+
+def test_sentence_spanning_a_segment_boundary_clamps_to_its_own_start_segment():
+    """A single sentence whose char range straddles two different fitted
+    segments must not be handed the far segment's unrelated timestamps --
+    it clamps to the segment its own start belongs to, per
+    `build_sentence_clips`'s own documented precedence (the segment
+    containing the start wins over one only reachable via the end)."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "crossing.epub"
+        _write_epub(epub_path, {
+            "ch1": b"<html><body><p>Alpha bravo charlie delta echo</p></body></html>",
+        })
+
+        combined_text, spine_map = parser.extract_text_and_map(str(epub_path))
+        entry = spine_map[0]
+        item_text = combined_text[entry["start"]:entry["end"]]
+        assert len(split_sentences(item_text)) == 1  # one sentence spans the whole item
+        mid = entry["start"] + len(item_text) // 2
+
+        # Segment X (reading-order first) = 0-2s; segment Y (reading-order
+        # second, unrelated to this sentence's start) = 5-7s.
+        segments = [
+            {"char_start": entry["start"], "char_end": mid, "ts_start": 0.0, "ts_end": 2.0},
+            {"char_start": mid, "char_end": entry["end"], "ts_start": 5.0, "ts_end": 7.0},
+        ]
+
+        def raw(char_offset: int) -> float:
+            if char_offset <= mid:
+                frac = (char_offset - entry["start"]) / max(1, mid - entry["start"])
+                return 0.0 + frac * 2.0
+            frac = (char_offset - mid) / max(1, entry["end"] - mid)
+            return 5.0 + frac * 2.0  # a real value from segment Y's own range
+
+        fake = _FakeAlignmentService(
+            terminal_char=len(combined_text), time_for_char=raw, segments=segments,
+        )
+
+        result = build_sentence_clips(parser, str(epub_path), fake, "abs1")
+        assert result is not None
+        assert result.dropped_no_timestamp == 0  # it has real narration -- not dropped
+        assert len(result.clips) == 1
+
+        clip = result.clips[0]
+        # Confined to segment X's own [0.0, 2.0) -- never reaches segment Y's
+        # real [5.0, 7.0) range, even though the sentence's own end char
+        # lands inside Y and Y's raw lookup (7.0) would say otherwise.
+        assert clip.ts_start == 0.0
+        assert clip.ts_end == 2.0
+        assert clip.ts_end >= clip.ts_start

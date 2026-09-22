@@ -33,7 +33,7 @@ def _extract_series_from_abs_item(item_details: dict) -> tuple:
 
 import json
 from src.api.storyteller_api import StorytellerAPIClient
-from src.db.models import Job
+from src.db.models import Job, JOB_KIND_ALIGNMENT
 from src.db.models import State, Book, PendingSuggestion
 from src.sync_clients.sync_client_interface import UpdateProgressRequest, LocatorResult, ServiceState, SyncResult, SyncClient, ABS_ITEM_NOT_FOUND
 from src.utils.user_context import (
@@ -2203,7 +2203,15 @@ class SyncManager:
         return None
 
     def _promote_alignment_backed_book(self, book: Book | None) -> bool:
-        """Repair books whose alignment is stored but whose metadata never finalized."""
+        """Repair books whose alignment is stored but whose metadata never finalized.
+
+        The job-completion write below is scoped to `kind=JOB_KIND_ALIGNMENT`
+        deliberately: this repair is about the alignment-build job, and other
+        job kinds sharing the `jobs` table (read-along EPUB generation) must
+        never be touched here -- an unrelated in-flight job being newer than
+        the real alignment job used to make this method mark it "done"
+        (progress=1.0, error cleared) even though its own worker never ran.
+        """
         if not book or not self.alignment_service:
             return False
 
@@ -2222,7 +2230,7 @@ class SyncManager:
         if changed:
             self.database_service.save_book(book)
 
-        latest_job = self.database_service.get_latest_job(book.abs_id)
+        latest_job = self.database_service.get_latest_job(book.abs_id, kind=JOB_KIND_ALIGNMENT)
         if latest_job and (
             (latest_job.progress or 0.0) < 1.0
             or latest_job.retry_count
@@ -2230,6 +2238,7 @@ class SyncManager:
         ):
             self.database_service.update_latest_job(
                 book.abs_id,
+                kind=JOB_KIND_ALIGNMENT,
                 progress=1.0,
                 retry_count=0,
                 last_error=None,

@@ -51,7 +51,7 @@ from src.api.hardcover_routes import hardcover_bp, init_hardcover_routes
 from src.api.storygraph_routes import storygraph_bp, init_storygraph_routes
 from src.api.bookfusion_upload_client import extract_epub_metadata, _S3_TIMEOUT_LARGE
 from src.version import APP_VERSION, get_update_status
-from src.db.models import State
+from src.db.models import State, JOB_KIND_READALONG
 from src.sync_clients.sync_client_interface import LocatorResult, UpdateProgressRequest
 from src.services.audio_source_adapters import AudioResult, ABSAudioSourceAdapter, BookLoreAudioSourceAdapter, BookOrbitAudioSourceAdapter
 from src.utils.storyteller_transcript import StorytellerTranscript
@@ -7358,6 +7358,14 @@ def _process_forge_match_queue(queue_items):
             )
             database_service.save_book(book)
             _claim_book_for_user_id(get_current_user_id(), book.abs_id)
+            # Phase 6b: read-along generation needs a finished alignment map, which
+            # doesn't exist until this forge completes, so only the intent is
+            # recorded here -- ForgeService._maybe_generate_readalong_epub consumes
+            # it from the post-forge completion hook. BookOrbit-audio only (the
+            # queue item is already gated to that; re-check here too since this
+            # branch also covers BookLore).
+            if audio_source == 'BookOrbit' and item.get('readalong_epub_requested'):
+                database_service.set_readalong_epub_requested(forge_id, True)
             _record_forge_match_job(forge_id, progress=0.02, last_error="Queued Forge & Match")
 
             container.forge_service().start_auto_forge_match(
@@ -7458,6 +7466,14 @@ def _queue_item_from_match_form(clients) -> "dict | None":
     audio_only = (request.form.get('audio_only') or '').strip().lower() in {
         'true', '1', 'yes', 'on'
     }
+    # Phase 6b (PLAN_READALONG_EPUB3_GENERATION.md): opt-in intent, recorded per
+    # queue item. Only meaningful for a BookOrbit-audio item that actually goes
+    # through the forge pipeline -- the template only offers the control for a
+    # BookOrbit audiobook selection, but the checkbox itself is a plain form
+    # field, so re-check the value tolerantly (both a bare "on" and "true").
+    readalong_epub_requested = (
+        request.form.get('readalong_epub_requested') or ''
+    ).strip().lower() in {'true', '1', 'yes', 'on'}
 
     bridge_key = None
     if audio_source == 'ABS' and audio_source_id:
@@ -7525,6 +7541,7 @@ def _queue_item_from_match_form(clients) -> "dict | None":
         'ebook_source_path': ebook_source_path,
         'storyteller_uuid': storyteller_uuid,
         'audio_only': audio_only and not (ebook_filename or storyteller_uuid),
+        'readalong_epub_requested': readalong_epub_requested and audio_source == 'BookOrbit',
     }
 
 
@@ -9230,19 +9247,19 @@ def _readalong_epub_worker(abs_id: str) -> None:
     try:
         book = database_service.get_book(abs_id)
         if not book:
-            database_service.update_latest_job(abs_id, last_error="Book no longer exists")
+            database_service.update_latest_job(abs_id, kind=JOB_KIND_READALONG, last_error="Book no longer exists")
             return
 
         alignment_service = getattr(manager, "alignment_service", None) if manager else None
         if alignment_service is None:
-            database_service.update_latest_job(abs_id, last_error="Alignment service unavailable")
+            database_service.update_latest_job(abs_id, kind=JOB_KIND_READALONG, last_error="Alignment service unavailable")
             return
 
         clients = uc()
         ebook_sync_client = clients.sync_clients.get("BookOrbit")
         audio_sync_client = clients.sync_clients.get("BookOrbitAudio")
         if audio_sync_client is None:
-            database_service.update_latest_job(abs_id, last_error="BookOrbit audio sync is not available")
+            database_service.update_latest_job(abs_id, kind=JOB_KIND_READALONG, last_error="BookOrbit audio sync is not available")
             return
 
         result = deliver_readalong_epub(
@@ -9256,6 +9273,7 @@ def _readalong_epub_worker(abs_id: str) -> None:
         if result is None:
             database_service.update_latest_job(
                 abs_id,
+                kind=JOB_KIND_READALONG,
                 last_error="Read-along generation was refused -- see server logs for the exact reason.",
             )
             return
@@ -9263,6 +9281,7 @@ def _readalong_epub_worker(abs_id: str) -> None:
         if not result.confirmed:
             database_service.update_latest_job(
                 abs_id,
+                kind=JOB_KIND_READALONG,
                 progress=1.0,
                 last_error=(
                     "Generated and delivered, but BookOrbit has not confirmed it "
@@ -9275,7 +9294,7 @@ def _readalong_epub_worker(abs_id: str) -> None:
             )
             return
 
-        database_service.update_latest_job(abs_id, progress=1.0, last_error=None)
+        database_service.update_latest_job(abs_id, kind=JOB_KIND_READALONG, progress=1.0, last_error=None)
         logger.info(
             "📖 Read-along EPUB ready for %s", sanitize_log_data(book.abs_title or abs_id)
         )
@@ -9284,7 +9303,7 @@ def _readalong_epub_worker(abs_id: str) -> None:
             "❌ Read-along generation failed for '%s': %s", sanitize_log_data(abs_id), e, exc_info=True,
         )
         try:
-            database_service.update_latest_job(abs_id, last_error=f"Unexpected error: {e}")
+            database_service.update_latest_job(abs_id, kind=JOB_KIND_READALONG, last_error=f"Unexpected error: {e}")
         except Exception as inner_e:
             logger.error(
                 "❌ Could not record read-along failure for '%s': %s",
@@ -9324,7 +9343,7 @@ def generate_readalong_epub(abs_id: str):
         }), 400
 
     align_method = database_service.get_alignment_method(abs_id)
-    if (align_method or "") not in ("ctc", "lexical"):
+    if (align_method or "") not in ("ctc", "lexical", "lexical_timed"):
         return jsonify({
             "success": False,
             "error": "This book has no CTC or lexical alignment map yet.",
@@ -9332,7 +9351,10 @@ def generate_readalong_epub(abs_id: str):
 
     from src.db.models import Job
     database_service.save_job(
-        Job(abs_id=abs_id, last_attempt=time.time(), retry_count=0, progress=0.0, last_error=None)
+        Job(
+            abs_id=abs_id, last_attempt=time.time(), retry_count=0, progress=0.0, last_error=None,
+            kind=JOB_KIND_READALONG,
+        )
     )
     _spawn_user_background(_readalong_epub_worker, abs_id, label=f"readalong-epub-{abs_id}")
 
@@ -9345,13 +9367,12 @@ def generate_readalong_epub(abs_id: str):
 def readalong_epub_status(abs_id: str):
     """Poll the outcome of the most recent read-along generation job for `abs_id`.
 
-    Reads the `Job` row `generate_readalong_epub` created/updates -- the same
-    table `_record_forge_match_job` uses for Forge & Match, so a job triggered
-    by one of those flows on the same book at the same time would be
-    indistinguishable from a read-along job here (the table has no per-kind
-    column). Acceptable for this action: it is a status *display* only, not a
-    correctness dependency, and the collision window is the rare case of a
-    user running both actions on the very same book at the same moment.
+    Reads the `Job` row `generate_readalong_epub` created/updates, scoped to
+    `kind=JOB_KIND_READALONG` -- the `jobs` table also carries Forge & Match
+    rows (`_record_forge_match_job`) and alignment-repair rows for the same
+    `abs_id`, and without the kind filter a job from one of those flows
+    running on the same book at the same time could be newer and would be
+    read here as if it were the read-along job's own status.
     """
     book = database_service.get_book(abs_id)
     if not book:
@@ -9361,7 +9382,7 @@ def readalong_epub_status(abs_id: str):
     if not _user_may_modify_book(user, abs_id):
         return _forbidden_book_response(json_response=True)
 
-    job = database_service.get_latest_job(abs_id)
+    job = database_service.get_latest_job(abs_id, kind=JOB_KIND_READALONG)
     if job is None:
         return jsonify({"success": True, "state": "idle"})
     if job.progress and job.progress >= 1.0:
