@@ -18,6 +18,7 @@ below generates real, tiny, silent audio via ffmpeg's lavfi anullsrc source so
 every test's input is something ffmpeg can actually decode.
 """
 import os
+import posixpath
 import re
 import shutil
 import subprocess
@@ -26,6 +27,7 @@ import zipfile
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 from unittest.mock import patch
+from urllib.parse import unquote
 from xml.etree import ElementTree
 
 import pytest
@@ -34,10 +36,15 @@ from lxml import etree
 from src.services import readalong_builder as _readalong_builder_module
 from src.services.readalong_builder import (
     _DEFAULT_AUDIO_BITRATE,
+    _MAX_AUDIO_FILE_SECONDS,
+    _MIN_AUDIO_FILE_SECONDS,
+    _bitrate_to_bps,
+    _compute_audio_file_boundaries,
     _extend_clips_to_contiguous,
     _package_epub,
     _probe_duration_seconds,
     _safe_progress,
+    _target_audio_file_seconds,
     _transcode_audio_for_embed,
     build_readalong_epub,
 )
@@ -1559,6 +1566,261 @@ def test_standalone_audio_output_path_gets_a_copy_of_the_transcoded_audio():
         with zipfile.ZipFile(output_path) as zf:
             audio_name = next(n for n in zf.namelist() if n.startswith("OEBPS/readalong/audio"))
             assert zf.read(audio_name) == standalone_path.read_bytes()
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 Part C: audio file splitting
+# ---------------------------------------------------------------------------
+
+def test_bitrate_to_bps_parses_recognized_unit_suffixes():
+    assert _bitrate_to_bps("32k") == 32_000
+    assert _bitrate_to_bps("128000") == 128_000
+    assert _bitrate_to_bps("1.5M") == 1_500_000
+    assert _bitrate_to_bps("not-a-bitrate") is None
+
+
+def test_target_audio_file_seconds_scales_inversely_with_bitrate():
+    """A higher configured bitrate needs less DURATION to reach the same
+    target file size, so its target duration is shorter than a lower one's
+    -- confirms the target is derived from the bitrate, not fixed."""
+    low_bitrate_target = _target_audio_file_seconds("16k")
+    high_bitrate_target = _target_audio_file_seconds("128k")
+    assert low_bitrate_target > high_bitrate_target
+
+
+def test_target_audio_file_seconds_is_clamped_to_a_sane_range():
+    """An absurdly low or high configured bitrate never drives the target
+    duration outside its documented floor/ceiling."""
+    assert _target_audio_file_seconds("1k") == pytest.approx(_MAX_AUDIO_FILE_SECONDS)
+    assert _target_audio_file_seconds("10000k") == pytest.approx(_MIN_AUDIO_FILE_SECONDS)
+
+
+def test_compute_audio_file_boundaries_no_split_when_audio_is_short():
+    """A book well under the target duration gets exactly one, whole-book
+    file -- the common case for most of the library, and byte-for-byte the
+    pre-Phase-4-Part-C behavior."""
+    clips = [_clip("c1-s0", 1, 0.0, 5.0)]
+    boundaries = _compute_audio_file_boundaries(clips, audio_duration_seconds=5.0, target_seconds=3900.0)
+    assert boundaries == [(0.0, 5.0)]
+
+
+def test_compute_audio_file_boundaries_splits_evenly_for_a_long_book():
+    clips = [_clip(f"c1-s{i}", 1, float(i), float(i) + 0.8) for i in range(100)]
+    boundaries = _compute_audio_file_boundaries(clips, audio_duration_seconds=100.0, target_seconds=25.0)
+    assert len(boundaries) == 4
+    assert boundaries[0][0] == 0.0
+    assert boundaries[-1][1] == 100.0
+    for i in range(len(boundaries) - 1):
+        assert boundaries[i][1] == boundaries[i + 1][0]  # contiguous, no gap/overlap
+
+
+def test_compute_audio_file_boundaries_never_cuts_inside_a_clip():
+    """Every ideal cut point that would land inside a clip is nudged forward
+    to that clip's own end instead -- never left splitting the clip."""
+    clips = [
+        _clip("c1-s0", 1, 0.0, 2.0),
+        _clip("c1-s1", 1, 2.0, 24.0),  # one long clip straddling the ideal 10s/20s cuts
+        _clip("c1-s2", 1, 24.0, 30.0),
+    ]
+    boundaries = _compute_audio_file_boundaries(clips, audio_duration_seconds=30.0, target_seconds=10.0)
+    for _start, cut in boundaries[:-1]:
+        for clip in clips:
+            assert not (clip.ts_start < cut < clip.ts_end), (cut, clip, boundaries)
+
+
+def test_compute_audio_file_boundaries_is_invariant_to_input_order():
+    """The result depends only on each clip's own ts_start/ts_end, never on
+    the order clips are passed in -- out-of-order narration (#426) can hand
+    this function clips in book reading order, not temporal order, so it
+    must sort by ts_start itself rather than trust the caller's order."""
+    clips_in_order = [_clip(f"s{i}", 1, float(i) * 3, float(i) * 3 + 2) for i in range(10)]
+    forward = _compute_audio_file_boundaries(clips_in_order, 30.0, target_seconds=8.0)
+    reversed_result = _compute_audio_file_boundaries(list(reversed(clips_in_order)), 30.0, target_seconds=8.0)
+    assert forward == reversed_result
+
+
+def test_compute_audio_file_boundaries_respects_segment_gaps_after_contiguity_extension():
+    """A book with out-of-order narration (#426) has REAL temporal gaps
+    between segments once _extend_clips_to_contiguous has run (a segment's
+    own terminal clip reaches only that segment's own end, not the next
+    segment's start in reading order) -- this function must still never cut
+    inside any of the resulting clips, whether or not the chosen cut lands
+    inside one of those inter-segment gaps."""
+    clips = [
+        SentenceClip(
+            sentence_id="c1-s0", spine_index=1, href="c1.xhtml",
+            char_start=0, char_end=1, ts_start=10.0, ts_end=15.0,
+            segment_key=1, segment_ts_start=10.0, segment_ts_end=20.0,
+            segment_scoped=True,
+        ),
+        SentenceClip(
+            sentence_id="c1-s1", spine_index=1, href="c1.xhtml",
+            char_start=1, char_end=2, ts_start=0.0, ts_end=5.0,
+            segment_key=2, segment_ts_start=0.0, segment_ts_end=9.0,
+            segment_scoped=True,
+        ),
+    ]
+    extended = _extend_clips_to_contiguous(clips, audio_duration_seconds=25.0)
+    # Sanity on the UNCHANGED contiguity function's own behavior first: the
+    # temporally-last segment (key=1) reaches the real audio end; the other
+    # segment (key=2) stays inside its own boundary, leaving a real gap
+    # between 9.0 (segment 2's own end) and 10.0 (segment 1's own start).
+    seg1 = next(c for c in extended if c.segment_key == 1)
+    seg2 = next(c for c in extended if c.segment_key == 2)
+    assert seg1.ts_end == 25.0
+    assert seg2.ts_end == 9.0
+
+    boundaries = _compute_audio_file_boundaries(extended, audio_duration_seconds=25.0, target_seconds=8.0)
+    for _start, cut in boundaries[:-1]:
+        for clip in extended:
+            assert not (clip.ts_start < cut < clip.ts_end), (cut, clip, boundaries)
+
+
+def _all_pars_with_audio(output_path: Path) -> List[Dict]:
+    """Every <par> across every .smil in the archive, with its ``<audio
+    src>`` resolved to the referenced audio file's own ARCHIVE path (not
+    just the raw, SMIL-relative href a reader would resolve)."""
+    entries = []
+    with zipfile.ZipFile(output_path) as zf:
+        smil_names = [n for n in zf.namelist() if n.endswith(".smil")]
+        for smil_name in smil_names:
+            root = etree.fromstring(zf.read(smil_name))
+            smil_dir = posixpath.dirname(smil_name)
+            for par in root.findall(f".//{_SMIL_NS}par"):
+                audio = par.find(f"{_SMIL_NS}audio")
+                href = unquote(audio.get("src"))
+                archive_path = posixpath.normpath(posixpath.join(smil_dir, href))
+                entries.append({
+                    "id": par.get("id"),
+                    "begin": float(audio.get("clipBegin")[:-1]),
+                    "end": float(audio.get("clipEnd")[:-1]),
+                    "audio_archive_path": archive_path,
+                })
+    return entries
+
+
+def test_audio_split_into_multiple_files_for_a_long_book(monkeypatch):
+    """End to end: when the (patched, to keep the fixture fast) per-file
+    target duration is smaller than the book's real audio, the embedded
+    audio is split into more than one physical file, every <par> ends up
+    referencing exactly one real file in the archive, every clip's times
+    are valid within that file's own real (ffprobed) duration, clips within
+    one file stay contiguous, the OPF gets one audio manifest item per file
+    plus exactly one publication-level media:duration, and the summed
+    overlay duration still tracks the real total embedded audio duration."""
+    monkeypatch.setattr(_readalong_builder_module, "_target_audio_file_seconds", lambda bitrate: 1.0)
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(epub_path, {
+            "ch1": (
+                b"<html><body><p>Alpha bravo. Charlie delta. Echo foxtrot. "
+                b"Golf hotel. India juliet. Kilo lima. Mike november. "
+                b"Oscar papa. Quebec romeo. Sierra tango.</p></body></html>"
+            ),
+        })
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp, duration=5.0)
+
+        result, output_path = _build(tmp, parser, epub_path, audio_path, combined_text, total_seconds=5.0)
+        assert result is not None
+        assert len(result.audio_hrefs) > 1, "patched 1.0s target over ~5s audio should force a split"
+
+        with zipfile.ZipFile(output_path) as zf:
+            audio_names = sorted(n for n in zf.namelist() if n.startswith("OEBPS/readalong/audio"))
+            assert len(audio_names) == len(result.audio_hrefs)
+
+            real_durations: Dict[str, float] = {}
+            for name in audio_names:
+                extracted = tmp / f"extracted_{Path(name).name}"
+                extracted.write_bytes(zf.read(name))
+                duration = _probe_duration_seconds(extracted)
+                assert duration is not None
+                real_durations[name] = duration
+
+            opf_bytes = zf.read("OEBPS/content.opf")
+
+        # OPF: one audio manifest item per physical file, exactly one
+        # publication-level (no refines=) media:duration regardless of file
+        # count -- the per-overlay ones (refines=) are unaffected by
+        # splitting and already covered by
+        # test_opf_preserves_preexisting_manifest_items_and_adds_overlay_refs.
+        tree = etree.fromstring(opf_bytes)
+        ns = "{http://www.idpf.org/2007/opf}"
+        manifest = tree.find(f"{ns}manifest")
+        audio_items = [
+            i for i in manifest.findall(f"{ns}item")
+            if (i.get("media-type") or "").startswith("audio/")
+        ]
+        assert len(audio_items) == len(result.audio_hrefs)
+        metadata = tree.find(f"{ns}metadata")
+        duration_metas = [m for m in metadata.findall(f"{ns}meta") if m.get("property") == "media:duration"]
+        publication_level = [m for m in duration_metas if m.get("refines") is None]
+        assert len(publication_level) == 1
+
+        entries = _all_pars_with_audio(output_path)
+        assert len(entries) == result.total_sentences
+
+        by_file: Dict[str, List[Dict]] = {}
+        for entry in entries:
+            by_file.setdefault(entry["audio_archive_path"], []).append(entry)
+
+        # Every physical file is referenced by at least one par, and every
+        # par's referenced file is a real archive entry we could probe.
+        assert set(by_file.keys()) == set(real_durations.keys())
+
+        for archive_path, group in by_file.items():
+            real_duration = real_durations[archive_path]
+            group.sort(key=lambda e: e["begin"])
+            for entry in group:
+                assert entry["begin"] >= 0.0
+                assert entry["begin"] <= entry["end"]
+                assert entry["end"] <= real_duration + 1e-3, (archive_path, entry, real_duration)
+            for i in range(len(group) - 1):
+                assert group[i]["end"] == pytest.approx(group[i + 1]["begin"], abs=1e-6), (
+                    "clips within one physical file must stay contiguous", archive_path, group,
+                )
+
+        # Coverage: the summed overlay duration still tracks the real total
+        # embedded audio (Phase 4 Part A's own invariant, unaffected by
+        # splitting). Tolerance is loose here on purpose: this fixture's
+        # audio is 8kHz (a 1024-sample AAC frame is ~128ms at that rate), and
+        # re-muxing each split file independently via stream copy can round
+        # its own reported duration up by close to a full frame -- a large
+        # fraction of this test's ~1s-per-file scale, but negligible at real
+        # audiobook scale (minutes per file); the tight, production-scale
+        # ratio is what the plan's own live-book verification measures.
+        total_real = sum(real_durations.values())
+        assert result.total_duration_seconds == pytest.approx(total_real, abs=1.0)
+
+
+def test_single_audio_file_case_is_untouched_by_split_machinery():
+    """A book whose real audio fits comfortably under the (real, unpatched)
+    default target duration gets exactly the pre-Phase-4-Part-C layout: one
+    archive file named 'audio<ext>' (no '-N' suffix), one manifest audio
+    item, referenced identically by every <par> in the book."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(epub_path, {
+            "ch1": b"<html><body><p>Alpha bravo. Charlie delta.</p></body></html>",
+        })
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp, duration=1.0)
+
+        result, output_path = _build(tmp, parser, epub_path, audio_path, combined_text, total_seconds=1.0)
+        assert result is not None
+        assert result.audio_hrefs == ["readalong/audio.m4a"]
+
+        with zipfile.ZipFile(output_path) as zf:
+            audio_names = [n for n in zf.namelist() if n.startswith("OEBPS/readalong/audio")]
+        assert audio_names == ["OEBPS/readalong/audio.m4a"]
+
+        entries = _all_pars_with_audio(output_path)
+        assert entries  # at least one sentence
+        assert {e["audio_archive_path"] for e in entries} == {"OEBPS/readalong/audio.m4a"}
 
 
 # ---------------------------------------------------------------------------

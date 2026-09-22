@@ -121,7 +121,60 @@ because that is exactly what ``ForcedAligner._load_audio`` already does to
 build the single timeline the stored alignment map's timestamps are
 absolute against -- reproducing that decode order means the timestamps need
 no adjustment for whatever this module embeds.
+
+**Phase 4 Part C -- audio file splitting.** Embedding the whole transcoded
+audiobook as one physical file measured at 157.2MB for an 11.5h book;
+BookOrbit's web reader loads the whole file referenced by a ``<par>`` into
+memory and re-loads it on every chapter's overlay, and a blob that size
+stops playback. Storyteller ships 8 files (~17.1MB each) for a comparable
+10.1h book. That 8-file split is Storyteller's own *source* file layout --
+its alignment operates directly against however many original audio parts
+the publisher shipped (each ``SentenceRange``/``WordRange`` in
+``libraries/align/src/align/ctc/mediaOverlay.ts`` carries its own
+``audiofile``, and Storyteller never concatenates them) -- so it is not a
+scheme this module can reuse directly: unlike Storyteller, this repo's own
+``ForcedAligner._load_audio`` already fully decodes and concatenates every
+source part into ONE continuous timeline before alignment ever runs
+(Phase 4 Part B's own concat-filter step reproduces exactly that), so every
+stored clip timestamp is absolute against that single merged timeline, not
+against whichever original file it came from.
+
+This module therefore imposes its own split, independent of the source
+file layout: after transcoding (Part B, unchanged) and after
+:func:`_extend_clips_to_contiguous` (unchanged -- see that function's own
+docstring), the single transcoded file is cut into several physical files
+via ``ffmpeg`` stream copy (:func:`_split_audio_into_files`, no re-encode --
+the audio is already final), at cut points chosen to fall between clips,
+never inside one (:func:`_compute_audio_file_boundaries`). Each clip's
+``<par>`` then references whichever physical file its time range landed in,
+with ``clipBegin``/``clipEnd`` recomputed relative to that file's own start
+rather than the whole book (:class:`_PlacedClip`) -- so **contiguity is
+established once, globally, exactly as before, and is preserved per file
+purely because a cut point is never chosen inside a clip**: every clip
+still touches its neighbour's edge, just measured against a shorter, local
+timeline when a cut falls between them. Target file size follows
+Storyteller's own ~17.1MB/file reference point
+(``_TARGET_AUDIO_FILE_BYTES``), converted to a target **duration** from
+whatever ``READALONG_AUDIO_BITRATE`` is actually configured
+(:func:`_target_audio_file_seconds`) so the file count scales with the
+admin's own bitrate choice instead of a fixed duration producing wildly
+different sizes at a different bitrate.
+
+**Why not split per spine item (chapter) instead?** The obvious alternative
+-- one audio file per spine item -- was rejected: library chapter counts
+vary wildly (a 44-chapter book would yield 44 files, many of them a few
+seconds of audio at typical chapter-open/close silence, mostly instant-fetch
+overhead with no benefit over one moderately-sized file), while a single
+very long chapter would still need an internal split to avoid reproducing
+the original blob problem inside one chapter. The duration-target split
+here needs no such floor/ceiling special-casing -- it already produces
+evenly-sized files regardless of how the book happens to be divided into
+chapters, and a single SMIL document is free to reference more than one
+physical audio file across its own ``<par>``s, so a split can (and often
+will) fall in the middle of a chapter's own overlay without any special
+handling.
 """
+import bisect
 import logging
 import mimetypes
 import os
@@ -286,6 +339,13 @@ class ReadalongBuildResult:
     (see the module docstring's "Anchor strategy" section). These sentences
     still get a full, correctly-timed SMIL ``<par>``; only their highlighted
     text is incomplete.
+
+    ``audio_hrefs`` (Phase 4 Part C) lists every embedded physical audio
+    file this build produced, as OPF-manifest-relative hrefs, in file order
+    -- one entry when the book was short enough to need no split (the
+    common case for most of the library), several for a long book (see the
+    module docstring's "Phase 4 Part C" section). Every SMIL ``<par>``'s own
+    ``<audio src>`` resolves to exactly one of these.
     """
     abs_id: str
     output_path: str
@@ -294,7 +354,7 @@ class ReadalongBuildResult:
     dropped_no_timestamp: int
     dropped_no_location: int
     total_duration_seconds: float
-    audio_href: str
+    audio_hrefs: List[str]
     audio_bitrate: str
     dropped_spine_items_injection_failed: int = 0
     sentences_crossing_inline_elements: int = 0
@@ -444,6 +504,179 @@ def _resolve_audio_bitrate() -> str:
         )
         return _DEFAULT_AUDIO_BITRATE
     return raw
+
+
+# --- Phase 4 Part C: audio file splitting -----------------------------------
+#
+# Target physical size of ONE embedded audio file, matching Storyteller's own
+# reference point (8 files at ~17.1MB each for a 10.1h book) and this
+# module's own docstring's "Phase 4 Part C" rationale. Converted into a
+# target DURATION per file from whatever bitrate is actually configured
+# (_resolve_audio_bitrate, read per call) so the file count scales with the
+# admin's own bitrate choice rather than a fixed duration producing very
+# differently-sized files at a different bitrate.
+_TARGET_AUDIO_FILE_BYTES = 15 * 1024 * 1024  # ~15MB
+
+# Bounds on the DERIVED target duration itself, so an unusually low or high
+# configured bitrate can't drive the file count to an absurd extreme (a
+# very low bitrate would otherwise stretch the target duration -- and so
+# each file's length -- without bound; a very high one would shrink it well
+# below any duration worth a separate file).
+_MIN_AUDIO_FILE_SECONDS = 600.0    # 10 minutes
+_MAX_AUDIO_FILE_SECONDS = 7200.0   # 2 hours
+
+# Unit suffixes ffmpeg's -b:a accepts (see _BITRATE_RE), mapped to their
+# multiplier against bits/second.
+_BITRATE_UNIT_BPS = {"": 1, "k": 1_000, "m": 1_000_000}
+
+
+def _bitrate_to_bps(bitrate: str) -> Optional[int]:
+    """Parse an ffmpeg ``-b:a`` value (``"32k"``, ``"128000"``, ``"1.5M"``)
+    to bits per second, or ``None`` if it does not match the shape
+    :data:`_BITRATE_RE` (and therefore :func:`_resolve_audio_bitrate`)
+    already requires.
+    """
+    stripped = bitrate.strip()
+    if not _BITRATE_RE.match(stripped):
+        return None
+    unit = ""
+    numeric = stripped
+    if numeric[-1] in "kKmM":
+        unit = numeric[-1].lower()
+        numeric = numeric[:-1]
+    try:
+        return int(float(numeric) * _BITRATE_UNIT_BPS[unit])
+    except ValueError:
+        return None
+
+
+def _target_audio_file_seconds(bitrate: str) -> float:
+    """The target duration for one embedded audio file at ``bitrate``, sized
+    to land around :data:`_TARGET_AUDIO_FILE_BYTES`, clamped to
+    :data:`_MIN_AUDIO_FILE_SECONDS`/:data:`_MAX_AUDIO_FILE_SECONDS` regardless
+    of how far the configured bitrate would otherwise skew the arithmetic.
+
+    Falls back to :data:`_DEFAULT_AUDIO_BITRATE`'s own bits-per-second value
+    -- never raises -- if ``bitrate`` itself fails to parse (should not
+    happen in practice, since callers pass :func:`_resolve_audio_bitrate`'s
+    own already-validated return value, but this function does not assume
+    that).
+    """
+    bps = _bitrate_to_bps(bitrate) or _bitrate_to_bps(_DEFAULT_AUDIO_BITRATE)
+    target = (_TARGET_AUDIO_FILE_BYTES * 8) / bps
+    return max(_MIN_AUDIO_FILE_SECONDS, min(_MAX_AUDIO_FILE_SECONDS, target))
+
+
+def _compute_audio_file_boundaries(
+    clips: List[SentenceClip], audio_duration_seconds: float, target_seconds: float,
+) -> List[Tuple[float, float]]:
+    """Partition ``[0, audio_duration_seconds)`` into contiguous ``(start,
+    end)`` physical-file ranges, choosing cut points that never fall
+    strictly inside any clip's ``[ts_start, ts_end)`` -- so every clip ends
+    up entirely inside exactly one physical file's range.
+
+    ``clips`` must be every clip that will actually get a SMIL ``<par>``
+    (i.e. post :func:`_extend_clips_to_contiguous`, across every spine
+    item) -- NOT necessarily in book reading order; this function sorts by
+    ``ts_start`` itself, since a physical audio cut point is a property of
+    the single embedded timeline, independent of where a sentence sits in
+    the EPUB (out-of-order narration, issue #426, can place a temporally
+    early clip after a temporally later one in reading order).
+
+    Targets ``round(audio_duration_seconds / target_seconds)`` evenly-sized
+    files up front (never a large leftover remainder on the last file), then
+    nudges each ideal cut point forward to the end of whatever clip it would
+    otherwise land inside. Returns a single ``(0.0, audio_duration_seconds)``
+    range -- no split -- when the audio is not long enough to need one, or
+    when ``audio_duration_seconds`` is non-positive.
+
+    A single clip long enough to span more than one ideal cut point (an
+    unusually long extended clip -- see :func:`_extend_clips_to_contiguous`'s
+    own segment-boundary extension) simply yields fewer, larger files than
+    the ideal count instead of an invalid split: a candidate cut point is
+    only ever accepted when it strictly exceeds the previous one.
+    """
+    if audio_duration_seconds <= 0:
+        return [(0.0, max(0.0, audio_duration_seconds))]
+    num_files = max(1, round(audio_duration_seconds / target_seconds))
+    if num_files <= 1:
+        return [(0.0, audio_duration_seconds)]
+
+    temporal = sorted(clips, key=lambda c: c.ts_start)
+    starts = [c.ts_start for c in temporal]
+    ideal_step = audio_duration_seconds / num_files
+
+    cuts: List[float] = []
+    prev_cut = 0.0
+    for i in range(1, num_files):
+        ideal = ideal_step * i
+        idx = bisect.bisect_right(starts, ideal) - 1
+        candidate = ideal
+        if 0 <= idx < len(temporal):
+            enclosing = temporal[idx]
+            if enclosing.ts_start < ideal < enclosing.ts_end:
+                candidate = enclosing.ts_end
+        candidate = min(candidate, audio_duration_seconds)
+        if candidate <= prev_cut:
+            continue
+        cuts.append(candidate)
+        prev_cut = candidate
+
+    boundaries: List[Tuple[float, float]] = []
+    start = 0.0
+    for cut in cuts:
+        boundaries.append((start, cut))
+        start = cut
+    boundaries.append((start, audio_duration_seconds))
+    return boundaries
+
+
+def _split_audio_into_files(
+    source_path: Path, boundaries: List[Tuple[float, float]], output_dir: Path,
+) -> Optional[List[Tuple[Path, float]]]:
+    """Split ``source_path`` (the single, already-transcoded embed audio)
+    into one physical file per ``boundaries`` range via ``ffmpeg`` stream
+    copy (no re-encode -- the audio is already final).
+
+    Returns a list of ``(file_path, real_probed_duration)`` in the same
+    order as ``boundaries`` -- the caller is expected to clamp each file's
+    own clips' relative end times to that file's *real* probed duration
+    rather than trust the arithmetic ``end - start`` difference, since
+    stream-copying a compressed codec (AAC/M4A here) can only cut on the
+    codec's own frame grid (~21-23ms for a typical 44.1/48kHz AAC stream) --
+    immaterial next to sentence-length clips, but real.
+
+    Returns ``None`` -- never raises -- on any ffmpeg/ffprobe failure, so
+    the caller can refuse the build the same way every other guard in this
+    module does.
+    """
+    ext = source_path.suffix
+    results: List[Tuple[Path, float]] = []
+    for index, (start, end) in enumerate(boundaries):
+        out_path = output_dir / f"audio-{index}{ext}"
+        cmd = [
+            "ffmpeg", "-y", "-nostdin", "-loglevel", "error",
+            "-ss", f"{start:.3f}", "-i", str(source_path),
+            "-t", f"{max(0.0, end - start):.3f}",
+            "-c", "copy", str(out_path),
+        ]
+        try:
+            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            logger.error(
+                "Read-along audio split failed for part %d/%d (%.3f-%.3fs): %s",
+                index + 1, len(boundaries), start, end, e, exc_info=True,
+            )
+            return None
+        duration = _probe_duration_seconds(out_path)
+        if duration is None:
+            logger.error(
+                "Read-along audio split: could not probe duration of part %d/%d ('%s')",
+                index + 1, len(boundaries), out_path,
+            )
+            return None
+        results.append((out_path, duration))
+    return results
 
 
 def _normalize_audio_paths(
@@ -1206,27 +1439,54 @@ def _verify_marker_injection(original: bytes, modified: bytes, spine_index: int,
         )
 
 
+@dataclass(frozen=True)
+class _PlacedClip:
+    """One SMIL ``<par>``'s worth of data after Phase 4 Part C's per-file
+    placement: a sentence's already-allocated marker id, its clip times
+    made relative to whichever physical audio file it was placed in (see
+    the module docstring's "Phase 4 Part C" section), and that file's own
+    href, relative to the SMIL document that will reference it.
+
+    Distinct from :class:`~src.services.readalong_segments.SentenceClip`
+    (which this module never mutates in place -- ``ts_start``/``ts_end``
+    there are always absolute against the single, whole-book embedded
+    timeline) specifically so a clip spanning a file boundary in the
+    caller's own bookkeeping can never be confused with one whose times are
+    already file-relative.
+    """
+    sentence_id: str
+    ts_start: float
+    ts_end: float
+    audio_href: str
+
+
 def _build_smil(
     chapter_id: str,
     xhtml_href_from_smil: str,
-    audio_href_from_smil: str,
-    clips: List[SentenceClip],
+    placed_clips: List[_PlacedClip],
 ) -> bytes:
     """Build one spine item's SMIL media-overlay document.
 
-    ``xhtml_href_from_smil``/``audio_href_from_smil`` are decoded,
-    filesystem-style paths relative to the SMIL document's own location
-    (computed by the caller via ``posixpath.relpath``); this function
-    percent-encodes them (:func:`_encode_href_path`, Finding 4) before
-    embedding them as ``src``/``epub:textref`` attribute values, since a raw
-    filename containing e.g. a space is not a valid URI reference. Every
-    ``<par>`` carries both ``clipBegin`` and ``clipEnd`` -- required so
-    BookOrbit's own duration inspector does not collapse the whole overlay to
-    a null total (see this module's docstring and the plan's Phase 3 exit
-    criteria).
+    ``xhtml_href_from_smil`` and each ``placed_clips[i].audio_href`` are
+    decoded, filesystem-style paths relative to the SMIL document's own
+    location (computed by the caller via ``posixpath.relpath``); this
+    function percent-encodes them (:func:`_encode_href_path`, Finding 4)
+    before embedding them as ``src``/``epub:textref`` attribute values,
+    since a raw filename containing e.g. a space is not a valid URI
+    reference. Every ``<par>`` carries both ``clipBegin`` and ``clipEnd`` --
+    required so BookOrbit's own duration inspector does not collapse the
+    whole overlay to a null total (see this module's docstring and the
+    plan's Phase 3 exit criteria).
+
+    **Phase 4 Part C:** different ``<par>``s in the same document can (and
+    for a long book routinely do) carry different ``audio_href`` values --
+    one SMIL seq is still exactly one spine item's overlay, but its
+    sentences' audio may span more than one physical embedded file.
+    ``placed_clips``' own ``ts_start``/``ts_end`` are already relative to
+    whichever file each one was placed in (the caller's job, not this
+    function's).
     """
     xhtml_href_from_smil = _encode_href_path(xhtml_href_from_smil)
-    audio_href_from_smil = _encode_href_path(audio_href_from_smil)
 
     nsmap = {None: _SMIL_NS, "epub": _OPS_NS}
     smil = etree.Element(f"{{{_SMIL_NS}}}smil", nsmap=nsmap, attrib={"version": "3.0"})
@@ -1240,7 +1500,7 @@ def _build_smil(
             f"{{{_OPS_NS}}}type": "bodymatter chapter",
         },
     )
-    for clip in clips:
+    for clip in placed_clips:
         ts_start = float(clip.ts_start)
         ts_end = float(clip.ts_end)
         if ts_end < ts_start:
@@ -1259,7 +1519,7 @@ def _build_smil(
             par,
             f"{{{_SMIL_NS}}}audio",
             attrib={
-                "src": audio_href_from_smil,
+                "src": _encode_href_path(clip.audio_href),
                 "clipBegin": f"{ts_start:.3f}s",
                 "clipEnd": f"{ts_end:.3f}s",
             },
@@ -1271,9 +1531,7 @@ def _rewrite_opf(
     opf_bytes: bytes,
     opf_dir: str,
     overlays: List[SpineOverlayResult],
-    audio_manifest_href: str,
-    audio_media_type: str,
-    audio_manifest_id: str,
+    audio_files: List[Tuple[str, str, str]],
     total_duration: float,
 ) -> bytes:
     """Add media-overlay manifest items and ``media:duration`` metadata to an OPF.
@@ -1282,6 +1540,11 @@ def _rewrite_opf(
     the existing tree in place with lxml (which keeps comments, processing
     instructions, attribute order and untouched elements' formatting intact)
     rather than rebuilding the document, per the plan's explicit instruction.
+
+    ``audio_files`` is one ``(manifest_href, media_type, manifest_id)`` tuple
+    per physical embedded audio file (Phase 4 Part C) -- ``manifest_href`` is
+    the decoded, OPF-dir-relative path this function encodes itself, same as
+    every other href here. Usually one entry; several for a long book.
 
     Raises ``ValueError`` if the OPF has no ``<manifest>``/``<metadata>`` to
     attach overlays to, or (Finding 4, independent review) if a spine item's
@@ -1355,11 +1618,16 @@ def _rewrite_opf(
         duration_meta.text = _format_smil_clock(overlay.duration_seconds)
         _append_with_tail(metadata, duration_meta)
 
-    audio_item = etree.Element(
-        f"{{{_OPF_NS}}}item",
-        attrib={"id": audio_manifest_id, "href": _encode_href_path(audio_manifest_href), "media-type": audio_media_type},
-    )
-    _append_with_tail(manifest, audio_item)
+    for audio_manifest_href, audio_media_type, audio_manifest_id in audio_files:
+        audio_item = etree.Element(
+            f"{{{_OPF_NS}}}item",
+            attrib={
+                "id": audio_manifest_id,
+                "href": _encode_href_path(audio_manifest_href),
+                "media-type": audio_media_type,
+            },
+        )
+        _append_with_tail(manifest, audio_item)
 
     total_meta = etree.Element(f"{{{_OPF_NS}}}meta", attrib={"property": "media:duration"})
     total_meta.text = _format_smil_clock(total_duration)
@@ -1846,13 +2114,17 @@ def _build_readalong_epub_impl(
             standalone_audio_output_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(transcoded_audio_path, standalone_audio_output_path)
 
-        audio_archive_path = posixpath.join(readalong_dir, f"audio{transcoded_audio_path.suffix.lower()}")
+        audio_archive_ext = transcoded_audio_path.suffix.lower()
 
         # Pass 2 (Phase 4 Part A): extend every already-located clip's end to
         # the next one's start, in book reading order across spine-item
         # boundaries, using the real probed audio duration for the very last
-        # one -- see _extend_clips_to_contiguous. Then emit SMIL/inject
-        # markers per spine item from the extended clips.
+        # one -- see _extend_clips_to_contiguous. This step is UNCHANGED by
+        # Phase 4 Part C's file splitting below: it still reasons about one
+        # single, whole-book timeline, and splitting is applied strictly
+        # afterward, at cut points chosen never to fall inside a clip -- see
+        # the module docstring's "Phase 4 Part C" section for why that keeps
+        # every file's own clips contiguous without touching this function.
         flat_clips = [c for clips in located_by_spine.values() for c in clips]
         flat_clips = _extend_clips_to_contiguous(flat_clips, audio_duration)
         extended_by_spine: Dict[int, List[SentenceClip]] = {}
@@ -1860,6 +2132,49 @@ def _build_readalong_epub_impl(
         for spine_index, clips in located_by_spine.items():
             extended_by_spine[spine_index] = flat_clips[cursor:cursor + len(clips)]
             cursor += len(clips)
+
+        # Phase 4 Part C: split the single transcoded file into several
+        # physical audio files instead of embedding one whole-book blob.
+        # `boundaries` are (start, end) ranges, in seconds, that together
+        # cover [0, audio_duration) contiguously; `audio_files_on_disk` is
+        # the corresponding list of (path, real_probed_duration).
+        if audio_duration and audio_duration > 0:
+            target_seconds = _target_audio_file_seconds(audio_bitrate)
+            boundaries = _compute_audio_file_boundaries(flat_clips, audio_duration, target_seconds)
+        else:
+            boundaries = [(0.0, audio_duration or 0.0)]
+
+        single_audio_file = len(boundaries) <= 1
+        if single_audio_file:
+            # No split needed (short book) or possible (duration unprobeable)
+            # -- reuse the whole transcoded file exactly as Phase 4 Part B
+            # produced it, with no second ffmpeg pass and no dependency on
+            # `audio_duration` actually being a real number.
+            audio_files_on_disk: List[Tuple[Path, float]] = [
+                (transcoded_audio_path, audio_duration if audio_duration is not None else 0.0)
+            ]
+        else:
+            split_result = _split_audio_into_files(transcoded_audio_path, boundaries, Path(tmp_dir))
+            if split_result is None:
+                logger.warning(
+                    "🚫 Refusing to build read-along EPUB for '%s': splitting "
+                    "the embedded audio into %d files failed",
+                    abs_id, len(boundaries),
+                )
+                return None
+            audio_files_on_disk = split_result
+
+        file_starts = [start for start, _end in boundaries]
+        audio_archive_paths = [
+            posixpath.join(readalong_dir, f"audio{audio_archive_ext}")
+            if single_audio_file
+            else posixpath.join(readalong_dir, f"audio-{i}{audio_archive_ext}")
+            for i in range(len(audio_files_on_disk))
+        ]
+
+        def _file_index_for(ts_start: float) -> int:
+            idx = bisect.bisect_right(file_starts, ts_start) - 1
+            return max(0, min(idx, len(audio_files_on_disk) - 1))
 
         modified_files: Dict[str, bytes] = {}
         new_bytes_files: Dict[str, bytes] = {}
@@ -1888,16 +2203,39 @@ def _build_readalong_epub_impl(
             chapter_id = f"c{spine_index}"
             smil_archive_path = posixpath.join(readalong_dir, f"{spine_index}.smil")
             xhtml_href_from_smil = posixpath.relpath(href, readalong_dir)
-            audio_href_from_smil = posixpath.relpath(audio_archive_path, readalong_dir)
             # Finding 6 fix: the SMIL must reference whatever id was actually
             # allocated for each sentence (collision-free), not necessarily
             # its own stable SentenceClip.sentence_id -- the two differ only
             # when a collision with a pre-existing document id was found.
             id_map = marker_id_map_by_spine[spine_index]
-            smil_clips = [
-                replace(c, sentence_id=id_map[c.sentence_id]) for c in located_clips
-            ]
-            smil_bytes = _build_smil(chapter_id, xhtml_href_from_smil, audio_href_from_smil, smil_clips)
+
+            # Phase 4 Part C: place each clip in whichever physical audio
+            # file its (already book-wide-contiguous) time range falls in,
+            # and make its clip times relative to that file's own start.
+            # The single-file case is left byte-for-byte as before (no
+            # clamping against a possibly-meaningless probed duration when
+            # there was nothing to split).
+            placed_clips: List[_PlacedClip] = []
+            for c in located_clips:
+                file_index = _file_index_for(c.ts_start)
+                audio_href_from_smil = posixpath.relpath(
+                    audio_archive_paths[file_index], readalong_dir,
+                )
+                if single_audio_file:
+                    rel_start, rel_end = c.ts_start, c.ts_end
+                else:
+                    file_start = file_starts[file_index]
+                    _file_path, file_real_duration = audio_files_on_disk[file_index]
+                    rel_start = max(0.0, c.ts_start - file_start)
+                    rel_end = max(rel_start, min(c.ts_end - file_start, file_real_duration))
+                placed_clips.append(_PlacedClip(
+                    sentence_id=id_map[c.sentence_id],
+                    ts_start=rel_start,
+                    ts_end=rel_end,
+                    audio_href=audio_href_from_smil,
+                ))
+
+            smil_bytes = _build_smil(chapter_id, xhtml_href_from_smil, placed_clips)
             new_bytes_files[smil_archive_path] = smil_bytes
 
             overlays.append(SpineOverlayResult(
@@ -1905,7 +2243,7 @@ def _build_readalong_epub_impl(
                 href=href,
                 smil_href=smil_archive_path,
                 par_count=len(located_clips),
-                duration_seconds=sum(max(0.0, c.ts_end - c.ts_start) for c in located_clips),
+                duration_seconds=sum(max(0.0, pc.ts_end - pc.ts_start) for pc in placed_clips),
             ))
 
         if not overlays:
@@ -1917,17 +2255,21 @@ def _build_readalong_epub_impl(
             )
             return None
 
-        audio_manifest_href = posixpath.relpath(audio_archive_path, opf_dir or ".")
         audio_media_type = _audio_media_type(transcoded_audio_path)
         total_duration = sum(o.duration_seconds for o in overlays)
 
         existing_manifest_ids = _manifest_item_ids(opf_bytes)
-        audio_manifest_id = _unique_manifest_id(existing_manifest_ids, "readalong-audio")
+        audio_manifest_entries: List[Tuple[str, str, str]] = []
+        for i, archive_path in enumerate(audio_archive_paths):
+            manifest_href = posixpath.relpath(archive_path, opf_dir or ".")
+            base_id = "readalong-audio" if single_audio_file else f"readalong-audio-{i}"
+            manifest_id = _unique_manifest_id(existing_manifest_ids, base_id)
+            existing_manifest_ids.add(manifest_id)
+            audio_manifest_entries.append((manifest_href, audio_media_type, manifest_id))
 
         try:
             modified_opf = _rewrite_opf(
-                opf_bytes, opf_dir, overlays, audio_manifest_href, audio_media_type,
-                audio_manifest_id, total_duration,
+                opf_bytes, opf_dir, overlays, audio_manifest_entries, total_duration,
             )
         except ValueError as e:
             logger.warning(
@@ -1936,7 +2278,10 @@ def _build_readalong_epub_impl(
             return None
         modified_files[opf_path] = modified_opf
 
-        new_disk_files = {audio_archive_path: transcoded_audio_path}
+        new_disk_files = {
+            archive_path: disk_path
+            for archive_path, (disk_path, _real_duration) in zip(audio_archive_paths, audio_files_on_disk)
+        }
         _safe_progress(progress_callback, "packaging", _STAGE_START["packaging"])
         try:
             _package_epub(epub_path, output_path, modified_files, new_bytes_files, new_disk_files)
@@ -1955,10 +2300,10 @@ def _build_readalong_epub_impl(
         "(%d dropped: no timestamp, %d dropped: no DOM location, %d spine "
         "items refused: injection verification failed, %d crossing an inline "
         "element boundary: partial highlight), "
-        "%.1fs total overlay duration (bitrate=%s) -> '%s'",
+        "%.1fs total overlay duration across %d audio file(s) (bitrate=%s) -> '%s'",
         abs_id, len(overlays), total_sentences, clip_result.dropped_no_timestamp,
         dropped_no_location, 0, crossed_inline_boundary, total_duration,
-        audio_bitrate, output_path,
+        len(audio_archive_paths), audio_bitrate, output_path,
     )
     return ReadalongBuildResult(
         abs_id=abs_id,
@@ -1968,7 +2313,7 @@ def _build_readalong_epub_impl(
         dropped_no_timestamp=clip_result.dropped_no_timestamp,
         dropped_no_location=dropped_no_location,
         total_duration_seconds=total_duration,
-        audio_href=audio_manifest_href,
+        audio_hrefs=[href for href, _media_type, _manifest_id in audio_manifest_entries],
         audio_bitrate=audio_bitrate,
         dropped_spine_items_injection_failed=0,
         sentences_crossing_inline_elements=crossed_inline_boundary,
