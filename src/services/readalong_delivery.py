@@ -251,7 +251,9 @@ def deliver_readalong_epub(
     resolvable files (see :func:`resolve_audiobook_folder`); the resolved
     folder is not under this bridge's own ``AUDIOBOOKS_DIR``, or is (somehow)
     under ``BOOKS_DIR`` -- the ebook library root must never receive this
-    file; the book has no ebook filename, or that file cannot be located on
+    file; the resolved folder IS ``AUDIOBOOKS_DIR`` itself, i.e. the audio is
+    a loose file in the library root with no folder of its own to be grouped
+    by; the book has no ebook filename, or that file cannot be located on
     disk; or Phase 3/4's own :func:`~src.services.readalong_builder.build_readalong_epub`
     refuses (no alignment map fitted to this EPUB, no audio, etc. -- see that
     function's own docstring for the full list).
@@ -323,6 +325,18 @@ def deliver_readalong_epub(
             "🚫 Refusing read-along delivery for '%s': resolved audio folder '%s' is under "
             "the ebook library root ('%s') -- never writing a generated read-along there",
             abs_id, resolved.folder, books_root,
+        )
+        return None
+    if resolved.folder == audiobooks_root:
+        logger.error(
+            "🚫 Refusing read-along delivery for '%s': BookOrbit audio entry %s is a loose "
+            "file sitting directly in the audiobook library root ('%s') rather than in its "
+            "own folder. BookOrbit groups a folder's files into one entry, so a read-along "
+            "written to the root would be grouped with every other root-level book instead "
+            "of this one -- and BookOrbit's own record of this entry's folder is the audio "
+            "file itself, so uploading to it cannot work either. Move '%s' into its own "
+            "folder and rescan the library, then regenerate.",
+            abs_id, audio_book_id, audiobooks_root, resolved.track_paths[0],
         )
         return None
 

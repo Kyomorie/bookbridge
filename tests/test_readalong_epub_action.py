@@ -595,6 +595,39 @@ class ReadalongDashboardMappingTestCase(unittest.TestCase):
         button_snippet = html[button_start:call_idx]
         self.assertNotIn("disabled", button_snippet)
 
+    def test_ineligible_button_is_clickable_so_the_click_is_never_swallowed(self):
+        """An INELIGIBLE book's button keeps its reason as a hover title but is
+        NOT rendered `disabled`, so the click always reaches the server.
+
+        A disabled <button> swallows its click entirely: no request, no error,
+        no visual change. The render-time eligibility snapshot also goes stale
+        the moment a book finishes aligning, so a book matched and aligned
+        while the dashboard sat open rendered a permanently dead button. That
+        is how "Create read-along" silently did nothing on a fresh match
+        (book `bookorbit:6071`, "Explicit Evidence": no read-along Job row was
+        ever created, so no POST ever reached the route -- while the route
+        itself answers every refusal with a message the button's own JS
+        already renders as `❌ <reason>`). The route re-checks eligibility at
+        click time and is the authority."""
+        ineligible = _make_book(
+            abs_id="book-no-audio", abs_title="Ineligible Book",
+            audio_source="ABS", sync_mode="audiobook",
+        )
+        self.mock_database_service.get_all_books.return_value = [ineligible]
+        self.mock_database_service.get_readalong_alignment_book_ids.return_value = set()
+
+        resp = self.client.get('/')
+        self.assertEqual(resp.status_code, 200)
+        html = resp.get_data(as_text=True)
+
+        call_marker = 'generateReadalongEpub("book-no-audio", this)'
+        self.assertIn(call_marker, html)
+        call_idx = html.index(call_marker)
+        button_snippet = html[html.rindex("<button", 0, call_idx):call_idx]
+        self.assertNotIn("disabled", button_snippet)
+        # The reason is still offered as a hover hint.
+        self.assertIn("Read-along generation requires a BookOrbit audio source.", button_snippet)
+
 
 if __name__ == "__main__":
     unittest.main()

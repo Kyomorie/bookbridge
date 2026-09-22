@@ -43,6 +43,7 @@ from src.services.readalong_builder import (
     _extend_clips_to_contiguous,
     _package_epub,
     _probe_duration_seconds,
+    _protected_spine_intervals,
     _safe_progress,
     _target_audio_file_seconds,
     _transcode_audio_for_embed,
@@ -1676,6 +1677,107 @@ def test_compute_audio_file_boundaries_respects_segment_gaps_after_contiguity_ex
             assert not (clip.ts_start < cut < clip.ts_end), (cut, clip, boundaries)
 
 
+def test_compute_audio_file_boundaries_never_cuts_inside_a_chapter():
+    """A cut never lands strictly inside a spine item's own narration span
+    when that span is shorter than one whole target file, so every chapter's
+    SMIL overlay references exactly one audio file.
+
+    This is the measured defect: the shipped Ghost Academy read-along had 9
+    of its 44 overlays straddling a file boundary, because cut points were
+    nudged clear of individual CLIPS only and knew nothing about chapters.
+    Each straddle costs a silent stall mid-chapter while foliate-js fetches
+    the whole next audio file before it can play the next clip out of it.
+    """
+    # 10 chapters of 10s each; target 25s, so the ideal cuts (25/50/75s)
+    # all land strictly inside a chapter and must be nudged clear.
+    clips = [
+        _clip(f"c{chapter}-s{i}", chapter, chapter * 10.0 + i, chapter * 10.0 + i + 1.0)
+        for chapter in range(10)
+        for i in range(10)
+    ]
+    spans = {
+        chapter: (chapter * 10.0, chapter * 10.0 + 10.0) for chapter in range(10)
+    }
+
+    boundaries = _compute_audio_file_boundaries(
+        clips, audio_duration_seconds=100.0, target_seconds=25.0,
+    )
+
+    assert len(boundaries) > 1, "a 100s book at a 25s target must still split"
+    for _start, cut in boundaries[:-1]:
+        for chapter, (low, high) in spans.items():
+            assert not (low < cut < high), (
+                "cut fell inside chapter's own span", cut, chapter, boundaries,
+            )
+
+
+def test_compute_audio_file_boundaries_still_splits_a_chapter_longer_than_the_target():
+    """Chapter protection is a preference, not a floor on file size: a book
+    that is ONE chapter longer than a whole target file still splits, at
+    clip boundaries, instead of collapsing back to a single huge file.
+
+    Guards the fallback tier -- without it, preferring chapter boundaries
+    would reproduce the monolithic-blob defect for any book whose chapters
+    are long (or that has no chapter divisions at all)."""
+    clips = [_clip(f"c1-s{i}", 1, float(i), float(i) + 1.0) for i in range(100)]
+
+    boundaries = _compute_audio_file_boundaries(
+        clips, audio_duration_seconds=100.0, target_seconds=25.0,
+    )
+
+    assert len(boundaries) == 4
+    for _start, cut in boundaries[:-1]:
+        for clip in clips:
+            assert not (clip.ts_start < cut < clip.ts_end), (cut, clip, boundaries)
+
+
+def test_compute_audio_file_boundaries_protects_interleaved_chapters_together():
+    """Two spine items whose narration spans OVERLAP in time (out-of-order
+    narration, issue #426) are protected as one merged interval -- a cut
+    placed between them would straddle both, so there is no cut point inside
+    the pair that protects either one."""
+    # Chapter 1 narrates 0-20s and 40-60s; chapter 2 narrates 20-40s in
+    # between, so their spans (0-60 and 20-40) overlap.
+    clips = [_clip("c1-a", 1, 0.0, 20.0), _clip("c2-a", 2, 20.0, 40.0), _clip("c1-b", 1, 40.0, 60.0)]
+    assert _protected_spine_intervals(clips, max_span_seconds=60.0) == [(0.0, 60.0)]
+
+    # The ideal cut for 90s of audio at a 60s target lands at 45s -- squarely
+    # between the two interleaved chapters, where the old clip-level rule
+    # would have happily placed it.
+    boundaries = _compute_audio_file_boundaries(
+        clips, audio_duration_seconds=90.0, target_seconds=60.0,
+    )
+
+    assert len(boundaries) > 1, "the interleaved pair must not suppress the split entirely"
+    for _start, cut in boundaries[:-1]:
+        assert not (0.0 < cut < 60.0), (cut, boundaries)
+
+
+def test_protected_spine_intervals_drops_a_span_over_the_ceiling():
+    """A span too long to keep whole is not protected -- that is what lets
+    the clip-level fallback tier split it."""
+    clips = [_clip("c1-s0", 1, 0.0, 5.0), _clip("c2-s0", 2, 5.0, 100.0)]
+    assert _protected_spine_intervals(clips, max_span_seconds=50.0) == [(0.0, 5.0)]
+
+
+def test_protected_spine_ceiling_is_a_multiple_of_the_target():
+    """A chapter somewhat LONGER than one target file is still kept whole.
+
+    Measured, not assumed: Ghost Academy's 44 chapters have a 1097s median
+    against a 1049s target, so protecting only spans within 1.0x the target
+    would leave 23 of its 44 chapters straddling a file boundary -- worse
+    than the 9 the defect shipped with."""
+    # One chapter of 1.5x the target: over the target, under the ceiling.
+    clips = [_clip(f"c1-s{i}", 1, i * 15.0, (i + 1) * 15.0) for i in range(10)]
+    boundaries = _compute_audio_file_boundaries(
+        clips, audio_duration_seconds=450.0, target_seconds=100.0,
+    )
+    for _start, cut in boundaries[:-1]:
+        assert not (0.0 < cut < 150.0), (
+            "a chapter within the ceiling must stay in one file", cut, boundaries,
+        )
+
+
 def _all_pars_with_audio(output_path: Path) -> List[Dict]:
     """Every <par> across every .smil in the archive, with its ``<audio
     src>`` resolved to the referenced audio file's own ARCHIVE path (not
@@ -1793,6 +1895,65 @@ def test_audio_split_into_multiple_files_for_a_long_book(monkeypatch):
         # ratio is what the plan's own live-book verification measures.
         total_real = sum(real_durations.values())
         assert result.total_duration_seconds == pytest.approx(total_real, abs=1.0)
+
+
+def _audio_files_per_overlay(output_path: Path) -> Dict[str, int]:
+    """{smil archive path: how many DISTINCT audio files its pars reference}.
+
+    The same measurement taken on the real shipped artifact, where 9 of
+    Ghost Academy's 44 overlays referenced two audio files."""
+    counts: Dict[str, int] = {}
+    with zipfile.ZipFile(output_path) as zf:
+        for name in (n for n in zf.namelist() if n.endswith(".smil")):
+            smil_dir = posixpath.dirname(name)
+            root = etree.fromstring(zf.read(name))
+            refs = {
+                posixpath.normpath(posixpath.join(smil_dir, unquote(audio.get("src"))))
+                for audio in root.findall(f".//{_SMIL_NS}audio")
+            }
+            counts[name] = len(refs)
+    return counts
+
+
+def test_every_chapter_overlay_references_exactly_one_audio_file(monkeypatch):
+    """End to end, over a book split into several physical audio files: no
+    chapter's SMIL overlay straddles a file boundary.
+
+    The shipped Ghost Academy read-along had 9 of its 44 overlays referencing
+    two audio files, because cut points were nudged clear of individual clips
+    and knew nothing about chapters. foliate-js has to fetch a whole audio
+    file before it can play the next clip out of it, so each straddle bought
+    a silent stall mid-chapter."""
+    # Target 3.0s over 12s of audio across 6 chapters of ~2s each: every
+    # ideal cut (3s/6s/9s) lands on or inside a chapter, and each chapter is
+    # comfortably inside the protection ceiling.
+    monkeypatch.setattr(_readalong_builder_module, "_target_audio_file_seconds", lambda bitrate: 3.0)
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(epub_path, {
+            f"ch{n}": (
+                f"<html><body><p>Chapter {n} alpha bravo. Chapter {n} charlie delta. "
+                f"Chapter {n} echo foxtrot. Chapter {n} golf hotel.</p></body></html>"
+            ).encode()
+            for n in range(1, 7)
+        })
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp, duration=12.0)
+
+        result, output_path = _build(
+            tmp, parser, epub_path, audio_path, combined_text, total_seconds=12.0,
+        )
+        assert result is not None
+        assert len(result.audio_hrefs) > 1, "fixture must actually split to be meaningful"
+
+        per_overlay = _audio_files_per_overlay(output_path)
+        assert per_overlay, "fixture produced no overlays"
+        straddling = {name: n for name, n in per_overlay.items() if n > 1}
+        assert straddling == {}, (
+            "every chapter overlay must reference exactly one audio file", straddling,
+        )
 
 
 def test_single_audio_file_case_is_untouched_by_split_machinery():

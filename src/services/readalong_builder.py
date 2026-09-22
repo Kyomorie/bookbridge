@@ -145,34 +145,38 @@ file layout: after transcoding (Part B, unchanged) and after
 docstring), the single transcoded file is cut into several physical files
 via ``ffmpeg`` stream copy (:func:`_split_audio_into_files`, no re-encode --
 the audio is already final), at cut points chosen to fall between clips,
-never inside one (:func:`_compute_audio_file_boundaries`). Each clip's
-``<par>`` then references whichever physical file its time range landed in,
-with ``clipBegin``/``clipEnd`` recomputed relative to that file's own start
+never inside one, and -- wherever the book's own chapter lengths allow it
+-- never inside a spine item's whole narration span either
+(:func:`_compute_audio_file_boundaries`). Each clip's ``<par>`` then
+references whichever physical file its time range landed in, with
+``clipBegin``/``clipEnd`` recomputed relative to that file's own start
 rather than the whole book (:class:`_PlacedClip`) -- so **contiguity is
 established once, globally, exactly as before, and is preserved per file
 purely because a cut point is never chosen inside a clip**: every clip
 still touches its neighbour's edge, just measured against a shorter, local
-timeline when a cut falls between them. Target file size follows
-Storyteller's own ~17.1MB/file reference point
-(``_TARGET_AUDIO_FILE_BYTES``), converted to a target **duration** from
+timeline when a cut falls between them. Target file size
+(``_TARGET_AUDIO_FILE_BYTES``) is converted to a target **duration** from
 whatever ``READALONG_AUDIO_BITRATE`` is actually configured
 (:func:`_target_audio_file_seconds`) so the file count scales with the
 admin's own bitrate choice instead of a fixed duration producing wildly
 different sizes at a different bitrate.
 
-**Why not split per spine item (chapter) instead?** The obvious alternative
--- one audio file per spine item -- was rejected: library chapter counts
-vary wildly (a 44-chapter book would yield 44 files, many of them a few
-seconds of audio at typical chapter-open/close silence, mostly instant-fetch
-overhead with no benefit over one moderately-sized file), while a single
-very long chapter would still need an internal split to avoid reproducing
-the original blob problem inside one chapter. The duration-target split
-here needs no such floor/ceiling special-casing -- it already produces
-evenly-sized files regardless of how the book happens to be divided into
-chapters, and a single SMIL document is free to reference more than one
-physical audio file across its own ``<par>``s, so a split can (and often
-will) fall in the middle of a chapter's own overlay without any special
-handling.
+**Why cut points prefer chapter boundaries.** A SMIL document referencing
+more than one physical audio file is legal, and is what Storyteller's own
+artifacts do (its Anansi Boys has 7 of 8 overlays straddling a file
+boundary); foliate-js -- the reader BookOrbit serves -- groups a SMIL's
+``<par>``s into consecutive per-``src`` runs specifically to support it. So
+a straddle is not a correctness problem. It is a *playback quality* one:
+foliate loads a whole audio file (``await this.book.loadBlob(src)``, one
+HTTP GET per file through BookOrbit's streaming loader) before it can play
+the first clip out of it, so a file change in the middle of a chapter buys
+a silent stall mid-chapter, where the same change at a chapter boundary
+costs nothing the reader was not already paying for a section change. Cut
+points therefore prefer whole spine items and fall back to the clip-level
+rule only inside a chapter longer than one whole target file, where no cut
+point can avoid a straddle anyway. This is a preference, not a floor or a
+ceiling on file count: several short chapters still pack into one file, and
+a book that is one enormous chapter still splits.
 """
 import bisect
 import logging
@@ -232,6 +236,12 @@ _AUDIO_MEDIA_TYPES = {
 # written into, sibling to the OPF. Suffixed with a counter on the vanishingly
 # rare chance a library EPUB already has an entry with this name.
 _READALONG_DIR_BASE = "readalong"
+
+# bs4's own ``BeautifulSoup.ASCII_SPACES`` (space, LF, tab, form-feed, CR) --
+# verified against the installed bs4, not assumed. See
+# :func:`_verify_marker_injection` for why its comparison collapses runs of
+# these characters on both sides before comparing.
+_ASCII_WHITESPACE_RUN_RE = re.compile("[ \t\n\r\f]+")
 
 # --- Stage progress reporting ------------------------------------------------
 #
@@ -508,14 +518,25 @@ def _resolve_audio_bitrate() -> str:
 
 # --- Phase 4 Part C: audio file splitting -----------------------------------
 #
-# Target physical size of ONE embedded audio file, matching Storyteller's own
-# reference point (8 files at ~17.1MB each for a 10.1h book) and this
-# module's own docstring's "Phase 4 Part C" rationale. Converted into a
-# target DURATION per file from whatever bitrate is actually configured
-# (_resolve_audio_bitrate, read per call) so the file count scales with the
-# admin's own bitrate choice rather than a fixed duration producing very
-# differently-sized files at a different bitrate.
-_TARGET_AUDIO_FILE_BYTES = 15 * 1024 * 1024  # ~15MB
+# Target physical size of ONE embedded audio file. This size IS the start-up
+# latency at every file transition in BookOrbit's reader: foliate-js's
+# MediaOverlay fetches a whole audio file over HTTP and wraps it in a blob
+# URL -- URL.createObjectURL(await this.book.loadBlob(src)) -- before the
+# first clip of that file can play. Its #play() also leaves this.#audio unset
+# across that await, so a second #play()/start() arriving during the fetch
+# strands an untracked <audio> element that still autoplays on
+# canplaythrough and can never be paused again -- the reported "plays twice
+# simultaneously". Both costs scale with this number.
+#
+# Measured against Storyteller's own artifact for the same book rather than
+# reasoned about from first principles: Storyteller's Ghost Academy ships 40
+# files at a ~4.5MB / ~18.7min median, ours shipped 11 at ~15.2MB / ~62.8min.
+#
+# Converted into a target DURATION per file from whatever bitrate is actually
+# configured (_resolve_audio_bitrate, read per call) so the file count scales
+# with the admin's own bitrate choice rather than a fixed duration producing
+# very differently-sized files at a different bitrate.
+_TARGET_AUDIO_FILE_BYTES = 4 * 1024 * 1024  # ~4MB
 
 # Bounds on the DERIVED target duration itself, so an unusually low or high
 # configured bitrate can't drive the file count to an absurd extreme (a
@@ -524,6 +545,20 @@ _TARGET_AUDIO_FILE_BYTES = 15 * 1024 * 1024  # ~15MB
 # below any duration worth a separate file).
 _MIN_AUDIO_FILE_SECONDS = 600.0    # 10 minutes
 _MAX_AUDIO_FILE_SECONDS = 7200.0   # 2 hours
+
+# How much longer than one target file a spine item's own narration span may
+# be and still be kept whole inside a single physical file
+# (:func:`_protected_spine_intervals`). A protected span becomes its own
+# file, so this multiple IS the real ceiling on physical file size: 2x the
+# ~4MB target is ~8MB, still well under the ~15.2MB whose fetch latency
+# caused the defect this protection exists to fix.
+#
+# Chosen from the real distribution rather than picked: Ghost Academy's 44
+# chapters run 0-1626s (median 1097s / 4.19MB, max 6.20MB), so 1.0x would
+# protect only 21 of 44 and 1.5x only 42, while 2.0x protects all 44.
+# Storyteller's own artifact for that same book tops out at 1627s -- it
+# ships one audio file per chapter, which is exactly what 2.0x reproduces.
+_PROTECTED_SPAN_TARGET_MULTIPLE = 2.0
 
 # Unit suffixes ffmpeg's -b:a accepts (see _BITRATE_RE), mapped to their
 # multiplier against bits/second.
@@ -567,34 +602,94 @@ def _target_audio_file_seconds(bitrate: str) -> float:
     return max(_MIN_AUDIO_FILE_SECONDS, min(_MAX_AUDIO_FILE_SECONDS, target))
 
 
+def _protected_spine_intervals(
+    clips: Sequence[SentenceClip], max_span_seconds: float,
+) -> List[Tuple[float, float]]:
+    """The merged narration time spans of spine items short enough to be kept
+    whole inside a single physical audio file.
+
+    One span per spine item -- ``[min ts_start, max ts_end]`` over that
+    item's own clips -- merged wherever two spans overlap, since
+    out-of-order narration (issue #426) can interleave two spine items in
+    time and a cut placed between them would straddle both.
+
+    A merged interval longer than ``max_span_seconds`` is deliberately NOT
+    returned: keeping it whole would force a physical file that big, and
+    beyond some size that costs more than the straddle it avoids. Inside
+    such an interval :func:`_compute_audio_file_boundaries` falls back to
+    its clip-level rule and accepts the straddle -- a chapter longer than
+    any file we are willing to emit has no cut point that avoids one.
+    """
+    spans: Dict[int, Tuple[float, float]] = {}
+    for clip in clips:
+        low, high = spans.get(clip.spine_index, (clip.ts_start, clip.ts_end))
+        spans[clip.spine_index] = (min(low, clip.ts_start), max(high, clip.ts_end))
+
+    merged: List[Tuple[float, float]] = []
+    for low, high in sorted(spans.values()):
+        # STRICT overlap only. _extend_clips_to_contiguous pulls every
+        # chapter's last clip forward to the next chapter's first, so
+        # adjacent chapters always TOUCH (`previous high == low`); merging
+        # on touch would fuse the whole book into one interval, and that
+        # interval would then be longer than any target and protect nothing.
+        # A cut exactly on a shared edge is strictly inside neither span.
+        if merged and low < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], high))
+        else:
+            merged.append((low, high))
+
+    return [(low, high) for low, high in merged if high - low <= max_span_seconds]
+
+
 def _compute_audio_file_boundaries(
     clips: List[SentenceClip], audio_duration_seconds: float, target_seconds: float,
 ) -> List[Tuple[float, float]]:
     """Partition ``[0, audio_duration_seconds)`` into contiguous ``(start,
-    end)`` physical-file ranges, choosing cut points that never fall
-    strictly inside any clip's ``[ts_start, ts_end)`` -- so every clip ends
-    up entirely inside exactly one physical file's range.
+    end)`` physical-file ranges, choosing cut points that keep each SPINE
+    ITEM's whole narration -- not merely each individual clip -- inside one
+    physical file wherever that is possible.
 
     ``clips`` must be every clip that will actually get a SMIL ``<par>``
     (i.e. post :func:`_extend_clips_to_contiguous`, across every spine
-    item) -- NOT necessarily in book reading order; this function sorts by
-    ``ts_start`` itself, since a physical audio cut point is a property of
-    the single embedded timeline, independent of where a sentence sits in
-    the EPUB (out-of-order narration, issue #426, can place a temporally
-    early clip after a temporally later one in reading order).
+    item) -- NOT necessarily in book reading order; this function derives
+    each spine item's own span and sorts by time itself, since a physical
+    audio cut point is a property of the single embedded timeline,
+    independent of where a sentence sits in the EPUB (out-of-order
+    narration, issue #426, can place a temporally early clip after a
+    temporally later one in reading order).
+
+    Cut points are protected at two tiers, in order:
+
+    1. **Spine item** (:func:`_protected_spine_intervals`). A cut never
+       falls strictly inside a spine item's own narration span, so that
+       item's SMIL overlay references exactly one audio file. A reader has
+       to load a whole audio file before it can play the next clip from it,
+       so a file change in the MIDDLE of a chapter costs a silent stall
+       mid-sentence-run; at a chapter boundary the reader is changing
+       section anyway. (This is not a correctness rule -- Storyteller's own
+       artifacts straddle, and foliate's MediaOverlay groups a SMIL's pars
+       into per-``src`` runs on purpose -- it is a quality-of-playback one.)
+    2. **Clip.** Inside a span longer than
+       ``target_seconds * _PROTECTED_SPAN_TARGET_MULTIPLE`` -- a single
+       chapter too long to keep whole without defeating the split -- a cut
+       IS allowed, but still never lands strictly inside any clip's
+       ``[ts_start, ts_end)``. This is the pre-existing rule, and the reason
+       a one-chapter book still splits instead of yielding one huge file.
 
     Targets ``round(audio_duration_seconds / target_seconds)`` evenly-sized
     files up front (never a large leftover remainder on the last file), then
-    nudges each ideal cut point forward to the end of whatever clip it would
-    otherwise land inside. Returns a single ``(0.0, audio_duration_seconds)``
-    range -- no split -- when the audio is not long enough to need one, or
-    when ``audio_duration_seconds`` is non-positive.
+    nudges each ideal cut point FORWARD past whatever it would otherwise
+    land inside, re-checking both tiers until it is clear of both. Returns a
+    single ``(0.0, audio_duration_seconds)`` range -- no split -- when the
+    audio is not long enough to need one, or when ``audio_duration_seconds``
+    is non-positive.
 
-    A single clip long enough to span more than one ideal cut point (an
-    unusually long extended clip -- see :func:`_extend_clips_to_contiguous`'s
-    own segment-boundary extension) simply yields fewer, larger files than
-    the ideal count instead of an invalid split: a candidate cut point is
-    only ever accepted when it strictly exceeds the previous one.
+    A protected span (or an unusually long extended clip -- see
+    :func:`_extend_clips_to_contiguous`'s own segment-boundary extension)
+    long enough to swallow more than one ideal cut point simply yields
+    fewer, larger files than the ideal count instead of an invalid split: a
+    candidate cut point is only ever accepted when it strictly exceeds the
+    previous one.
     """
     if audio_duration_seconds <= 0:
         return [(0.0, max(0.0, audio_duration_seconds))]
@@ -604,18 +699,35 @@ def _compute_audio_file_boundaries(
 
     temporal = sorted(clips, key=lambda c: c.ts_start)
     starts = [c.ts_start for c in temporal]
+    protected = _protected_spine_intervals(
+        clips, target_seconds * _PROTECTED_SPAN_TARGET_MULTIPLE,
+    )
+    protected_starts = [low for low, _high in protected]
     ideal_step = audio_duration_seconds / num_files
 
     cuts: List[float] = []
     prev_cut = 0.0
     for i in range(1, num_files):
-        ideal = ideal_step * i
-        idx = bisect.bisect_right(starts, ideal) - 1
-        candidate = ideal
-        if 0 <= idx < len(temporal):
-            enclosing = temporal[idx]
-            if enclosing.ts_start < ideal < enclosing.ts_end:
-                candidate = enclosing.ts_end
+        candidate = ideal_step * i
+        # Each nudge moves `candidate` strictly past the end of the interval
+        # or clip that enclosed it, so it never revisits one; the bound is
+        # simply belt-and-braces against a pathological float.
+        for _attempt in range(2 * len(protected) + 2):
+            moved = False
+            p_index = bisect.bisect_right(protected_starts, candidate) - 1
+            if 0 <= p_index < len(protected):
+                low, high = protected[p_index]
+                if low < candidate < high:
+                    candidate = high
+                    moved = True
+            c_index = bisect.bisect_right(starts, candidate) - 1
+            if 0 <= c_index < len(temporal):
+                enclosing = temporal[c_index]
+                if enclosing.ts_start < candidate < enclosing.ts_end:
+                    candidate = enclosing.ts_end
+                    moved = True
+            if not moved:
+                break
         candidate = min(candidate, audio_duration_seconds)
         if candidate <= prev_cut:
             continue
@@ -628,6 +740,15 @@ def _compute_audio_file_boundaries(
         boundaries.append((start, cut))
         start = cut
     boundaries.append((start, audio_duration_seconds))
+
+    if len(boundaries) < num_files:
+        logger.info(
+            "🎧 Read-along audio split: %d files instead of the ideal %d -- "
+            "cut points nudged clear of %d protected spine-item span(s) "
+            "(target %.1fs/file over %.1fs of audio)",
+            len(boundaries), num_files, len(protected), target_seconds,
+            audio_duration_seconds,
+        )
     return boundaries
 
 
@@ -1395,6 +1516,32 @@ def _verify_marker_injection(original: bytes, modified: bytes, spine_index: int,
     in the source (not one this phase added) is unwrapped identically on both
     sides of the comparison, so it cannot introduce a false mismatch either.
 
+    **A second, independent whitespace pitfall, found live on a real book**
+    ("The Incest Nightclub", ``bookorbit:6051``, refused entirely before this
+    fix). ``canonical_text`` has to *parse* ``modified`` from scratch, and
+    bs4's ``BeautifulSoup.endData()`` collapses any data segment made
+    **entirely** of ``BeautifulSoup.ASCII_SPACES`` characters to a single
+    space at PARSE time -- before ``unwrap``/``smooth`` ever run. The gap
+    between two sentences is never its own segment in the ORIGINAL markup (it
+    sits inside one larger text node with real words either side), so it is
+    never collapsed there; marker injection routinely isolates exactly that
+    gap as a lone whitespace-only node between two new ``<span>``s, which
+    *is* entirely ASCII whitespace and *does* get collapsed. The two
+    canonical texts then differ by nothing but a run length that was never
+    semantically significant, and the whole book was refused over it.
+
+    Measured against the installed bs4 rather than assumed -- and the
+    measurement corrects the defect's original description. It is ORDINARY
+    **ASCII** whitespace that breaks: an everyday double space after a full
+    stop, or a tab. A non-breaking space is NOT in ``ASCII_SPACES``, is not
+    collapsed, and already compared equal via the unwrap/smooth fix above.
+
+    Collapsing every ASCII-whitespace run to one space on **both** sides
+    (:data:`_ASCII_WHITESPACE_RUN_RE`) makes the comparison insensitive to
+    which side bs4 happened to collapse, without hiding an actual content
+    change: a dropped word, an altered character or reordered text is never a
+    pure whitespace-run-length difference.
+
     Raises rather than silently shipping a book whose markers landed in the
     wrong place or corrupted surrounding text.
 
@@ -1410,7 +1557,12 @@ def _verify_marker_injection(original: bytes, modified: bytes, spine_index: int,
             if span.get("id") is not None:
                 span.unwrap()
         soup.smooth()
-        return soup.get_text(separator=" ", strip=True)
+        text = soup.get_text(separator=" ", strip=True)
+        # Collapse ASCII-whitespace runs uniformly on BOTH sides -- see this
+        # function's docstring. Cannot hide a real content change: a dropped
+        # word, an altered character or reordered text is never a pure
+        # whitespace-run-length difference.
+        return _ASCII_WHITESPACE_RUN_RE.sub(" ", text)
 
     original_text = canonical_text(original)
     modified_text = canonical_text(modified)

@@ -376,7 +376,7 @@
                                 {% if mapping.ctc_aligned %}disabled title="This book already has a CTC alignment map"{% endif %}
                                 onclick='remapAlignment({{ mapping.abs_id|tojson }}, this)'>{{ '✓ Already using CTC' if mapping.ctc_aligned else '🎯 Remap alignment' }}</button>
                             <button type="button" role="menuitem" class="reset-menu-item readalong-generate-btn"
-                                {% if not mapping.readalong_eligible %}disabled title="{{ mapping.readalong_ineligible_reason }}"{% endif %}
+                                {% if not mapping.readalong_eligible %}title="{{ mapping.readalong_ineligible_reason }}"{% endif %}
                                 onclick='generateReadalongEpub({{ mapping.abs_id|tojson }}, this)'>📖 Create read-along EPUB</button>
                             {% if mapping.readalong_audio_ok %}
                             <button type="button" role="menuitem" class="reset-menu-item readalong-remove-btn"

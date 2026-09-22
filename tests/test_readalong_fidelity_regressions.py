@@ -1,3 +1,4 @@
+import pytest
 from bs4 import BeautifulSoup
 
 from src.services.readalong_builder import (
@@ -110,6 +111,70 @@ def test_marker_verification_merges_wrapped_marker_split_before_text_compare():
     modified = _inject_markers_into_original(soup, nodes, [(0, wrap_start, wrap_end, "c1-s0")])
 
     _verify_marker_injection(original, modified, spine_index=1, href="ch1.xhtml")
+
+
+def test_marker_verification_tolerates_an_ascii_double_space_at_the_split():
+    """An ORDINARY double space between two sentences must not refuse the
+    spine item -- and, before the whole-book refusal above it, the entire
+    book ("The Incest Nightclub", bookorbit:6051, abandoned on exactly this).
+
+    bs4's BeautifulSoup.endData() collapses a data segment made ENTIRELY of
+    BeautifulSoup.ASCII_SPACES characters to one space at PARSE time. That
+    gap is never its own segment in the original markup -- it sits inside one
+    larger text node with real words either side -- but marker injection
+    isolates it as a lone whitespace-only node between two new spans, where
+    it IS entirely ASCII whitespace and does get collapsed. The two canonical
+    texts then differed by a run length that was never semantically
+    significant.
+
+    Note this corrects the defect's original description: it is ASCII
+    whitespace that breaks, not non-ASCII -- a non-breaking space is not in
+    ASCII_SPACES and already passed (see the nbsp test above)."""
+    original = b"<html><body><p>First sentence.  Second sentence.</p></body></html>"
+    soup = parse_original_spine_xml(original)
+    assert soup is not None
+    nodes = content_string_nodes(original_body_scope(soup))
+    # BOTH sentences are wrapped, which is what leaves the double space as a
+    # lone whitespace-only node between the two spans -- wrapping only one
+    # sentence leaves the gap attached to a text node that still carries real
+    # words, where bs4 never collapses it and the defect does not reproduce.
+    first_end = len("First sentence.")
+    second_start = len("First sentence.  ")
+    second_end = second_start + len("Second sentence.")
+    modified = _inject_markers_into_original(soup, nodes, [
+        (0, 0, first_end, "c1-s0"),
+        (0, second_start, second_end, "c1-s1"),
+    ])
+    assert b'</span>  <span' in modified, "fixture must isolate the double space"
+
+    _verify_marker_injection(original, modified, spine_index=1, href="ch1.xhtml")
+
+
+def test_marker_verification_tolerates_a_tab_at_the_split():
+    """Same ASCII_SPACES collapse, via a tab rather than a double space."""
+    original = b"<html><body><p>First sentence.	Second sentence.</p></body></html>"
+    soup = parse_original_spine_xml(original)
+    assert soup is not None
+    nodes = content_string_nodes(original_body_scope(soup))
+    first_end = len("First sentence.")
+    second_start = len("First sentence.	")
+    second_end = second_start + len("Second sentence.")
+    modified = _inject_markers_into_original(soup, nodes, [
+        (0, 0, first_end, "c1-s0"),
+        (0, second_start, second_end, "c1-s1"),
+    ])
+
+    _verify_marker_injection(original, modified, spine_index=1, href="ch1.xhtml")
+
+
+def test_marker_verification_still_catches_a_real_text_change():
+    """The whitespace-run collapse must not be a blanket weakening: a genuine
+    content change (a dropped word) is still refused."""
+    original = b"<html><body><p>First sentence.  Second sentence here.</p></body></html>"
+    corrupted = b'<html><body><p>First sentence. <span id="c1-s0">Second sentence.</span></p></body></html>'
+
+    with pytest.raises(ValueError):
+        _verify_marker_injection(original, corrupted, spine_index=1, href="ch1.xhtml")
 
 
 def test_prefixed_xhtml_gets_marker_in_the_source_namespace():

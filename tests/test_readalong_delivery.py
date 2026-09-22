@@ -321,6 +321,35 @@ def test_deliver_refuses_when_resolved_folder_is_under_the_ebook_library_root(tm
     assert not (tmp_path / "books" / "Test Book" / "Test Book.readalong.epub").exists()
 
 
+def test_deliver_refuses_when_audio_sits_loose_in_the_audiobook_library_root(tmp_path, monkeypatch):
+    """A book whose audio is a loose file in AUDIOBOOKS_DIR itself is refused
+    outright rather than written to the library root.
+
+    Measured on the real library: 89 of 819 BookOrbit audio entries are loose
+    root-level files. BookOrbit groups a FOLDER's files into one entry, so a
+    read-along written to the root is grouped with every other root-level
+    book rather than its own -- which is how "Apex Prey 1" ended up with
+    state unavailable / no_media_overlay_epub after leaving a stray EPUB in
+    the library root. BookOrbit's own folderPath for such an entry is the
+    audio FILE itself (verified: /audiobooks/01. Apex Prey (2025).m4b), so
+    POST /books/{id}/files cannot rescue it either -- its destination would
+    be a path nested under a regular file."""
+    parser, alignment_service, book, _tracks, _ = _setup(tmp_path, monkeypatch)
+    audiobooks_root = tmp_path / "audiobooks"
+    loose_track = _make_audio(audiobooks_root, name="track_000")
+    client = _FakeBookOrbitClient(tracks=[{"absolute_path": str(loose_track)}])
+
+    result = deliver_readalong_epub(
+        parser, alignment_service, client,
+        _FakeEbookSyncClient("ebook-1"), _FakeAudioSyncClient("audio-1"), book,
+    )
+
+    assert result is None
+    assert not client.scan_calls
+    # Nothing at all was written into the library root.
+    assert not list(audiobooks_root.glob("*.epub"))
+
+
 # ---------------------------------------------------------------------------
 # Happy path: writes into the audio folder, scans, confirms
 # ---------------------------------------------------------------------------
