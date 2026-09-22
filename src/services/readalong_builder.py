@@ -95,7 +95,7 @@ import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple, Union, TYPE_CHECKING
+from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple, Union, TYPE_CHECKING
 from urllib.parse import quote, unquote
 
 from bs4 import BeautifulSoup, NavigableString
@@ -140,6 +140,56 @@ _AUDIO_MEDIA_TYPES = {
 # written into, sibling to the OPF. Suffixed with a counter on the vanishingly
 # rare chance a library EPUB already has an entry with this name.
 _READALONG_DIR_BASE = "readalong"
+
+# --- Stage progress reporting ------------------------------------------------
+#
+# A live run on an 11.5h audiobook sat on "parsing" for 5m29s with zero
+# intermediate signal -- the whole build/deliver pipeline is a single
+# terminal Job update (progress=0.0 at queue time, 1.0/last_error at the
+# end), so every real stage in between looked indistinguishable from a hang.
+# `ReadalongProgressCallback` is threaded from the web worker
+# (`web_server._readalong_epub_worker`) down through `deliver_readalong_epub`
+# and `build_readalong_epub` so each stage transition can be persisted (see
+# `Job.stage`/`Job.progress`) as it happens, not just at the very end.
+#
+# `_STAGE_START` is the overall-progress fraction each stage begins at, in
+# call order -- approximate, not measured per book, but weighted so the one
+# genuinely expensive step (transcoding the whole book's audio through
+# ffmpeg) gets the lion's share of the range instead of a same-size slice as
+# the cheap steps around it.
+ReadalongProgressCallback = Callable[[str, float], None]
+
+_STAGE_START: Dict[str, float] = {
+    "resolving_audio": 0.00,
+    "converting_epub": 0.05,
+    "parsing_epub": 0.10,
+    "transcoding_audio": 0.20,
+    "building_overlays": 0.85,
+    "packaging": 0.93,
+    "delivering": 0.97,
+}
+
+
+def _safe_progress(
+    progress_callback: Optional[ReadalongProgressCallback], stage: str, fraction: float,
+) -> None:
+    """Report ``(stage, fraction)`` to ``progress_callback``, never letting a
+    failure abort generation.
+
+    Progress reporting is a best-effort UI nicety layered on top of a real
+    generation pipeline -- a broken callback (e.g. a failed DB write in the
+    caller) must never be the reason a book fails to generate. Any exception
+    it raises is logged and swallowed here rather than propagated.
+    """
+    if progress_callback is None:
+        return
+    try:
+        progress_callback(stage, max(0.0, min(1.0, fraction)))
+    except Exception as e:
+        logger.warning(
+            "Read-along progress callback failed at stage '%s' (%.2f): %s",
+            stage, fraction, e, exc_info=True,
+        )
 
 
 @dataclass(frozen=True)
@@ -367,7 +417,56 @@ def _normalize_audio_paths(
     return [Path(p) for p in audio_paths]
 
 
-def _transcode_audio_for_embed(audio_paths: List[Path], bitrate: str, output_path: Path) -> bool:
+def _run_ffmpeg_with_progress(
+    cmd: List[str], total_duration: float, progress_callback: Callable[[float], None],
+) -> None:
+    """Run an ffmpeg command, reporting fractional completion as it decodes.
+
+    Parses ffmpeg's own machine-readable ``-progress pipe:1`` stream, keying
+    off ``out_time=<H:MM:SS.ffffff>`` rather than the also-emitted
+    ``out_time_ms`` field -- the latter is, despite its name, actually
+    microseconds (a long-standing ffmpeg quirk kept for backward
+    compatibility), which is easy to get wrong; the formatted clock string
+    has no such ambiguity. stderr is merged into the same stream
+    (``STDOUT``) so a single blocking read loop can never deadlock on an
+    unread pipe filling up -- non-progress lines (real error output, since
+    ``-loglevel error`` keeps this otherwise near-silent) are simply not
+    ``out_time=``-prefixed and are collected as a short tail for the
+    exception raised on failure instead.
+
+    Raises ``subprocess.CalledProcessError`` on a non-zero exit -- callers
+    already catch that alongside ``FileNotFoundError`` for the no-progress
+    path. ``progress_callback`` is expected to already be exception-safe
+    (see ``_safe_progress``); it is not wrapped again here.
+    """
+    with subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+    ) as proc:
+        tail: List[str] = []
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.strip()
+            if line.startswith("out_time="):
+                value = line.split("=", 1)[1].strip()
+                try:
+                    hours, minutes, seconds = value.split(":")
+                    elapsed = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+                except (ValueError, IndexError):
+                    continue
+                if total_duration > 0:
+                    progress_callback(min(1.0, max(0.0, elapsed / total_duration)))
+            elif line:
+                tail.append(line)
+                del tail[:-20]
+        returncode = proc.wait()
+    if returncode != 0:
+        raise subprocess.CalledProcessError(returncode, cmd, output="\n".join(tail))
+
+
+def _transcode_audio_for_embed(
+    audio_paths: List[Path], bitrate: str, output_path: Path,
+    progress_callback: Optional[Callable[[float], None]] = None,
+) -> bool:
     """Transcode (and, for more than one part, concatenate) source audio into
     a single mono AAC file at ``output_path``.
 
@@ -382,6 +481,16 @@ def _transcode_audio_for_embed(audio_paths: List[Path], bitrate: str, output_pat
     timestamps are absolute against. Reproducing that same decode-then-concat
     semantics here means those timestamps need no adjustment for whatever
     actually ends up embedded, whether it is one file or many.
+
+    This is the single most expensive step of the whole read-along pipeline
+    (a live 11.5h book: 5m29s of a 5m43s total build). When
+    ``progress_callback`` is given, the source parts are pre-probed via
+    ``ffprobe`` for their total duration and ffmpeg is run with
+    ``-progress`` so the callback is invoked with fractional (0.0-1.0)
+    completion as the transcode actually runs, instead of only at the very
+    start and end. Falls back to a plain, unmonitored run -- identical to
+    the no-callback behaviour -- when no callback is given or the source
+    duration cannot be probed.
 
     Returns ``False`` -- never raises -- on any ffmpeg failure, including
     ffmpeg not being installed, so the caller can refuse the build the same
@@ -399,9 +508,27 @@ def _transcode_audio_for_embed(audio_paths: List[Path], bitrate: str, output_pat
         ]
     else:
         cmd += ["-map", "0:a:0"]
-    cmd += ["-vn", "-sn", "-ac", "1", "-c:a", "aac", "-b:a", bitrate, str(output_path)]
+    cmd += ["-vn", "-sn", "-ac", "1", "-c:a", "aac", "-b:a", bitrate]
+
+    total_duration: Optional[float] = None
+    if progress_callback is not None:
+        total_duration = 0.0
+        for path in audio_paths:
+            duration = _probe_duration_seconds(path)
+            if duration is None:
+                total_duration = None
+                break
+            total_duration += duration
+
+    if total_duration:
+        cmd += ["-progress", "pipe:1", "-nostats"]
+    cmd += [str(output_path)]
+
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if total_duration and progress_callback is not None:
+            _run_ffmpeg_with_progress(cmd, total_duration, progress_callback)
+        else:
+            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         return True
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         logger.error(
@@ -1212,7 +1339,10 @@ def _package_epub(
 
 
 @contextmanager
-def _resolve_epub3_source(epub_path: Path, abs_id: str) -> Iterator[Optional[Path]]:
+def _resolve_epub3_source(
+    epub_path: Path, abs_id: str,
+    progress_callback: Optional[ReadalongProgressCallback] = None,
+) -> Iterator[Optional[Path]]:
     """Yield an EPUB 3 source path for ``epub_path``, converting in a private
     temporary copy if it is EPUB 2 -- never modifies ``epub_path`` itself
     (see ``src/services/epub3_upgrade.py``'s module docstring on why that
@@ -1226,7 +1356,15 @@ def _resolve_epub3_source(epub_path: Path, abs_id: str) -> Iterator[Optional[Pat
     convert it; the caller must treat that the same as any other build
     refusal. The temporary conversion copy, if one was made, is removed on
     exit regardless of outcome.
+
+    Reports the ``'converting_epub'`` stage to ``progress_callback`` (see
+    ``_safe_progress``) as soon as this function starts, whether or not an
+    actual conversion turns out to be needed -- it is cheap either way, but
+    the version check and, on EPUB 2, the conversion itself are still real
+    file I/O worth distinguishing from the parsing/transcoding stages that
+    follow.
     """
+    _safe_progress(progress_callback, "converting_epub", _STAGE_START["converting_epub"])
     version: Optional[str] = None
     try:
         with zipfile.ZipFile(epub_path) as zf:
@@ -1270,6 +1408,7 @@ def build_readalong_epub(
     abs_id: str,
     output_path: Union[str, Path],
     standalone_audio_output_path: Optional[Union[str, Path]] = None,
+    progress_callback: Optional[ReadalongProgressCallback] = None,
 ) -> Optional[ReadalongBuildResult]:
     """Assemble a read-along EPUB 3 (SMIL media overlays) for one book.
 
@@ -1328,6 +1467,10 @@ def build_readalong_epub(
         (or Phase 5's delivery step) get that sibling file from the exact
         same transcode this build already paid for, instead of running
         ffmpeg a second time.
+    :param progress_callback: optional ``(stage, fraction)`` reporter for the
+        long-running stages below -- see the module-level ``_STAGE_START``
+        map and ``_safe_progress``. A failure in the callback itself never
+        aborts the build.
     :return: the build result, or ``None`` if refused.
     """
     epub_path = Path(epub_path)
@@ -1353,12 +1496,12 @@ def build_readalong_epub(
         )
         return None
 
-    with _resolve_epub3_source(epub_path, abs_id) as resolved_epub_path:
+    with _resolve_epub3_source(epub_path, abs_id, progress_callback) as resolved_epub_path:
         if resolved_epub_path is None:
             return None
         return _build_readalong_epub_impl(
             parser, alignment_service, resolved_epub_path, audio_paths, abs_id,
-            output_path, standalone_audio_output_path,
+            output_path, standalone_audio_output_path, progress_callback,
         )
 
 
@@ -1370,6 +1513,7 @@ def _build_readalong_epub_impl(
     abs_id: str,
     output_path: Union[str, Path],
     standalone_audio_output_path: Optional[Union[str, Path]] = None,
+    progress_callback: Optional[ReadalongProgressCallback] = None,
 ) -> Optional[ReadalongBuildResult]:
     """The actual read-along assembly, run against an ``epub_path`` already
     guaranteed to be EPUB 3 -- see :func:`build_readalong_epub`, the public
@@ -1388,6 +1532,7 @@ def _build_readalong_epub_impl(
         )
         return None
 
+    _safe_progress(progress_callback, "parsing_epub", _STAGE_START["parsing_epub"])
     clip_result = build_sentence_clips(parser, epub_path, alignment_service, abs_id)
     if clip_result is None or not clip_result.clips:
         logger.warning(
@@ -1551,7 +1696,19 @@ def _build_readalong_epub_impl(
     audio_bitrate = _resolve_audio_bitrate()
     with tempfile.TemporaryDirectory(prefix="readalong-audio-") as tmp_dir:
         transcoded_audio_path = Path(tmp_dir) / "audio.m4a"
-        if not _transcode_audio_for_embed(source_audio_paths, audio_bitrate, transcoded_audio_path):
+        _safe_progress(progress_callback, "transcoding_audio", _STAGE_START["transcoding_audio"])
+        transcode_span = _STAGE_START["building_overlays"] - _STAGE_START["transcoding_audio"]
+
+        def _on_transcode_progress(local_fraction: float) -> None:
+            _safe_progress(
+                progress_callback, "transcoding_audio",
+                _STAGE_START["transcoding_audio"] + local_fraction * transcode_span,
+            )
+
+        if not _transcode_audio_for_embed(
+            source_audio_paths, audio_bitrate, transcoded_audio_path,
+            progress_callback=_on_transcode_progress if progress_callback else None,
+        ):
             logger.warning(
                 "🚫 Refusing to build read-along EPUB for '%s': audio transcode failed",
                 abs_id,
@@ -1583,6 +1740,7 @@ def _build_readalong_epub_impl(
         new_bytes_files: Dict[str, bytes] = {}
         overlays: List[SpineOverlayResult] = []
 
+        _safe_progress(progress_callback, "building_overlays", _STAGE_START["building_overlays"])
         for spine_index, located_clips in extended_by_spine.items():
             href = href_by_spine[spine_index]
             markers = markers_by_spine[spine_index]
@@ -1654,6 +1812,7 @@ def _build_readalong_epub_impl(
         modified_files[opf_path] = modified_opf
 
         new_disk_files = {audio_archive_path: transcoded_audio_path}
+        _safe_progress(progress_callback, "packaging", _STAGE_START["packaging"])
         try:
             _package_epub(epub_path, output_path, modified_files, new_bytes_files, new_disk_files)
         except ValueError as e:

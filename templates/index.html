@@ -3523,13 +3523,20 @@
                     .then(response => response.json())
                     .then(data => {
                         if (data.state === 'running') {
+                            // Show real stage/progress signal instead of a static
+                            // "generating" message -- a long book's ffmpeg transcode
+                            // alone can run several minutes with no other feedback.
+                            const label = data.stage_label || 'Generating';
+                            const pct = (typeof data.percent === 'number') ? ' ' + data.percent + '%' : '';
+                            btn.innerHTML = '⏳ ' + label + '…' + pct;
                             setTimeout(() => _pollReadalongEpubStatus(absId, btn, originalText), 5000);
                             return;
                         }
                         if (data.state === 'done') {
                             btn.innerHTML = data.warning ? '⚠️ Delivered (unconfirmed)' : '✅ Read-along ready';
                         } else if (data.state === 'failed') {
-                            btn.innerHTML = '❌ ' + (data.error || 'Failed');
+                            const stagePrefix = data.stage_label ? data.stage_label + ': ' : '';
+                            btn.innerHTML = '❌ ' + stagePrefix + (data.error || 'Failed');
                         } else {
                             btn.innerHTML = originalText;
                         }

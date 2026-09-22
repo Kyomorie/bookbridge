@@ -40,7 +40,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
-from src.services.readalong_builder import ReadalongBuildResult, build_readalong_epub
+from src.services.readalong_builder import (
+    ReadalongBuildResult,
+    ReadalongProgressCallback,
+    _STAGE_START,
+    _safe_progress,
+    build_readalong_epub,
+)
 
 if TYPE_CHECKING:
     from src.api.bookorbit_client import BookOrbitClient
@@ -235,6 +241,7 @@ def deliver_readalong_epub(
     book: "Book",
     confirm_timeout_seconds: float = _DEFAULT_CONFIRM_TIMEOUT_SECONDS,
     confirm_poll_interval_seconds: float = _DEFAULT_CONFIRM_POLL_INTERVAL_SECONDS,
+    progress_callback: Optional[ReadalongProgressCallback] = None,
 ) -> Optional[ReadalongDeliveryResult]:
     """Generate (Phases 1-4) and deliver (Phase 5) a read-along EPUB for ``book``.
 
@@ -268,9 +275,15 @@ def deliver_readalong_epub(
     :param confirm_timeout_seconds: how long to poll BookOrbit for
         ``readAloudSync.state == 'enabled'`` after triggering a scan.
     :param confirm_poll_interval_seconds: delay between confirmation polls.
+    :param progress_callback: optional ``(stage, fraction)`` reporter,
+        threaded straight through to :func:`~src.services.readalong_builder.build_readalong_epub`
+        for its own stages -- see ``readalong_builder``'s module-level
+        ``_STAGE_START`` map. A failure in the callback itself never aborts
+        delivery (``_safe_progress`` swallows it).
     :return: the delivery result, or ``None`` if refused.
     """
     abs_id = book.abs_id
+    _safe_progress(progress_callback, "resolving_audio", _STAGE_START["resolving_audio"])
 
     if getattr(book, "audio_source", None) != "BookOrbit":
         logger.warning(
@@ -338,11 +351,13 @@ def deliver_readalong_epub(
         audio_paths=resolved.track_paths,
         abs_id=abs_id,
         output_path=output_path,
+        progress_callback=progress_callback,
     )
     if build is None:
         # build_readalong_epub already logged the specific refusal reason.
         return None
 
+    _safe_progress(progress_callback, "delivering", _STAGE_START["delivering"])
     library_id = _resolve_library_id(bookorbit_client, audio_book_id, resolved.folder)
     scan_triggered = False
     if library_id is not None:

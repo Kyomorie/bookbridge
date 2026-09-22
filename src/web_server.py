@@ -19,6 +19,7 @@ import zipfile
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 from urllib.parse import unquote, urljoin, urlparse
 from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
@@ -9227,6 +9228,35 @@ def remap_alignment(abs_id):
     return jsonify({"success": True, "backend": target})
 
 
+# Human-readable labels for the `Job.stage` values `readalong_builder.py` /
+# `readalong_delivery.py` report via the progress callback below. Falls back
+# to the raw stage string (or "Working") for anything not in this map --
+# never an error, since a future stage this map hasn't been updated for
+# should still show *something* rather than break the status poll.
+_READALONG_STAGE_LABELS = {
+    "queued": "Queued",
+    "resolving_audio": "Resolving audio",
+    "converting_epub": "Converting EPUB 2 to EPUB 3",
+    "parsing_epub": "Parsing EPUB",
+    "transcoding_audio": "Transcoding audio",
+    "building_overlays": "Building overlays",
+    "packaging": "Packaging",
+    "delivering": "Delivering to BookOrbit",
+}
+
+
+def _readalong_stage_label(stage: Optional[str]) -> str:
+    """Human-readable label for a read-along job's raw ``Job.stage`` value.
+
+    Anything that is not a non-empty string (``None`` -- no stage recorded
+    yet, or a pre-migration row) falls back to "Working" rather than raising
+    or showing a blank/placeholder value in the UI.
+    """
+    if not isinstance(stage, str) or not stage:
+        return "Working"
+    return _READALONG_STAGE_LABELS.get(stage, stage)
+
+
 def _readalong_epub_worker(abs_id: str) -> None:
     """Background worker: generate (Phases 1-4) and deliver (Phase 5) a
     read-along EPUB for one book.
@@ -9243,7 +9273,30 @@ def _readalong_epub_worker(abs_id: str) -> None:
     Never touches `book.ebook_filename` / `book.original_ebook_filename` --
     `deliver_readalong_epub` itself is the one place that would, and it does
     not (see its own docstring and the plan's Sec. 1 placement decision).
+
+    **Stage progress**: `deliver_readalong_epub`/`build_readalong_epub` call
+    back into `_report_progress` below at each real stage transition
+    (resolving the audio entry, converting EPUB 2 -> 3, parsing, the
+    dominant ffmpeg transcode, building overlays, packaging, delivering) so
+    `/status` can show real signal instead of a static "generating" message
+    for however many minutes a long book takes -- see
+    `docs/PLAN_READALONG_EPUB3_GENERATION.md`'s Phase 6 progress-reporting
+    addendum. A failed progress *write* is logged and swallowed here (and
+    again, defensively, inside the callback chain itself via
+    `readalong_builder._safe_progress`) -- it must never be the reason a
+    book fails to generate.
     """
+    def _report_progress(stage: str, fraction: float) -> None:
+        try:
+            database_service.update_latest_job(
+                abs_id, kind=JOB_KIND_READALONG, progress=fraction, stage=stage,
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not record read-along progress for '%s' (stage=%s, progress=%.2f): %s",
+                sanitize_log_data(abs_id), stage, fraction, e, exc_info=True,
+            )
+
     try:
         book = database_service.get_book(abs_id)
         if not book:
@@ -9269,6 +9322,7 @@ def _readalong_epub_worker(abs_id: str) -> None:
             ebook_sync_client=ebook_sync_client,
             audio_sync_client=audio_sync_client,
             book=book,
+            progress_callback=_report_progress,
         )
         if result is None:
             database_service.update_latest_job(
@@ -9353,7 +9407,7 @@ def generate_readalong_epub(abs_id: str):
     database_service.save_job(
         Job(
             abs_id=abs_id, last_attempt=time.time(), retry_count=0, progress=0.0, last_error=None,
-            kind=JOB_KIND_READALONG,
+            kind=JOB_KIND_READALONG, stage="queued",
         )
     )
     _spawn_user_background(_readalong_epub_worker, abs_id, label=f"readalong-epub-{abs_id}")
@@ -9373,6 +9427,13 @@ def readalong_epub_status(abs_id: str):
     `abs_id`, and without the kind filter a job from one of those flows
     running on the same book at the same time could be newer and would be
     read here as if it were the read-along job's own status.
+
+    Alongside the pre-existing `state` (idle/running/done/failed) contract,
+    also surfaces `stage` (the raw `Job.stage` key, e.g. 'transcoding_audio'),
+    `stage_label` (its human-readable form), and `percent` (0-100, from
+    `Job.progress`) so the dashboard poller can show real signal for a
+    multi-minute build instead of a static "generating" message. These are
+    additive -- every pre-existing key/shape is unchanged.
     """
     book = database_service.get_book(abs_id)
     if not book:
@@ -9385,14 +9446,34 @@ def readalong_epub_status(abs_id: str):
     job = database_service.get_latest_job(abs_id, kind=JOB_KIND_READALONG)
     if job is None:
         return jsonify({"success": True, "state": "idle"})
+
+    # Defensive against non-string/non-numeric attributes (e.g. a bare
+    # unittest.mock.Mock() in a test that only set progress/last_error) --
+    # never let a malformed/legacy row break JSON serialization.
+    raw_stage = getattr(job, "stage", None)
+    stage = raw_stage if isinstance(raw_stage, str) and raw_stage else None
+    stage_label = _readalong_stage_label(stage)
+    raw_progress = getattr(job, "progress", None)
+    progress_fraction = raw_progress if isinstance(raw_progress, (int, float)) else 0.0
+    percent = int(round(max(0.0, min(1.0, progress_fraction)) * 100))
+
     if job.progress and job.progress >= 1.0:
-        payload = {"success": True, "state": "done"}
+        payload = {
+            "success": True, "state": "done",
+            "stage": stage, "stage_label": stage_label, "percent": percent,
+        }
         if job.last_error:
             payload["warning"] = job.last_error
         return jsonify(payload)
     if job.last_error:
-        return jsonify({"success": True, "state": "failed", "error": job.last_error})
-    return jsonify({"success": True, "state": "running"})
+        return jsonify({
+            "success": True, "state": "failed", "error": job.last_error,
+            "stage": stage, "stage_label": stage_label, "percent": percent,
+        })
+    return jsonify({
+        "success": True, "state": "running",
+        "stage": stage, "stage_label": stage_label, "percent": percent,
+    })
 
 
 def remove_readalong_epub_route(abs_id: str):

@@ -174,6 +174,11 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
         # can never mistake it for the alignment-build job it's meant to
         # promote and mark it falsely "done".
         self.assertEqual(saved_job.kind, ws.JOB_KIND_READALONG)
+        # Staged progress reporting: the very first status poll (which can
+        # race the background thread starting, same reasoning as the
+        # synchronous save above) already has a real stage to show instead
+        # of an empty/idle-looking one.
+        self.assertEqual(saved_job.stage, "queued")
 
     def test_no_direct_thread_bypasses_user_scoping(self):
         """A naive `threading.Thread(target=...).start()` would run with
@@ -298,6 +303,122 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
         data = resp.get_json()
         self.assertEqual(data["state"], "failed")
         self.assertEqual(data["error"], "something went wrong")
+
+    # ---- staged progress reporting -----------------------------------------
+
+    def test_status_running_surfaces_stage_label_and_percent(self):
+        job = Mock(progress=0.42, last_error=None, stage="transcoding_audio")
+        self.mock_database_service.get_latest_job.return_value = job
+        resp = self.client.get('/api/readalong-epub/rl-book-1/status')
+        data = resp.get_json()
+        self.assertEqual(data["state"], "running")
+        self.assertEqual(data["stage"], "transcoding_audio")
+        self.assertEqual(data["stage_label"], "Transcoding audio")
+        self.assertEqual(data["percent"], 42)
+
+    def test_status_does_not_crash_when_job_double_has_no_stage_set(self):
+        """Regression guard: a job double that never set `.stage` (as the
+        pre-existing tests above do) must not crash JSON serialization --
+        unittest.mock.Mock() auto-generates an attribute for any name
+        accessed, so a naive `getattr(job, 'stage', None)` would hand
+        `jsonify` a live Mock object (not JSON-serializable) instead of a
+        safe default."""
+        job = Mock(progress=0.5, last_error=None)  # .stage left unset
+        self.mock_database_service.get_latest_job.return_value = job
+        resp = self.client.get('/api/readalong-epub/rl-book-1/status')
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["state"], "running")
+        self.assertIsNone(data["stage"])
+        self.assertEqual(data["stage_label"], "Working")
+
+    def test_status_done_and_failed_also_report_percent(self):
+        done_job = Mock(progress=1.0, last_error=None, stage="delivering")
+        self.mock_database_service.get_latest_job.return_value = done_job
+        data = self.client.get('/api/readalong-epub/rl-book-1/status').get_json()
+        self.assertEqual(data["state"], "done")
+        self.assertEqual(data["percent"], 100)
+
+        failed_job = Mock(progress=0.2, last_error="boom", stage="transcoding_audio")
+        self.mock_database_service.get_latest_job.return_value = failed_job
+        data = self.client.get('/api/readalong-epub/rl-book-1/status').get_json()
+        self.assertEqual(data["state"], "failed")
+        self.assertEqual(data["percent"], 20)
+        self.assertEqual(data["stage_label"], "Transcoding audio")
+
+    def test_worker_reports_stage_progress_in_order_and_kind_scoped(self):
+        """The worker threads a progress_callback into deliver_readalong_epub;
+        each stage transition it reports must land in the Job row via
+        `update_latest_job`, kind-scoped to JOB_KIND_READALONG -- an
+        untagged or mis-scoped write is exactly the defect an earlier review
+        caught (a normal sync falsely completing a read-along job)."""
+        import src.web_server as ws
+
+        def _fake_deliver(*args, **kwargs):
+            callback = kwargs["progress_callback"]
+            callback("resolving_audio", 0.0)
+            callback("transcoding_audio", 0.5)
+            callback("delivering", 0.97)
+            return Mock(confirmed=True, read_aloud_sync={"state": "enabled"})
+
+        clients = self._worker_clients()
+        with patch.object(ws, "uc", return_value=clients), \
+             patch.object(ws, "deliver_readalong_epub", side_effect=_fake_deliver):
+            ws._readalong_epub_worker("rl-book-1")
+
+        calls = self.mock_database_service.update_latest_job.call_args_list
+        # 3 stage-progress calls, then the pre-existing final completion call.
+        self.assertEqual(len(calls), 4)
+        expected_stage_calls = [
+            ("resolving_audio", 0.0),
+            ("transcoding_audio", 0.5),
+            ("delivering", 0.97),
+        ]
+        for call, (expected_stage, expected_fraction) in zip(calls[:3], expected_stage_calls):
+            args, kwargs = call
+            self.assertEqual(args[0], "rl-book-1")
+            self.assertEqual(kwargs.get("kind"), ws.JOB_KIND_READALONG)
+            self.assertEqual(kwargs.get("stage"), expected_stage)
+            self.assertEqual(kwargs.get("progress"), expected_fraction)
+        # Final call is the pre-existing, untouched completion update.
+        _final_args, final_kwargs = calls[-1]
+        self.assertEqual(
+            final_kwargs, {"kind": ws.JOB_KIND_READALONG, "progress": 1.0, "last_error": None},
+        )
+
+    def test_progress_write_failure_does_not_abort_generation(self):
+        """A DB error while recording a stage-progress update must not fail
+        the book's generation. Only the progress WRITE raises here (any call
+        carrying a `stage` kwarg); the final completion write has no `stage`
+        kwarg and is deliberately left to succeed, so reaching it proves the
+        worker's success path ran to completion rather than falling into
+        the outer exception handler (which would instead record
+        `last_error`)."""
+        import src.web_server as ws
+
+        def _raise_only_for_stage_writes(*args, **kwargs):
+            if "stage" in kwargs:
+                raise RuntimeError("db is down")
+            return Mock()
+
+        self.mock_database_service.update_latest_job.side_effect = _raise_only_for_stage_writes
+
+        def _fake_deliver(*args, **kwargs):
+            callback = kwargs["progress_callback"]
+            callback("resolving_audio", 0.0)
+            callback("transcoding_audio", 0.5)
+            return Mock(confirmed=True, read_aloud_sync={"state": "enabled"})
+
+        clients = self._worker_clients()
+        with patch.object(ws, "uc", return_value=clients), \
+             patch.object(ws, "deliver_readalong_epub", side_effect=_fake_deliver):
+            ws._readalong_epub_worker("rl-book-1")  # must not raise
+
+        final_args, final_kwargs = self.mock_database_service.update_latest_job.call_args
+        self.assertEqual(final_args[0], "rl-book-1")
+        self.assertEqual(final_kwargs.get("kind"), ws.JOB_KIND_READALONG)
+        self.assertEqual(final_kwargs.get("progress"), 1.0)
+        self.assertIsNone(final_kwargs.get("last_error"))
 
     def test_status_book_not_found(self):
         self.mock_database_service.get_book.return_value = None

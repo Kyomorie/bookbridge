@@ -24,18 +24,21 @@ import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 from unittest.mock import patch
 from xml.etree import ElementTree
 
 import pytest
 from lxml import etree
 
+from src.services import readalong_builder as _readalong_builder_module
 from src.services.readalong_builder import (
     _DEFAULT_AUDIO_BITRATE,
     _extend_clips_to_contiguous,
     _package_epub,
     _probe_duration_seconds,
+    _safe_progress,
+    _transcode_audio_for_embed,
     build_readalong_epub,
 )
 from src.services.readalong_segments import SentenceClip
@@ -1513,3 +1516,180 @@ def test_standalone_audio_output_path_gets_a_copy_of_the_transcoded_audio():
         with zipfile.ZipFile(output_path) as zf:
             audio_name = next(n for n in zf.namelist() if n.startswith("OEBPS/readalong/audio"))
             assert zf.read(audio_name) == standalone_path.read_bytes()
+
+
+# ---------------------------------------------------------------------------
+# Staged progress reporting
+# ---------------------------------------------------------------------------
+
+def test_safe_progress_swallows_callback_exception():
+    """Progress reporting must never break generation -- a callback that
+    raises is logged and swallowed, not propagated."""
+    def _boom(stage, fraction):
+        raise RuntimeError("callback exploded")
+
+    _safe_progress(_boom, "transcoding_audio", 0.5)  # must not raise
+
+
+def test_safe_progress_clamps_fraction_and_is_a_noop_with_no_callback():
+    calls: List[Tuple[str, float]] = []
+
+    def _record(stage, fraction):
+        calls.append((stage, fraction))
+
+    _safe_progress(_record, "packaging", 5.0)   # over 1.0
+    _safe_progress(_record, "packaging", -1.0)  # under 0.0
+    assert calls == [("packaging", 1.0), ("packaging", 0.0)]
+
+    calls.clear()
+    _safe_progress(None, "packaging", 0.5)  # no callback: silent no-op
+    assert calls == []
+
+
+def test_build_reports_stages_in_order_with_nondecreasing_progress():
+    """End-to-end (real ffmpeg, tiny fixture): every stage
+    `_resolve_epub3_source`/`_build_readalong_epub_impl` can report fires, in
+    call order, with a never-decreasing overall fraction. Consecutive
+    same-stage entries are collapsed before comparison -- ffmpeg's own
+    `-progress` reporting granularity on a sub-second silent fixture is
+    timing-dependent (it may emit zero or several intra-transcode ticks),
+    but the STAGE TRANSITION sequence must not vary."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(epub_path, {
+            "ch1": b"<html><body><p>First sentence here. Second sentence follows.</p></body></html>",
+        })
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp)
+        alignment_service = _linear_alignment(len(combined_text), 100.0)
+        output_path = tmp / "out.epub"
+
+        seen: List[Tuple[str, float]] = []
+        result = build_readalong_epub(
+            parser=parser,
+            alignment_service=alignment_service,
+            epub_path=epub_path,
+            audio_paths=audio_path,
+            abs_id="abs1",
+            output_path=output_path,
+            progress_callback=lambda stage, fraction: seen.append((stage, fraction)),
+        )
+        assert result is not None
+        assert seen, "expected at least one progress report"
+
+        transitions: List[str] = []
+        for stage, _fraction in seen:
+            if not transitions or transitions[-1] != stage:
+                transitions.append(stage)
+        assert transitions == [
+            "converting_epub", "parsing_epub", "transcoding_audio",
+            "building_overlays", "packaging",
+        ]
+
+        fractions = [fraction for _stage, fraction in seen]
+        assert fractions == sorted(fractions)
+        assert all(0.0 <= fraction <= 1.0 for fraction in fractions)
+
+
+def test_build_refusal_still_reports_the_stages_reached_before_refusing():
+    """A refused build (no audio paths here) reaches parsing_epub's report
+    before returning None -- progress reporting doesn't require a
+    successful build to have fired at all."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(epub_path, {"ch1": b"<html><body><p>Alpha bravo.</p></body></html>"})
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        alignment_service = _linear_alignment(len(combined_text), 10.0)
+
+        seen: List[Tuple[str, float]] = []
+        result = build_readalong_epub(
+            parser=parser, alignment_service=alignment_service, epub_path=epub_path,
+            audio_paths=[], abs_id="abs1", output_path=tmp / "out.epub",
+            progress_callback=lambda stage, fraction: seen.append((stage, fraction)),
+        )
+        assert result is None
+        # Refused before parsing (no audio paths is the very first check in
+        # _build_readalong_epub_impl) -- converting_epub still fired.
+        assert [s for s, _ in seen] == ["converting_epub"]
+
+
+def test_transcode_reports_intra_stage_progress_via_mocked_ffmpeg_stream():
+    """`_transcode_audio_for_embed`'s `-progress pipe:1` parsing, exercised
+    deterministically: real silent audio encodes far faster than ffmpeg's
+    own ~0.5s reporting period, so a real end-to-end run can't be relied on
+    to produce more than one progress line. `ffprobe` is real (fast, on a
+    tiny fixture file) -- only the ffmpeg *process* is faked so the exact
+    progress lines it emits, and therefore the fractions computed from
+    them, are known in advance."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        audio_path = _make_audio(tmp, duration=4.0)
+
+        class _FakeProc:
+            def __init__(self, lines: List[str]):
+                self.stdout = iter(lines)
+
+            def wait(self) -> int:
+                return 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+        fake_proc = _FakeProc([
+            "out_time=00:00:01.000000\n",
+            "out_time=00:00:02.000000\n",
+            "out_time=00:00:04.000000\n",
+            "progress=end\n",
+        ])
+
+        # `_probe_duration_seconds` (called first, to compute total_duration)
+        # goes through `subprocess.run`, which internally calls this same
+        # module-global `Popen` too -- faking only the ffmpeg invocation and
+        # falling through to the real Popen for everything else (ffprobe)
+        # keeps that probe real while making the ffmpeg process's own
+        # progress stream deterministic.
+        real_popen = subprocess.Popen
+        ffmpeg_calls = []
+
+        def _maybe_fake_popen(cmd, *args, **kwargs):
+            if cmd and cmd[0] == "ffmpeg":
+                ffmpeg_calls.append(cmd)
+                return fake_proc
+            return real_popen(cmd, *args, **kwargs)
+
+        seen: List[float] = []
+        with patch.object(_readalong_builder_module.subprocess, "Popen", side_effect=_maybe_fake_popen):
+            ok = _transcode_audio_for_embed(
+                [audio_path], "32k", tmp / "out.m4a", progress_callback=seen.append,
+            )
+
+        assert ok is True
+        assert len(ffmpeg_calls) == 1
+        cmd = ffmpeg_calls[0]
+        # The no-callback path never adds these -- confirms the progress
+        # branch, not the plain subprocess.run path, actually ran.
+        assert "-progress" in cmd
+        assert "pipe:1" in cmd
+
+        assert len(seen) == 3
+        assert seen[0] == pytest.approx(0.25, abs=0.02)
+        assert seen[1] == pytest.approx(0.5, abs=0.02)
+        assert seen[2] == pytest.approx(1.0, abs=0.02)
+
+
+def test_transcode_without_progress_callback_never_adds_progress_flags():
+    """No `progress_callback` given: the plain, pre-existing `subprocess.run`
+    path runs, with no `-progress`/`-nostats` flags added -- confirms the
+    new code path is strictly additive and opt-in."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        audio_path = _make_audio(tmp, duration=1.0)
+        ok = _transcode_audio_for_embed([audio_path], "32k", tmp / "out.m4a")
+        assert ok is True

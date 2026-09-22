@@ -22,7 +22,7 @@ import shutil
 import subprocess
 import zipfile
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Tuple
 
 import pytest
 
@@ -514,3 +514,59 @@ def test_failed_chapter_preserves_delivered_book_and_does_not_scan(tmp_path, mon
     assert output_path.read_bytes() == previous
     assert client.scan_calls == []
     assert not list(audio_folder.glob("*.tmp"))
+
+
+# ---------------------------------------------------------------------------
+# Staged progress reporting
+# ---------------------------------------------------------------------------
+
+def test_deliver_reports_resolving_audio_and_delivering_around_the_build(tmp_path, monkeypatch):
+    """`deliver_readalong_epub` reports its own two stages -- 'resolving_audio'
+    right away, 'delivering' once the build (which reports its own five
+    stages in between) has returned -- around whatever `build_readalong_epub`
+    itself reports, in the correct overall order."""
+    parser, alignment_service, book, tracks, _audio_folder = _setup(tmp_path, monkeypatch)
+    client = _FakeBookOrbitClient(tracks=tracks, library_id=7)
+
+    seen: List[Tuple[str, float]] = []
+    result = deliver_readalong_epub(
+        parser, alignment_service, client,
+        _FakeEbookSyncClient("ebook-1"), _FakeAudioSyncClient("audio-1"), book,
+        confirm_poll_interval_seconds=0.01,
+        progress_callback=lambda stage, fraction: seen.append((stage, fraction)),
+    )
+
+    assert result is not None
+    assert result.confirmed is True
+
+    transitions: List[str] = []
+    for stage, _fraction in seen:
+        if not transitions or transitions[-1] != stage:
+            transitions.append(stage)
+    assert transitions == [
+        "resolving_audio", "converting_epub", "parsing_epub", "transcoding_audio",
+        "building_overlays", "packaging", "delivering",
+    ]
+
+    fractions = [fraction for _stage, fraction in seen]
+    assert fractions == sorted(fractions)
+    assert all(0.0 <= fraction <= 1.0 for fraction in fractions)
+
+
+def test_deliver_refusal_before_build_still_reports_resolving_audio(tmp_path, monkeypatch):
+    """A refusal that happens before `build_readalong_epub` is even called
+    (audio source guard here) still reports 'resolving_audio' -- progress
+    reporting doesn't depend on reaching the build step."""
+    parser, alignment_service, book, tracks, _ = _setup(tmp_path, monkeypatch)
+    book.audio_source = "ABS"
+    client = _FakeBookOrbitClient(tracks=tracks)
+
+    seen: List[Tuple[str, float]] = []
+    result = deliver_readalong_epub(
+        parser, alignment_service, client,
+        _FakeEbookSyncClient("ebook-1"), _RaisingAudioSyncClient(), book,
+        progress_callback=lambda stage, fraction: seen.append((stage, fraction)),
+    )
+
+    assert result is None
+    assert [stage for stage, _fraction in seen] == ["resolving_audio"]
