@@ -35,7 +35,7 @@ def test_original_mapping_preserves_body_text_and_uses_child_structure():
     dom_entry, soup, nodes = resolved
     assert [run.node_index for run in dom_entry.runs] == [1, 2]
     modified = _inject_markers_into_original(
-        soup, nodes, [(dom_entry.runs[0].node_index, 0, "c1-s0")]
+        soup, nodes, [(dom_entry.runs[0].node_index, 0, len("Repeat once."), "c1-s0")]
     )
     assert b'Leading text. ' in modified
     assert b'data-book="keep"' in modified
@@ -90,12 +90,24 @@ def test_original_mapping_resolves_duplicate_text_runs_under_same_parent():
     assert len(set(node_indices)) == len(node_indices)
 
 
-def test_marker_verification_merges_empty_marker_split_before_text_compare():
+def test_marker_verification_merges_wrapped_marker_split_before_text_compare():
+    """A sentence-start wrap split at a non-breaking-space boundary must not
+    let get_text()'s own per-string stripping-then-canonical-joining silently
+    replace the internal nbsp+space gap with an ordinary single space when
+    reconstructing text for comparison. The wrapped span is non-empty (it
+    carries "Second sentence." -- the fixed defect's whole point is that the
+    target must contain real text), so the previous decompose-if-empty
+    special case cannot apply here; _verify_marker_injection's
+    canonical_text() instead unwraps the (non-empty) marker span and
+    re-merges the resulting adjacent text via soup.smooth() before comparing,
+    which reconstructs the original node byte-for-byte, nbsp included."""
     original = b"<html><body><p>First sentence.\xc2\xa0 Second sentence.</p></body></html>"
     soup = parse_original_spine_xml(original)
     assert soup is not None
     nodes = content_string_nodes(original_body_scope(soup))
-    modified = _inject_markers_into_original(soup, nodes, [(0, len("First sentence."), "c1-s0")])
+    wrap_start = len("First sentence.\xa0 ")
+    wrap_end = wrap_start + len("Second sentence.")
+    modified = _inject_markers_into_original(soup, nodes, [(0, wrap_start, wrap_end, "c1-s0")])
 
     _verify_marker_injection(original, modified, spine_index=1, href="ch1.xhtml")
 
@@ -108,6 +120,9 @@ def test_prefixed_xhtml_gets_marker_in_the_source_namespace():
     soup = parse_original_spine_xml(original)
     assert soup is not None
     nodes = content_string_nodes(original_body_scope(soup))
-    modified = _inject_markers_into_original(soup, nodes, [(0, 0, "c1-s0")])
+    modified = _inject_markers_into_original(
+        soup, nodes, [(0, 0, len("First sentence."), "c1-s0")]
+    )
 
     assert b"<h:span id=\"c1-s0\"" in modified
+    assert b">First sentence.</h:span>" in modified

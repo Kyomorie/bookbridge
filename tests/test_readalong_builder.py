@@ -60,14 +60,15 @@ _SMIL_NS = "{http://www.w3.org/ns/SMIL}"
 
 
 def _marker_match(xhtml: str, marker_id: str) -> re.Match:
-    """Find an injected ``<span id="...">`` marker regardless of whether it
-    serialized self-closed (``<span id="x"/>``) or open/close
-    (``<span id="x"></span>``) -- both are valid, equivalent XML for an empty
-    element, and which one comes out depends on which injection path built the
-    document (Finding 1's fix serializes via an XML-mode parser, which
-    self-closes empty elements, unlike the pre-fix HTML-mode path)."""
+    """Find an injected ``<span id="...">`` marker's OPENING tag.
+
+    Markers now wrap real sentence text (the defect fix this module rewrites
+    the anchor strategy to address -- see the module docstring), so this
+    matches the opening tag only, whether it happens to self-close (a
+    degenerate zero-length wrap, not expected from real sentences but not
+    assumed impossible either) or open normally with content following."""
     pattern = re.compile(
-        r'<span id="%s"\s*(?:/>|>\s*</span>)' % re.escape(marker_id)
+        r'<span id="%s"\s*(?:/>|>)' % re.escape(marker_id)
     )
     match = pattern.search(xhtml)
     assert match is not None, f"marker id={marker_id!r} not found in: {xhtml}"
@@ -80,6 +81,15 @@ def _marker_start(xhtml: str, marker_id: str) -> int:
 
 def _text_after_marker(xhtml: str, marker_id: str) -> str:
     return xhtml[_marker_match(xhtml, marker_id).end():]
+
+
+def _marker_span_text(xhtml: str, marker_id: str) -> str:
+    """The exact text wrapped by ``<span id="marker_id">...</span>`` -- the
+    real content a reader resolving this SMIL fragment would highlight."""
+    open_match = re.search(r'<span id="%s"\s*>' % re.escape(marker_id), xhtml)
+    assert open_match is not None, f"opening span for id={marker_id!r} not found in: {xhtml}"
+    close_idx = xhtml.index("</span>", open_match.end())
+    return xhtml[open_match.end():close_idx]
 
 
 def _parser(tmp: Path) -> EbookParser:
@@ -218,10 +228,13 @@ def _build(tmp: Path, parser: EbookParser, epub_path: Path, audio_path,
 # ---------------------------------------------------------------------------
 
 def test_marker_lands_at_correct_sentence_start_character():
-    """Each inserted <span id="..."> sits immediately before the exact
-    character its sentence starts with -- verified by re-parsing the output
-    and checking each marker's very next sibling text starts with the
-    expected sentence text."""
+    """Each inserted <span id="..."> wraps its sentence's own text, starting
+    at the exact character the sentence starts with -- verified by
+    re-parsing the output and checking each marker's span contains exactly
+    (not just starts with) its sentence's full text. This is the fixed
+    defect: the superseded design left an EMPTY span here, so a reader had
+    nothing to highlight (confirmed on a real generated book: all 9,034
+    narration targets were empty)."""
     with tempfile.TemporaryDirectory() as tmp_str:
         tmp = Path(tmp_str)
         parser = _parser(tmp)
@@ -236,19 +249,30 @@ def test_marker_lands_at_correct_sentence_start_character():
         assert result is not None
         assert result.total_sentences == 2
         assert result.dropped_no_location == 0
+        assert result.sentences_crossing_inline_elements == 0
 
         with zipfile.ZipFile(output_path) as zf:
             xhtml = zf.read("OEBPS/ch1.xhtml").decode("utf-8")
 
+        # The SMIL target resolves to an element that CONTAINS the sentence's
+        # text -- not an empty one. Neither sentence crosses an inline
+        # element here, so each span wraps its ENTIRE sentence, exactly.
+        assert _marker_span_text(xhtml, "c1-s0") == "First sentence here."
+        assert _marker_span_text(xhtml, "c1-s1") == "Second sentence follows."
         assert _text_after_marker(xhtml, "c1-s0").lstrip().startswith("First sentence here.")
         assert _text_after_marker(xhtml, "c1-s1").lstrip().startswith("Second sentence follows.")
 
 
 def test_marker_injection_into_node_with_inline_tags():
-    """A sentence whose text is split across <em>/<strong> inline tags still
-    gets its single start-of-sentence marker placed correctly, and the
-    inline tags themselves are left completely intact (never split/wrapped --
-    the plan's chosen empty-marker-span strategy, not range-wrapping)."""
+    """A sentence whose text is split across <em>/<strong> inline tags gets
+    its marker anchored to the FIRST run it overlaps ("Hello", before the
+    <em>), wrapping that run's text up to its own end since the sentence
+    continues past it -- a deliberate, counted partial highlight (this
+    module's corrected "Anchor strategy": the target must contain real
+    sentence text, and a sentence crossing an inline element is handled by
+    wrapping the first run rather than splitting the inline element or
+    leaving an empty target). The inline tags themselves are left completely
+    intact (never split/wrapped) and no marker is injected inside them."""
     with tempfile.TemporaryDirectory() as tmp_str:
         tmp = Path(tmp_str)
         parser = _parser(tmp)
@@ -265,13 +289,21 @@ def test_marker_injection_into_node_with_inline_tags():
         assert result is not None
         assert result.dropped_no_location == 0
         assert result.total_sentences == 2
+        # Sentence 0 ("Hello brave new world.") crosses the <em> starting
+        # right after "Hello"; sentence 1 ("A second sentence with emphasis
+        # here.") crosses the second <em> too.
+        assert result.sentences_crossing_inline_elements == 2
 
         with zipfile.ZipFile(output_path) as zf:
             xhtml = zf.read("OEBPS/ch1.xhtml").decode("utf-8")
 
         # The <em>/<strong> structure around "brave new" is untouched.
         assert "<em>brave <strong>new</strong></em>" in xhtml
-        # Sentence 0's marker precedes "Hello", sentence 1's precedes "A second".
+        # Sentence 0's marker wraps "Hello" (the first, and only fully
+        # available, run before the sentence crosses into <em>) -- a real,
+        # non-empty highlight target, just a partial one.
+        assert _marker_span_text(xhtml, "c1-s0") == "Hello"
+        assert _marker_span_text(xhtml, "c1-s1") == "A second sentence with"
         assert _marker_start(xhtml, "c1-s0") < xhtml.index("Hello")
         assert _marker_start(xhtml, "c1-s1") < xhtml.index("A second sentence")
         # Only one marker was needed for sentence 0 even though it spans two
@@ -342,8 +374,10 @@ def test_finding1_preserves_stylesheet_links_body_attrs_and_xml_case():
 
 
 def test_multiple_sentences_in_one_text_node():
-    """Two sentence starts landing in the SAME original text node (no inline
-    tags between them) both get correctly-placed, independent markers."""
+    """Three sentence starts landing in the SAME original text node (no
+    inline tags between them) each get their own, correctly-placed marker,
+    and -- since none of them crosses an inline element -- each marker wraps
+    its ENTIRE sentence's text, exactly, not just its opening word."""
     with tempfile.TemporaryDirectory() as tmp_str:
         tmp = Path(tmp_str)
         parser = _parser(tmp)
@@ -358,10 +392,14 @@ def test_multiple_sentences_in_one_text_node():
         assert result is not None
         assert result.total_sentences == 3
         assert result.dropped_no_location == 0
+        assert result.sentences_crossing_inline_elements == 0
 
         with zipfile.ZipFile(output_path) as zf:
             xhtml = zf.read("OEBPS/ch1.xhtml").decode("utf-8")
 
+        assert _marker_span_text(xhtml, "c1-s0") == "Alpha bravo charlie."
+        assert _marker_span_text(xhtml, "c1-s1") == "Delta echo foxtrot."
+        assert _marker_span_text(xhtml, "c1-s2") == "Golf hotel india."
         assert _marker_start(xhtml, "c1-s0") < xhtml.index("Alpha")
         assert _marker_start(xhtml, "c1-s1") < xhtml.index("Delta")
         assert _marker_start(xhtml, "c1-s2") < xhtml.index("Golf")
@@ -980,8 +1018,11 @@ def test_embedded_audio_is_transcoded_aac_not_the_original_bytes():
 # ---------------------------------------------------------------------------
 
 def test_nonbreaking_space_at_marker_split_preserves_chapter_text():
-    """Removing generated empty markers before verification preserves a
-    non-breaking space at a sentence boundary."""
+    """Unwrapping generated markers before verification (see
+    _verify_marker_injection's canonical_text) preserves a non-breaking space
+    at a sentence boundary -- the wrap now carries real sentence text, not an
+    empty span, so the build must still succeed and the marker's own span
+    must contain that real text, not be empty."""
     with tempfile.TemporaryDirectory() as tmp_str:
         tmp = Path(tmp_str)
         parser = _parser(tmp)
@@ -1002,8 +1043,10 @@ def test_nonbreaking_space_at_marker_split_preserves_chapter_text():
         with zipfile.ZipFile(output_path) as zf:
             ch1_bytes = zf.read("OEBPS/ch1.xhtml")
 
-        assert 'id="c1-s0"' in ch1_bytes.decode("utf-8")
+        ch1_xhtml = ch1_bytes.decode("utf-8")
+        assert 'id="c1-s0"' in ch1_xhtml
         assert b"\xc2\xa0" in ch1_bytes
+        assert _marker_span_text(ch1_xhtml, "c1-s0") == "First sentence here."
 
 
 # ---------------------------------------------------------------------------

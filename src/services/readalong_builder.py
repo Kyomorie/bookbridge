@@ -3,21 +3,60 @@ and repackaging (Phase 3 of ``docs/PLAN_READALONG_EPUB3_GENERATION.md``).
 
 Builds on Phase 1 (``src/utils/ebook_dom_map.py`` -- DOM anchor map) and Phase 2
 (``src/services/readalong_segments.py`` -- sentence/clip table) to produce a new
-EPUB whose spine documents carry empty ``<span id="c<spine>-s<n>">`` markers at
-each sentence's start, with one SMIL media-overlay document per spine item that
-has sentences, an OPF rewritten in place to reference them, and the source
-audio embedded as-is (no transcode -- that is Phase 4).
+EPUB whose spine documents carry ``<span id="c<spine>-s<n>">TEXT</span>``
+markers wrapping each sentence's own text, with one SMIL media-overlay
+document per spine item that has sentences, an OPF rewritten in place to
+reference them, and the source audio embedded as-is (no transcode -- that is
+Phase 4).
 
-**Anchor strategy is empty marker spans, not range-wrapping** (plan Sec. "Phase
-3 -- EPUB 3 assembly", carried over from Phase 2's docstring). A sentence
-frequently crosses inline elements (``<em>``, ``<a>``), and wrapping its full
-range in a new element would require splitting those inline elements too --
-easy to get subtly wrong and easy to emit invalid markup from. An empty marker
-at the sentence's *start* is enough: SMIL ``<par>`` seeking only needs to know
-where playback should jump to, and the ``<audio>`` clip's own ``clipEnd``
-already governs how long to stay there. This is a deliberate, previously-made
-decision -- see the Phase 2 module's docstring and the plan doc -- not
-something to silently revisit here.
+**Anchor strategy: wrap the sentence's own text, not an empty marker span**
+(supersedes the original Phase 3 decision -- see
+``docs/PLAN_READALONG_EPUB3_GENERATION.md``'s Phase 3 section and its phase
+log for the correction). The original design used an *empty* marker
+(``<span id="s42"/>``) at each sentence's start on the reasoning that SMIL
+``<par>`` seeking only needs a jump target. That reasoning covered seeking but
+never highlighting: a reader resolving ``<text src="...#id"/>`` to an empty
+element has no text to highlight. Verified on a real generated book: all
+9,034 narration targets in it were empty spans, and highlighting was
+confirmed dead in two different EPUB 3 readers. Since the SMIL fragment must
+resolve to an element that *contains* the sentence's text, the marker span
+now wraps that text instead of merely preceding it.
+
+**The hard case a range-wrap must handle is a sentence crossing an inline
+element** (``<em>``, ``<a>``, ...): the sentence's characters then live in
+more than one DOM text node, and no single new element can wrap all of them
+without splitting the inline element itself. Storyteller solves this by
+pre-splitting spine XHTML into ``*_split_NNN.xhtml`` fragments before
+wrapping; this module does not need that, because Phase 1's
+``ebook_dom_map`` already gives exact node-level provenance
+(:func:`~src.utils.ebook_dom_map.locate_offset`, ``DomRun.node_index``/
+``node_offset_start``/``node_offset_end``) for every character, so wrapping
+can be done **in place**, one existing text node at a time, with no file
+splitting. Measured across the local library's real EPUBs with a
+``ctc``/``lexical`` alignment map (see the plan doc's Phase 3 phase-log
+entry for the exact count and rate): a sentence crossing at least one inline
+element boundary is not rare enough to treat as a corner case.
+
+The chosen behaviour, applied per sentence: locate the DOM run containing the
+sentence's own ``char_start`` (the same run the superseded design already
+anchored its point-marker to), and wrap that run's text from the sentence's
+start up to whichever comes first -- that run's own end, or the sentence's
+own ``char_end``. When the sentence's end is reached first, the whole
+sentence is wrapped in one element (the common case: a ``<p>`` with no inline
+markup). When the run's end is reached first, the sentence continues into
+further inline content this wrap does not cover; the marker still resolves
+to a real, non-empty element carrying the sentence's *opening* text -- a
+**deliberately partial highlight**, not a silent empty one -- and the
+occurrence is counted (``ReadalongBuildResult.sentences_crossing_inline_elements``)
+rather than hidden. Nothing is split, no inline element is touched, and no
+second wrap chases the remainder into the next run: extending across an
+inline-element boundary would itself require restructuring that element's
+own children, trading a bounded, well-understood highlight gap for the same
+"easy to get subtly wrong, easy to emit invalid markup from" risk the
+original decision was trying to avoid in the first place -- just relocated
+rather than removed. This is a deliberate, now-corrected decision -- see the
+plan doc -- not something to silently revisit again without the same kind of
+on-device verification that overturned the first one.
 
 This module reuses two Phase 1 internals directly rather than re-implementing
 them: ``ebook_dom_map.locate_offset`` (turns a sentence's global char offset
@@ -239,6 +278,14 @@ class ReadalongBuildResult:
     configured value did not parse as an ffmpeg bitrate) -- recorded here so
     a caller/test can confirm which one took effect without re-reading the
     setting itself.
+
+    ``sentences_crossing_inline_elements`` counts sentences whose own text
+    spans more than one DOM node (crosses an ``<em>``/``<a>``/... boundary),
+    so their marker span could only wrap the first run's portion -- a
+    deliberate partial highlight, not a dropped sentence or an empty target
+    (see the module docstring's "Anchor strategy" section). These sentences
+    still get a full, correctly-timed SMIL ``<par>``; only their highlighted
+    text is incomplete.
     """
     abs_id: str
     output_path: str
@@ -250,6 +297,7 @@ class ReadalongBuildResult:
     audio_href: str
     audio_bitrate: str
     dropped_spine_items_injection_failed: int = 0
+    sentences_crossing_inline_elements: int = 0
 
 
 def _opf_package_version(opf_bytes: bytes) -> Optional[str]:
@@ -631,12 +679,25 @@ def _markers_for_spine_item(
     clips: List[SentenceClip],
     spine_index: int,
     existing_ids: set,
-) -> Tuple[List[Tuple[int, int, str]], int, Dict[str, str]]:
-    """Resolve each clip's sentence-start char offset to a DOM insertion point.
+) -> Tuple[List[Tuple[int, int, int, str]], int, Dict[str, str], int]:
+    """Resolve each clip's sentence text to a DOM wrap range.
 
-    Returns ``(markers, dropped, sentence_id_to_marker_id)``: ``markers`` are
-    ``(node_index, node_offset, marker_id)`` triples ready for
-    :func:`_inject_markers`/:func:`_inject_markers_into_original`.
+    Returns ``(markers, dropped, sentence_id_to_marker_id, crossed_inline_boundary)``.
+    ``markers`` are ``(node_index, node_offset_start, node_offset_end,
+    marker_id)`` quadruples ready for
+    :func:`_inject_markers`/:func:`_inject_markers_into_original` --
+    ``node_offset_start``/``node_offset_end`` bound a real, non-empty slice of
+    the node's own text, so the wrapping ``<span>`` carries the sentence's
+    actual words (see the module docstring's "Anchor strategy" section for
+    why this replaced an empty point marker).
+
+    The wrap is anchored to the same run :func:`locate_offset` finds for the
+    sentence's ``char_start``, extended forward to whichever comes first:
+    that run's own end, or the sentence's own ``char_end``. When the run ends
+    first, the sentence continues into further inline content this wrap does
+    not cover -- counted in the returned ``crossed_inline_boundary`` rather
+    than silently dropped or silently left empty.
+
     ``dropped`` counts sentences excluded because ``locate_offset`` returned
     ``None`` (the offset landed in a synthetic separator gap -- should not
     happen for a real sentence start, see this module's docstring, but is not
@@ -656,9 +717,17 @@ def _markers_for_spine_item(
         shared across spine items (id uniqueness is a per-document XML
         requirement, not a book-wide one).
     """
-    markers: List[Tuple[int, int, str]] = []
+    node_index_to_run: Dict[int, DomRun] = {
+        run.node_index: run
+        for entry in dom_map
+        if entry.spine_index == spine_index
+        for run in entry.runs
+    }
+
+    markers: List[Tuple[int, int, int, str]] = []
     sentence_id_to_marker_id: Dict[str, str] = {}
     dropped = 0
+    crossed_inline_boundary = 0
     for clip in clips:
         located = locate_offset(dom_map, clip.char_start)
         if located is None or located[0] != spine_index:
@@ -670,6 +739,29 @@ def _markers_for_spine_item(
             dropped += 1
             continue
         _, node_index, node_offset = located
+        run = node_index_to_run.get(node_index)
+        if run is None:
+            logger.error(
+                "Read-along marker: locate_offset resolved sentence %s to "
+                "node %d, which has no run in spine item %d's DOM map; "
+                "dropping its SMIL par",
+                clip.sentence_id, node_index, spine_index,
+            )
+            dropped += 1
+            continue
+
+        wrap_char_end = min(clip.char_end, run.end)
+        node_offset_end = run.node_offset_start + (wrap_char_end - run.start)
+        if wrap_char_end < clip.char_end:
+            crossed_inline_boundary += 1
+            logger.debug(
+                "Read-along marker: sentence %s crosses an inline-element "
+                "boundary in spine item %d; its highlight target covers only "
+                "chars %d-%d of the sentence's full %d-%d",
+                clip.sentence_id, spine_index, clip.char_start, wrap_char_end,
+                clip.char_start, clip.char_end,
+            )
+
         marker_id = _allocate_marker_id(clip.sentence_id, existing_ids)
         if marker_id != clip.sentence_id:
             logger.info(
@@ -677,9 +769,9 @@ def _markers_for_spine_item(
                 "item %d's markup; allocated '%s' instead",
                 clip.sentence_id, spine_index, marker_id,
             )
-        markers.append((node_index, node_offset, marker_id))
+        markers.append((node_index, node_offset, node_offset_end, marker_id))
         sentence_id_to_marker_id[clip.sentence_id] = marker_id
-    return markers, dropped, sentence_id_to_marker_id
+    return markers, dropped, sentence_id_to_marker_id, crossed_inline_boundary
 
 
 def _extend_clips_to_contiguous(
@@ -765,9 +857,10 @@ def _extend_clips_to_contiguous(
 
 
 def _splice_markers(
-    soup: BeautifulSoup, nodes: List[NavigableString], markers: List[Tuple[int, int, str]],
+    soup: BeautifulSoup, nodes: List[NavigableString], markers: List[Tuple[int, int, int, str]],
 ) -> None:
-    """Insert empty ``<span id="...">`` markers into ``soup`` in place.
+    """Wrap each marker's text range in ``<span id="...">...</span>`` inside
+    ``soup``, in place.
 
     ``nodes`` is the exact content-string node list ``markers``' ``node_index``
     values were computed against (either ``content_string_nodes(soup)`` for
@@ -776,52 +869,61 @@ def _splice_markers(
     :func:`_resolve_spine_injection_target`); this function is agnostic to
     which, as long as ``soup`` is the document ``nodes`` was enumerated from.
 
-    ``markers`` are ``(node_index, node_offset, marker_id)`` triples as
-    :func:`_markers_for_spine_item` returns them. Multiple markers can
-    legitimately share one ``node_index`` -- a single text node (e.g. a
-    ``<p>`` with no inline tags) commonly holds more than one sentence
-    boundary -- so they are grouped per node and applied in one pass, in
-    ascending ``node_offset`` order, splicing the node's original string into
-    text/marker/text/marker/.../text pieces. This never touches any other
-    node, so processing order between different ``node_index`` groups does
-    not matter.
+    ``markers`` are ``(node_index, node_offset_start, node_offset_end,
+    marker_id)`` quadruples as :func:`_markers_for_spine_item` returns them --
+    ``node_offset_start``/``node_offset_end`` bound the exact slice of that
+    node's own (unstripped) string the span wraps, so the emitted span
+    carries real text rather than being empty (see the module docstring's
+    "Anchor strategy" section). Multiple ranges can legitimately share one
+    ``node_index`` -- a single text node (e.g. a ``<p>`` with no inline tags)
+    commonly holds more than one sentence, or one sentence's tail and the
+    next one's head -- so they are grouped per node and applied in one pass,
+    in ascending ``node_offset_start`` order, splicing the node's original
+    string into text/span/text/span/.../text pieces. Ranges within one node
+    must be non-overlapping (guaranteed by construction: they come from
+    distinct sentences whose own char ranges never overlap); an overlapping
+    or out-of-order range is logged and skipped rather than corrupting the
+    node. This never touches any other node, so processing order between
+    different ``node_index`` groups does not matter.
     """
-    by_node: Dict[int, List[Tuple[int, str]]] = {}
-    for node_index, node_offset, marker_id in markers:
-        by_node.setdefault(node_index, []).append((node_offset, marker_id))
+    by_node: Dict[int, List[Tuple[int, int, str]]] = {}
+    for node_index, start_offset, end_offset, marker_id in markers:
+        by_node.setdefault(node_index, []).append((start_offset, end_offset, marker_id))
 
-    for node_index, offsets in by_node.items():
+    for node_index, ranges in by_node.items():
         if node_index < 0 or node_index >= len(nodes):
             logger.error(
                 "Marker injection: node_index %d out of range (%d nodes); "
                 "skipping markers %s",
-                node_index, len(nodes), [m for _, m in offsets],
+                node_index, len(nodes), [m for _, _, m in ranges],
             )
             continue
         node = nodes[node_index]
         raw = str(node)
-        offsets.sort(key=lambda pair: pair[0])
+        ranges.sort(key=lambda r: r[0])
 
         pieces: List = []
         prev = 0
-        for node_offset, marker_id in offsets:
-            if node_offset < prev or node_offset > len(raw):
+        for start_offset, end_offset, marker_id in ranges:
+            if start_offset < prev or end_offset < start_offset or end_offset > len(raw):
                 logger.error(
-                    "Marker injection: offset %d out of order/range for node "
-                    "%d (prev=%d, len=%d); skipping marker %s",
-                    node_offset, node_index, prev, len(raw), marker_id,
+                    "Marker injection: range %d-%d out of order/range for "
+                    "node %d (prev=%d, len=%d); skipping marker %s",
+                    start_offset, end_offset, node_index, prev, len(raw), marker_id,
                 )
                 continue
-            if node_offset > prev:
-                pieces.append(NavigableString(raw[prev:node_offset]))
+            if start_offset > prev:
+                pieces.append(NavigableString(raw[prev:start_offset]))
             parent_namespace = getattr(node.parent, "namespace", None)
             marker = soup.new_tag("span", namespace=parent_namespace) if parent_namespace else soup.new_tag("span")
             parent_prefix = getattr(node.parent, "prefix", None)
             if parent_namespace and parent_prefix:
                 marker.prefix = parent_prefix
             marker["id"] = marker_id
+            if end_offset > start_offset:
+                marker.append(NavigableString(raw[start_offset:end_offset]))
             pieces.append(marker)
-            prev = node_offset
+            prev = end_offset
         if prev < len(raw):
             pieces.append(NavigableString(raw[prev:]))
 
@@ -829,8 +931,9 @@ def _splice_markers(
             node.replace_with(*pieces)
 
 
-def _inject_markers(content: Union[str, bytes], markers: List[Tuple[int, int, str]]) -> bytes:
-    """Insert empty ``<span id="...">`` markers into one spine item's XHTML.
+def _inject_markers(content: Union[str, bytes], markers: List[Tuple[int, int, int, str]]) -> bytes:
+    """Wrap each marker's sentence text in ``<span id="...">`` in one spine
+    item's XHTML.
 
     Re-parses ``content`` independently of ``ebook_dom_map`` (which discards
     its soup after extracting text) with the identical parser
@@ -851,13 +954,14 @@ def _inject_markers(content: Union[str, bytes], markers: List[Tuple[int, int, st
 
 
 def _inject_markers_into_original(
-    soup: BeautifulSoup, nodes: List[NavigableString], markers: List[Tuple[int, int, str]],
+    soup: BeautifulSoup, nodes: List[NavigableString], markers: List[Tuple[int, int, int, str]],
 ) -> bytes:
-    """Insert empty ``<span id="...">`` markers into an already-parsed,
-    ORIGINAL-archive-bytes ``soup`` (see :func:`_resolve_spine_injection_target`),
-    preserving every attribute, tag-name case, and stylesheet link the source
-    document had -- this is the fix for Finding 1 (styling/attributes lost via
-    ``spine_map``'s ebooklib-reconstructed ``content``).
+    """Wrap each marker's sentence text in ``<span id="...">`` inside an
+    already-parsed, ORIGINAL-archive-bytes ``soup`` (see
+    :func:`_resolve_spine_injection_target`), preserving every attribute,
+    tag-name case, and stylesheet link the source document had -- this is the
+    fix for Finding 1 (styling/attributes lost via ``spine_map``'s
+    ebooklib-reconstructed ``content``).
 
     ``soup`` must have been parsed with :func:`~src.utils.ebook_dom_map.parse_original_spine_xml`
     (an XML-mode, case-preserving parser) and ``nodes`` must be the exact node
@@ -1036,9 +1140,28 @@ def _verify_marker_injection(original: bytes, modified: bytes, spine_index: int,
     """Confirm marker injection did not alter this spine item's extracted text
     and did not turn well-formed XML into malformed XML.
 
-    BeautifulSoup inserts separator spaces around an empty element. Remove
-    empty, id-bearing spans before comparing so a marker split does not turn a
-    significant non-breaking space into an ordinary separator.
+    A marker span wraps a real slice of what was previously one contiguous
+    text node, so ``get_text()`` -- which strips each *distinct*
+    ``NavigableString`` individually before joining survivors with its own
+    canonical single-space separator (see ``ebook_dom_map``'s module
+    docstring) -- would otherwise compare the split pieces' individually
+    re-stripped text against the original's single, once-stripped text. That
+    silently normalizes whatever literal separator character(s) sat at the
+    split point (a non-breaking space, a double space, a tab, ...) to bs4's
+    own canonical single space, a false mismatch that has nothing to do with
+    whether injection actually altered anything. ``canonical_text`` undoes
+    the split before comparing instead of relying on ``get_text()``'s own
+    joining: it unwraps every id-bearing span (``Tag.unwrap()`` -- replace
+    the tag with its own children, in place; a no-op content-wise for an
+    empty span, so this subsumes the previous design's decompose-if-empty
+    special case) and then ``smooth()``s the tree, which re-merges the
+    resulting adjacent ``NavigableString`` siblings back into the exact
+    original combined string, whitespace and all -- because injection only
+    ever adds tag structure around existing text, never reorders or drops a
+    character. A pre-existing, unrelated ``<span id="...">`` already present
+    in the source (not one this phase added) is unwrapped identically on both
+    sides of the comparison, so it cannot introduce a false mismatch either.
+
     Raises rather than silently shipping a book whose markers landed in the
     wrong place or corrupted surrounding text.
 
@@ -1051,8 +1174,8 @@ def _verify_marker_injection(original: bytes, modified: bytes, spine_index: int,
     def canonical_text(content: bytes) -> str:
         soup = BeautifulSoup(content, "html.parser")
         for span in list(soup.find_all("span")):
-            if span.get("id") is not None and not span.get_text():
-                span.decompose()
+            if span.get("id") is not None:
+                span.unwrap()
         soup.smooth()
         return soup.get_text(separator=" ", strip=True)
 
@@ -1642,9 +1765,10 @@ def _build_readalong_epub_impl(
     # dropped here) -- cheap, and worth resolving before paying for a
     # (potentially multi-minute, for a long audiobook) transcode below.
     located_by_spine: Dict[int, List[SentenceClip]] = {}
-    markers_by_spine: Dict[int, List[Tuple[int, int, str]]] = {}
+    markers_by_spine: Dict[int, List[Tuple[int, int, int, str]]] = {}
     marker_id_map_by_spine: Dict[int, Dict[str, str]] = {}
     dropped_no_location = 0
+    crossed_inline_boundary = 0
     for spine_index, clips in sorted(clips_by_spine.items()):
         href = href_by_spine.get(spine_index)
         content = content_by_spine.get(spine_index)
@@ -1674,10 +1798,11 @@ def _build_readalong_epub_impl(
             return None
         existing_ids = _existing_ids_in_markup(id_scan_source)
 
-        markers, item_dropped, sentence_id_to_marker_id = _markers_for_spine_item(
+        markers, item_dropped, sentence_id_to_marker_id, item_crossed = _markers_for_spine_item(
             effective_dom_map, clips, spine_index, existing_ids,
         )
         dropped_no_location += item_dropped
+        crossed_inline_boundary += item_crossed
         located_clips = [c for c in clips if c.sentence_id in sentence_id_to_marker_id]
         if not located_clips:
             continue
@@ -1828,10 +1953,12 @@ def _build_readalong_epub_impl(
     logger.info(
         "📖 Built read-along EPUB for '%s': %d spine overlays, %d sentences "
         "(%d dropped: no timestamp, %d dropped: no DOM location, %d spine "
-        "items refused: injection verification failed), "
+        "items refused: injection verification failed, %d crossing an inline "
+        "element boundary: partial highlight), "
         "%.1fs total overlay duration (bitrate=%s) -> '%s'",
         abs_id, len(overlays), total_sentences, clip_result.dropped_no_timestamp,
-        dropped_no_location, 0, total_duration, audio_bitrate, output_path,
+        dropped_no_location, 0, crossed_inline_boundary, total_duration,
+        audio_bitrate, output_path,
     )
     return ReadalongBuildResult(
         abs_id=abs_id,
@@ -1844,6 +1971,7 @@ def _build_readalong_epub_impl(
         audio_href=audio_manifest_href,
         audio_bitrate=audio_bitrate,
         dropped_spine_items_injection_failed=0,
+        sentences_crossing_inline_elements=crossed_inline_boundary,
     )
 
 
