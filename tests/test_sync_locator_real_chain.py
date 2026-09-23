@@ -346,5 +346,46 @@ class TestReorderedNarrationRoundTrip(_RealChainCase):
         self.assertIn(service.get_time_for_char("b", gap_offset), edge_times)
 
 
+class TestOtherLocatorPathsUseCanonicalText(_RealChainCase):
+    """The same miscount -- counting ebooklib's <?xml?> declaration and
+    doctype as text, and (for fragments) no separator space between text
+    nodes -- lived in two more locator paths."""
+
+    def test_fragment_id_resolves_to_the_element_text(self) -> None:
+        """Storyteller/Readium fragment -> text snippet. The snippet the sync
+        path fuzzy-matches must start at the element, not ~40 chars off."""
+        FIXTURES["fragments"] = [("c1.xhtml", (
+            _paragraphs(_long("First"), _long("Second"), _long("Third"))
+            + '<p id="target-para">Target paragraph opens right here with its own words.</p>'
+            + _paragraphs(_long("Fifth"))
+        ))]
+        try:
+            filename, _text, spine_map = self._book("fragments")
+            snippet = self.parser.resolve_locator_id(filename, spine_map[0]["href"], "target-para")
+        finally:
+            del FIXTURES["fragments"]
+        self.assertIsNotNone(snippet)
+        self.assertTrue(
+            snippet.startswith("Target paragraph opens right here"),
+            f"fragment resolved to the wrong offset: {snippet[:60]!r}",
+        )
+
+    def test_fuzzy_match_locator_targets_the_matched_paragraph(self) -> None:
+        """find_text_location's rich locator (XPath/CSS via _generate_xpath_bs4)
+        must point at the paragraph the text matched, not an earlier one."""
+        filename, text, spine_map = self._book("chapters")
+        locator = self.parser.find_text_location(filename, "Bravo opens this paragraph and keeps going")
+        self.assertIsNotNone(locator)
+        item = next(i for i in spine_map if i["start"] <= locator.match_index < i["end"])
+        _xpath, target_tag, _anchored = self.parser._generate_xpath_bs4(
+            item["content"], locator.match_index - item["start"],
+        )
+        self.assertIsNotNone(target_tag)
+        self.assertTrue(
+            target_tag.get_text().startswith("Bravo opens"),
+            f"fuzzy locator targeted {target_tag.get_text()[:40]!r}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

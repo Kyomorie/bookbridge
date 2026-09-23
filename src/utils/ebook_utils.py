@@ -24,7 +24,7 @@ from pathlib import Path
 from collections import OrderedDict
 from src.sync_clients.sync_client_interface import LocatorResult
 from src.utils.cache_paths import safe_cache_path, is_plain_basename
-from src.utils.ebook_dom_map import content_string_nodes
+from src.utils.ebook_dom_map import content_string_nodes, runs_from_nodes
 from src.utils.logging_utils import get_persistent_condition_logger
 
 logger = logging.getLogger(__name__)
@@ -721,18 +721,16 @@ class EbookParser:
 
             if not element: return None
 
-            current_offset = 0
+            # The element starts at its first canonical text run. Walking
+            # soup.find_all(string=True) instead counted the <?xml?> declaration
+            # and doctype as text and dropped the separator space between runs.
             found_offset = -1
-            all_strings = soup.find_all(string=True)
-
-            for s in all_strings:
-                if s.parent == element or element in s.parents:
-                    found_offset = current_offset
+            nodes = content_string_nodes(soup)
+            for run in runs_from_nodes(nodes):
+                node = nodes[run.node_index]
+                if node.parent is element or element in node.parents:
+                    found_offset = run.start
                     break
-                text_len = len(s.strip())
-                if text_len == 0:
-                    continue
-                current_offset += text_len
 
             if found_offset == -1:
                 # Fallback
@@ -890,7 +888,8 @@ class EbookParser:
         current_char_count = 0
         target_tag = None
 
-        elements = soup.find_all(string=True)
+        # Only the strings extract_text_and_map counts (see _generate_cfi).
+        elements = content_string_nodes(soup)
         for string in elements:
             text_len = len(string.strip())
             if text_len == 0: continue
