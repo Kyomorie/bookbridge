@@ -8,6 +8,15 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Reading on in Storyteller after listening no longer snaps you back to the
+  audiobook position (#447).** When you switched from listening in
+  Audiobookshelf to reading in Storyteller, each sync mistook your first few
+  pages of reading for BookBridge's own update and put Storyteller back where the
+  audiobook stopped. That kept happening until you had read about 1% of the book
+  in one go or restarted BookBridge. BookBridge now recognises its own
+  Storyteller updates by the exact timestamp it sent with them, so any newer
+  Storyteller position is treated as your reading, however small the move.
+
 - **Resuming a read-along in BookOrbit's web reader no longer plays two voices.**
   When you picked up where you left off, BookOrbit's web reader gave the audio
   less than a second to start and then started it a second time, so two copies

@@ -999,7 +999,8 @@ class SyncManager:
         return int(max(600.0, min(window, 3600.0)))
 
     def _peer_position_is_own_writeback(
-        self, abs_id: str, client_name: str, observed_pct: float, margin: float
+        self, abs_id: str, client_name: str, observed_pct: float, margin: float,
+        observed_marker: object = None, title_snip: str = "",
     ) -> bool:
         """Whether a peer's current position is the echo of BookBridge's own write.
 
@@ -1011,9 +1012,17 @@ class SyncManager:
         to this user, or to the unscoped namespace a globally-triggered sync
         records under — still matches the value the service now reports. A missing,
         expired, percentage-less, mismatched or wrong-user marker leaves the veto
-        exactly as it was."""
+        exactly as it was.
+
+        When the client supplies a position marker (an opaque, service-stored
+        provenance token the service returns verbatim until someone else writes
+        to it — #447), that identity match takes precedence over the percentage
+        match: a user read landing within `margin` of our last write is no longer
+        mistaken for our own echo, and a marker that has moved on is never
+        mistaken for an echo just because the percentage still happens to be
+        close."""
         try:
-            from src.services.write_tracker import GLOBAL_USER, get_recent_write
+            from src.services.write_tracker import GLOBAL_USER, get_recent_write, marker_echo_verdict
         except ImportError:
             return False
 
@@ -1025,6 +1034,26 @@ class SyncManager:
             )
         if not recent:
             return False
+
+        verdict = marker_echo_verdict(recent, observed_marker)
+        if verdict is not None:
+            if verdict is False:
+                written_pct = recent.get('pct')
+                try:
+                    margin_matched = (
+                        written_pct is not None
+                        and observed_pct is not None
+                        and abs(float(written_pct) - float(observed_pct)) <= margin
+                    )
+                except (TypeError, ValueError):
+                    margin_matched = False
+                if margin_matched:
+                    logger.info(
+                        f"🪞 '{abs_id}' '{title_snip}' '{client_name}' ({observed_pct:.2%}) is within "
+                        f"{margin:.2%} of BookBridge's own write-back ({written_pct:.2%}), but the "
+                        f"service's position marker changed since that write - treating it as user movement"
+                    )
+            return verdict
 
         written_pct = recent.get('pct')
         if written_pct is None or observed_pct is None:
@@ -3829,7 +3858,9 @@ class SyncManager:
                     if (other_pct > candidate_pct + regression_margin
                             and (other_ts - candidate_ts) > veto_tolerance):
                         if self._peer_position_is_own_writeback(
-                            abs_id, other_name, other_pct, regression_margin
+                            abs_id, other_name, other_pct, regression_margin,
+                            observed_marker=config[other_name].current.get('_position_marker'),
+                            title_snip=title_snip,
                         ):
                             logger.info(
                                 f"🪞 '{abs_id}' '{title_snip}' Rollback veto skipped: "
@@ -3855,6 +3886,10 @@ class SyncManager:
             # selection did not, and in the same cycle would let the very value it had
             # just dismissed as our write-back go on to lead. Same-value match only:
             # a peer the user actually moved no longer matches what we wrote.
+            # A client that reports a position marker (#447) is judged by identity
+            # instead: the service's stored marker either still equals the one we
+            # wrote (echo) or it doesn't (someone else wrote after us), regardless
+            # of how close the two percentages land.
             echo_margin = getattr(self, "sync_delta_between_clients", 0.005)
             for client_name, observed_pct in vals.items():
                 client_echo_margin = (
@@ -3862,7 +3897,9 @@ class SyncManager:
                     else echo_margin
                 )
                 if self._peer_position_is_own_writeback(
-                    abs_id, client_name, observed_pct, client_echo_margin
+                    abs_id, client_name, observed_pct, client_echo_margin,
+                    observed_marker=config[client_name].current.get('_position_marker'),
+                    title_snip=title_snip,
                 ):
                     echo_clients.add(client_name)
             for client_name in sorted(echo_clients):
@@ -4376,10 +4413,14 @@ class SyncManager:
         """Record that BookBridge itself produced this client's current position.
 
         A later cycle reads this client back and sees a freshly stamped position;
-        the marker (client, book, written percentage) is how it tells the echo of
-        our own write from genuine user movement. The percentage comes from the
-        client's own axis via SyncResult.updated_state['pct'], so audio and ebook
-        clients each record a value comparable with what they will report next."""
+        the write-tracker entry (client, book, written percentage, and — when the
+        client supplies one — its opaque position marker, #447) is how it tells
+        the echo of our own write from genuine user movement. The percentage
+        comes from the client's own axis via SyncResult.updated_state['pct'], so
+        audio and ebook clients each record a value comparable with what they
+        will report next. The position marker comes from
+        SyncResult.updated_state['_position_marker'] and is None when the client
+        did not supply one."""
         try:
             if not self._sync_result_was_applied(result):
                 return
@@ -4387,8 +4428,9 @@ class SyncManager:
             pct = updated_state.get('pct') if isinstance(updated_state, dict) else None
             if isinstance(pct, bool) or not isinstance(pct, (int, float)):
                 pct = None
+            marker = updated_state.get('_position_marker') if isinstance(updated_state, dict) else None
             from src.services.write_tracker import record_write
-            record_write(client_name, abs_id, pct)
+            record_write(client_name, abs_id, pct, marker=marker)
         except Exception as e:
             logger.debug(
                 f"Could not record own-write marker for '{client_name}'/'{abs_id}': {e}",
