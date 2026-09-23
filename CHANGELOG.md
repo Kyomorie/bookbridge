@@ -8,6 +8,15 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Resuming a read-along in BookOrbit's web reader no longer plays two voices.**
+  When you picked up where you left off, BookOrbit's web reader gave the audio
+  less than a second to start and then started it a second time, so two copies
+  of the narration played over each other. On slower connections, or behind
+  Cloudflare (which does not cache the audio format read-alongs use), the audio
+  never loaded in time. Read-alongs now ship their audio in smaller pieces
+  (about 6 minutes each) that load in time without any cache. Regenerate an
+  existing read-along to pick this up.
+
 - **Registering from KOReader or Readest no longer pretends to succeed (#446).**
   Tapping "Register" against BookBridge's built-in sync server always reported
   success without creating anything, so the device then failed every login with no

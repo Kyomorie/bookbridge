@@ -548,22 +548,32 @@ def _resolve_audio_bitrate() -> str:
 # configured (_resolve_audio_bitrate, read per call) so the file count scales
 # with the admin's own bitrate choice rather than a fixed duration producing
 # very differently-sized files at a different bitrate.
-_TARGET_AUDIO_FILE_BYTES = 4 * 1024 * 1024  # ~4MB
+#
+# 1.5MB, not Storyteller's ~4.5MB: BookOrbit resumes narration at a saved
+# sentence with start(section, filter) and, if nothing has highlighted 700ms
+# later, calls start(section) again -- while the first start is still fetching
+# its audio file, so both play (the stranded-<audio> case above). Measured
+# through a Cloudflare-proxied BookOrbit, which never caches .m4a: 6.37MB took
+# 744-883ms and doubled on every web resume; Storyteller's 5.86MB .mp4 came
+# from Cloudflare's cache in ~470ms. Uncached throughput was ~8MB/s, so a
+# ~1.5MB file (planned files top out near 3MB) starts inside the window
+# without relying on any cache.
+_TARGET_AUDIO_FILE_BYTES = int(1.5 * 1024 * 1024)  # ~1.5MB
 
 # Bounds on the DERIVED target duration itself, so an unusually low or high
 # configured bitrate can't drive the file count to an absurd extreme (a
 # very low bitrate would otherwise stretch the target duration -- and so
 # each file's length -- without bound; a very high one would shrink it well
 # below any duration worth a separate file).
-_MIN_AUDIO_FILE_SECONDS = 600.0    # 10 minutes
+_MIN_AUDIO_FILE_SECONDS = 180.0    # 3 minutes
 _MAX_AUDIO_FILE_SECONDS = 7200.0   # 2 hours
 
 # How much longer than one target file a spine item's own narration span may
 # be and still be kept whole inside a single physical file
 # (:func:`_protected_spine_intervals`). A protected span becomes its own
 # file, so this multiple IS the real ceiling on physical file size: 2x the
-# ~4MB target is ~8MB, still well under the ~15.2MB whose fetch latency
-# caused the defect this protection exists to fix.
+# ~1.5MB target is ~3MB, the most that still starts inside BookOrbit's 700ms
+# resume window (see _TARGET_AUDIO_FILE_BYTES).
 #
 # Chosen from the real distribution rather than picked: Ghost Academy's 44
 # chapters run 0-1626s (median 1097s / 4.19MB, max 6.20MB), so 1.0x would

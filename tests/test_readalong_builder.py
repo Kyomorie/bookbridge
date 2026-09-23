@@ -1888,6 +1888,32 @@ def test_protected_spine_ceiling_is_a_multiple_of_the_target():
         )
 
 
+def test_default_audio_files_start_inside_bookorbits_resume_window():
+    """Reported: resuming The Employees in BookOrbit's web reader at 15% played
+    two voices at once. BookOrbit re-calls start() if nothing has highlighted
+    700ms after a resume, and the first start was still fetching its audio
+    file. Through Cloudflare (which never caches .m4a) a 6.37MB file took
+    744-883ms (~8MB/s); the build shipped 9 files of ~4.5MB. At the default
+    bitrate every planned file must stay near 3MB so it starts in time."""
+    bytes_per_second = _bitrate_to_bps(_DEFAULT_AUDIO_BITRATE) / 8
+    chapter_lengths = [60.0, 180.0, 240.0, 90.0, 150.0]
+    clips, cursor, chapter = [], 0.0, 0
+    while cursor < 9000.0:
+        length = chapter_lengths[chapter % len(chapter_lengths)]
+        for i in range(int(length // 6)):
+            clips.append(_clip(f"c{chapter}-s{i}", chapter, cursor + i * 6.0, cursor + (i + 1) * 6.0))
+        cursor += length
+        chapter += 1
+
+    boundaries = _compute_audio_file_boundaries(
+        clips, audio_duration_seconds=cursor,
+        target_seconds=_target_audio_file_seconds(_DEFAULT_AUDIO_BITRATE),
+    )
+
+    largest = max((end - start) * bytes_per_second for start, end in boundaries)
+    assert largest <= 3 * 1024 * 1024, (largest, len(boundaries))
+
+
 def _all_pars_with_audio(output_path: Path) -> List[Dict]:
     """Every <par> across every .smil in the archive, with its ``<audio
     src>`` resolved to the referenced audio file's own ARCHIVE path (not
