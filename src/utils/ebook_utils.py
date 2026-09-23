@@ -6,7 +6,7 @@ from typing import Optional
 
 import ebooklib
 from ebooklib import epub
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, Comment, Doctype, NavigableString, ProcessingInstruction, Tag
 from lxml import html
 import hashlib
 import json
@@ -79,6 +79,17 @@ class EbookParser:
     # and the downstream sanitizer in agreement on what counts as fragile.
     KOREADER_FRAGMENTING_P_CHILD_TAGS = CRENGINE_FRAGILE_INLINE_TAGS | {
         "mark", "abbr", "cite", "code", "q", "time", "s", "del", "ins"
+    }
+    # BeautifulSoup inserts a separator between every text node. That is correct
+    # for block boundaries but corrupts inline markup such as ``<b>T</b>he``.
+    # Keep one character at inline joins so existing EPUB coordinate offsets stay
+    # stable, while using a non-whitespace marker that alignment normalization
+    # removes before matching words.
+    INLINE_TEXT_JOINER = INLINE_TEXT_JOINER
+    TEXT_BLOCK_TAGS = CRENGINE_STRUCTURAL_TAGS | {
+        "address", "body", "br", "caption", "dl", "figure", "fieldset", "form",
+        "html", "hr", "main", "nav", "ol", "table", "tbody", "tfoot",
+        "th", "thead", "tr", "ul",
     }
 
     def __init__(self, books_dir, epub_cache_dir=None, ollama_client=None):
@@ -519,6 +530,79 @@ class EbookParser:
             logger.debug(f"EPUB sanitize failed for '{str_path}': {e}", exc_info=True)
             return None
 
+    @classmethod
+    def _nearest_text_block(cls, node):
+        current = getattr(node, "parent", None)
+        while current is not None:
+            if getattr(current, "name", "").lower() in cls.TEXT_BLOCK_TAGS:
+                return current
+            current = getattr(current, "parent", None)
+        return None
+
+    @classmethod
+    def _extract_text_from_soup(cls, soup) -> str:
+        """Extract readable text without splitting words at inline tags.
+
+        BeautifulSoup's ``get_text(separator=' ')`` treats every text-node
+        boundary as a word boundary. EPUBs that use bold or other inline tags
+        for bionic reading can therefore turn ``<b>T</b>he`` into ``T he``.
+        This walker preserves one output character for every old separator so
+        existing character offsets remain stable, but uses a non-whitespace
+        joiner when adjacent text nodes belong to the same block and contain no
+        literal whitespace between them.
+        """
+        pieces = []
+        previous_node = None
+        previous_raw = ""
+        pending_space = False
+        ignored_types = (Comment, Doctype, ProcessingInstruction)
+        ignored_tags = {"script", "style"}
+
+        def emit_text(node) -> None:
+            nonlocal previous_node, previous_raw, pending_space
+            raw = str(node)
+            clean = raw.strip()
+            if not clean:
+                pending_space = pending_space or bool(raw)
+                return
+
+            if previous_node is not None:
+                literal_space = (
+                    pending_space
+                    or (bool(previous_raw) and previous_raw[-1].isspace())
+                    or (bool(raw) and raw[0].isspace())
+                )
+                previous_block = cls._nearest_text_block(previous_node)
+                current_block = cls._nearest_text_block(node)
+                same_block = previous_block is not None and previous_block is current_block
+                pieces.append(" " if literal_space or not same_block else cls.INLINE_TEXT_JOINER)
+
+            pieces.append(clean)
+            previous_node = node
+            previous_raw = raw
+            pending_space = False
+
+        def walk(node) -> None:
+            nonlocal pending_space
+            if isinstance(node, ignored_types):
+                return
+            if isinstance(node, NavigableString):
+                emit_text(node)
+                return
+            if not isinstance(node, Tag):
+                return
+
+            name = (node.name or "").lower()
+            if name in ignored_tags:
+                return
+            for child in node.children:
+                walk(child)
+            if name in cls.TEXT_BLOCK_TAGS:
+                pending_space = True
+
+        walk(soup)
+        return "".join(pieces).strip()
+
     def extract_text_and_map(self, filepath, progress_callback=None):
         """
         Used for fuzzy matching and general content extraction.
@@ -577,7 +661,7 @@ class EbookParser:
                     continue
                 if item.get_type() == ebooklib.ITEM_DOCUMENT:
                     soup = BeautifulSoup(item.get_content(), 'html.parser')
-                    text = soup.get_text(separator=' ', strip=True)
+                    text = self._extract_text_from_soup(soup)
 
                     start = current_idx
                     length = len(text)
@@ -617,7 +701,7 @@ class EbookParser:
             start = max(0, target_pos - 400)
             end = min(len(full_text), target_pos + 400)
 
-            return full_text[start:end]
+            return full_text[start:end].replace(self.INLINE_TEXT_JOINER, "")
         except Exception as e:
             logger.error(f"❌ Error getting text at percentage: {e}", exc_info=True)
             return None
