@@ -191,6 +191,11 @@ def _result(i, start, end, found, frame=None, anchors=()):
     )
 
 
+def _anchors(full, chars, first_frame, frames_per_char=4):
+    """(char, frame) anchors at `chars`, spoken at a steady `frames_per_char`."""
+    return [(c, first_frame + frames_per_char * len(build_query(full, chars[0], c)[0])) for c in chars]
+
+
 def test_a_short_chapter_found_out_of_order_is_dropped_not_trusted(service, search_on, caplog):
     """Measured on a real book: an 80-char chapter whose text recurs later was
     placed an hour late. It must not send an in-order book to Whisper, and it
@@ -198,15 +203,66 @@ def test_a_short_chapter_found_out_of_order_is_dropped_not_trusted(service, sear
     full, chapters = _book([3000, 80, 3000])
     emission, _ = _emission(full, chapters, [0, 1, 2])
     a, s, b = chapters
+    a_anchors = _anchors(full, [a["start"] + 100, a["start"] + 1100, a["start"] + 2100], 50)
+    b_anchors = _anchors(full, [b["start"] + 100, b["start"] + 1100, b["start"] + 2100], 10_050)
     crafted = [
-        _result(0, a["start"], a["end"], True, 0, [(a["start"] + 100, 50)]),
+        _result(0, a["start"], a["end"], True, 0, a_anchors),
         _result(1, s["start"], s["end"], True, 90_000, [(s["start"] + 10, 90_010)]),
-        _result(2, b["start"], b["end"], True, 10_000, [(b["start"] + 100, 10_050)]),
+        _result(2, b["start"], b["end"], True, 10_000, b_anchors),
     ]
     with patch("src.services.ctc_search.search_chapters", return_value=crafted):
         ok, calls, _emit = _run(service, full, chapters, emission)
 
     assert ok is True
     assert "dropping short chapter" in caplog.text
-    assert [bd["char"] for bd in calls["boundaries"]] == [a["start"] + 100, b["start"] + 100]
+    assert [bd["char"] for bd in calls["boundaries"]] == [c for c, _f in a_anchors + b_anchors]
     assert calls["exclude_spans"] == [(s["start"], s["end"])]
+
+
+def test_an_anchor_with_impossible_speech_rates_on_both_sides_is_dropped(service, search_on, caplog):
+    """Measured on Push: its audiobook retells a passage in the third person, and
+    a coincidental unique n-gram there became an anchor implying 397 chars in
+    181s and then 3,830 chars in 74s. Only that anchor goes; consistent ones stay."""
+    full, chapters = _book([4000, 1400])
+    emission, _ = _emission(full, chapters, [0, 1])
+    a, b = chapters
+    c0, c1, c2, c3 = a["start"] + 100, a["start"] + 700, a["start"] + 1500, a["start"] + 2900
+    q = lambda lo, hi: len(build_query(full, lo, hi)[0])  # noqa: E731
+    f0 = 100
+    f2 = f0 + 4 * q(c0, c2)
+    f3 = f2 + 4 * q(c2, c3)
+    f1_bad = f0 + 30 * q(c0, c1)  # far too slow in, and "negative" speed out
+    crafted = [
+        _result(0, a["start"], a["end"], True, 0, [(c0, f0), (c1, f1_bad), (c2, f2), (c3, f3)]),
+        _result(1, b["start"], b["end"], True, f3 + 2000, [(b["start"] + 100, f3 + 2100)]),
+    ]
+    with patch("src.services.ctc_search.search_chapters", return_value=crafted):
+        ok, calls, _emit = _run(service, full, chapters, emission)
+
+    assert ok is True
+    assert "dropping implausible anchor at char %s" % c1 in caplog.text
+    assert [bd["char"] for bd in calls["boundaries"]] == [c0, c2, c3, b["start"] + 100]
+
+
+def test_narration_that_departs_from_the_text_falls_back(service, search_on, caplog):
+    """Measured on Push: its audiobook retells passages instead of reading them, so
+    10.8% of its narrated text sat in anchor gaps over 1,500 chars (13 faithful
+    narrations: at most 0.8%), and its search map scored below the transcript
+    path's. A long unanchored stretch sends the book to the transcript path."""
+    full, chapters = _book([6000, 3000])
+    emission, _ = _emission(full, chapters, [0, 1])
+    a, b = chapters
+    # No anchor between a+1100 and a+4600: 3,500 of ~9,000 narrated chars.
+    a_anchors = _anchors(full, [a["start"] + 100, a["start"] + 1100, a["start"] + 4600, a["start"] + 5600], 100)
+    b_first = a_anchors[-1][1] + 2000
+    b_anchors = _anchors(full, [b["start"] + 100, b["start"] + 1100, b["start"] + 2100], b_first)
+    crafted = [
+        _result(0, a["start"], a["end"], True, 0, a_anchors),
+        _result(1, b["start"], b["end"], True, b_first - 50, b_anchors),
+    ]
+    with patch("src.services.ctc_search.search_chapters", return_value=crafted):
+        ok, calls, _emit = _run(service, full, chapters, emission)
+
+    assert ok is False
+    assert calls == {}
+    assert "sits in anchor gaps over 1500 chars" in caplog.text

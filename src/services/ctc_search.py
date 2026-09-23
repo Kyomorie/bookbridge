@@ -472,8 +472,9 @@ def _select_anchors(
     document: PositionedDocument,
     slope: float,
     intercept: float,
+    spacing: int = ANCHOR_SPACING,
 ) -> List[Match]:
-    """One anchor per ~``ANCHOR_SPACING`` query chars, where the n-gram is
+    """One anchor per ~``spacing`` query chars (``ANCHOR_SPACING`` in the TS), where the n-gram is
     unique in both the query and the document and (after calibration) its
     context agrees well enough; kept monotonic in both coordinates."""
     document_ngram_index = _get_ngram_index(document)
@@ -489,9 +490,9 @@ def _select_anchors(
 
     def select(min_agreement: Optional[float]) -> List[Match]:
         anchors: List[Match] = []
-        for i in range(0, len(query), ANCHOR_SPACING):
-            window_start = max(0, i - ANCHOR_SPACING // 2)
-            window_end = min(len(query), i + ANCHOR_SPACING // 2)
+        for i in range(0, len(query), spacing):
+            window_start = max(0, i - spacing // 2)
+            window_end = min(len(query), i + spacing // 2)
 
             candidates = sorted(
                 (m for m in inliers if window_start <= m.offset < window_end),
@@ -683,6 +684,7 @@ def _find_boundaries_in_document(
     min_slope: float,
     max_slope: float,
     inlier_tolerance: float,
+    anchor_spacing: int = ANCHOR_SPACING,
 ) -> Optional[BoundaryMatch]:
     """Port of ``findBoundariesInDocument``: the full fit/extend/score
     pipeline, unclamped (see :func:`find_boundaries` for the frame clamp)."""
@@ -733,7 +735,8 @@ def _find_boundaries_in_document(
     if coverage < MIN_COVERAGE:
         return None
 
-    anchors = _select_anchors(query, inliers, query_ngram_offsets, document, slope, intercept)
+    anchors = _select_anchors(query, inliers, query_ngram_offsets, document, slope, intercept,
+                              spacing=anchor_spacing)
 
     return BoundaryMatch(
         start=_js_round(start),
@@ -759,8 +762,13 @@ def find_boundaries(
     max_slope: float = 15,
     inlier_tolerance: Optional[float] = None,
     num_frames: Optional[int] = None,
+    anchor_spacing: int = ANCHOR_SPACING,
 ) -> Optional[BoundaryMatch]:
     """Locate ``query`` inside ``document``, clamped to valid frames.
+
+    ``anchor_spacing`` (query chars between anchors) defaults to Storyteller's
+    ``ANCHOR_SPACING``; a caller that windows a chunked aligner on the anchors
+    can ask for denser ones.
 
     Port of ``findCtcBoundaries``'s wrapping of ``findBoundariesInDocument``.
     ``excluded_ranges`` are ``[start, end)`` document-position ranges (e.g.
@@ -774,7 +782,8 @@ def find_boundaries(
         inlier_tolerance = 5000 if len(query) > 15000 else 2500
 
     result = _find_boundaries_in_document(
-        query, document, excluded_ranges, min_slope, max_slope, inlier_tolerance
+        query, document, excluded_ranges, min_slope, max_slope, inlier_tolerance,
+        anchor_spacing=anchor_spacing,
     )
     if result is None:
         return None
@@ -830,6 +839,7 @@ def search_chapters(
     full_text: str,
     chapters: List[Tuple[int, int]],
     num_frames: int,
+    anchor_spacing: int = ANCHOR_SPACING,
 ) -> List[ChapterSearchResult]:
     """Locate each spine chapter's text inside ``document``, in spine order.
 
@@ -898,6 +908,7 @@ def search_chapters(
                 min_slope=2,
                 max_slope=15,
                 num_frames=num_frames,
+                anchor_spacing=anchor_spacing,
             )
             if boundary is None:
                 continue

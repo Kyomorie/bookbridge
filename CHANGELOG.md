@@ -8,6 +8,11 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Asking for a read-along at match time works without Storyteller.** Ticking the
+  read-along box and then using **Match All** recorded nothing, so no read-along was
+  ever built unless the book also went through Storyteller. The request now sticks,
+  and the read-along is generated as soon as the book's alignment finishes.
+
 - **Synced ebook positions land in the right place.** When progress from an
   audiobook was sent to an ebook reader, the position could land in the previous
   paragraph (KOReader and CFI-based readers alike), and a position that fell on a
@@ -55,6 +60,20 @@ All notable changes to BookBridge will be documented in this file.
   regeneration leaves the previous EPUB in place and does not trigger a library scan.
 
 ### Added
+
+- **Long audiobooks can get CTC alignment without waiting for Whisper.** A book too
+  long to align in one pass used to need a full Whisper transcript first, which takes
+  a long time on a long audiobook. With **CTC chapter search** switched on (Settings,
+  CTC alignment section), BookBridge finds each chapter directly in the audio and
+  aligns against that: a 39-hour audiobook took about 8 minutes. Tested against 15
+  existing books, the result matched the old one on 12, fixed a book whose old
+  alignment was up to 2 hours off, and handed the rest to the usual Whisper route
+  because their chapters are narrated out of order or the audiobook retells the text
+  instead of reading it. **Off by default** for now.
+
+- **The dashboard shows which books have a read-along.** A blue headphones pill
+  appears under the ratings on books with a finished read-along EPUB, next to the CTC
+  pill, which moved there from the card footer.
 
 - **Recently-read books can now be shared between your devices.** KOReader writes its
   History only when you open a book *on that device*, so a book you read on the Kobo
