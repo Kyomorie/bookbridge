@@ -6,7 +6,7 @@ from typing import Optional
 
 import ebooklib
 from ebooklib import epub
-from bs4 import BeautifulSoup, Comment, Doctype, NavigableString, ProcessingInstruction, Tag
+from bs4 import BeautifulSoup, Tag
 from lxml import html
 import hashlib
 import json
@@ -24,7 +24,14 @@ from pathlib import Path
 from collections import OrderedDict
 from src.sync_clients.sync_client_interface import LocatorResult
 from src.utils.cache_paths import safe_cache_path, is_plain_basename
-from src.utils.ebook_dom_map import content_string_nodes, runs_from_nodes
+from src.utils.ebook_dom_map import (
+    INLINE_TEXT_JOINER,
+    content_string_nodes,
+    joined_text,
+    runs_from_nodes,
+    strip_inline_joiner,
+    strip_inline_joiner_with_map,
+)
 from src.utils.logging_utils import get_persistent_condition_logger
 
 logger = logging.getLogger(__name__)
@@ -82,15 +89,15 @@ class EbookParser:
     }
     # BeautifulSoup inserts a separator between every text node. That is correct
     # for block boundaries but corrupts inline markup such as ``<b>T</b>he``.
-    # Keep one character at inline joins so existing EPUB coordinate offsets stay
-    # stable, while using a non-whitespace marker that alignment normalization
-    # removes before matching words.
+    # ``src.utils.ebook_dom_map.joined_text`` keeps one character at inline
+    # joins so existing EPUB coordinate offsets stay stable, using a
+    # non-whitespace marker (see ``INLINE_TEXT_JOINER``'s own docstring) that
+    # this class's own return paths and ``map_quality``'s tokenizer strip
+    # before matching words. Class attribute kept as an alias of the
+    # module-level constant re-exported from ``ebook_dom_map`` (its one true
+    # definition) so existing ``EbookParser.INLINE_TEXT_JOINER`` callers and
+    # tests keep working.
     INLINE_TEXT_JOINER = INLINE_TEXT_JOINER
-    TEXT_BLOCK_TAGS = CRENGINE_STRUCTURAL_TAGS | {
-        "address", "body", "br", "caption", "dl", "figure", "fieldset", "form",
-        "html", "hr", "main", "nav", "ol", "table", "tbody", "tfoot",
-        "th", "thead", "tr", "ul",
-    }
 
     def __init__(self, books_dir, epub_cache_dir=None, ollama_client=None):
         self.books_dir = Path(books_dir)
@@ -531,77 +538,35 @@ class EbookParser:
             return None
 
     @classmethod
-    def _nearest_text_block(cls, node):
-        current = getattr(node, "parent", None)
-        while current is not None:
-            if getattr(current, "name", "").lower() in cls.TEXT_BLOCK_TAGS:
-                return current
-            current = getattr(current, "parent", None)
-        return None
-
-    @classmethod
     def _extract_text_from_soup(cls, soup) -> str:
         """Extract readable text without splitting words at inline tags.
 
         BeautifulSoup's ``get_text(separator=' ')`` treats every text-node
         boundary as a word boundary. EPUBs that use bold or other inline tags
         for bionic reading can therefore turn ``<b>T</b>he`` into ``T he``.
-        This walker preserves one output character for every old separator so
-        existing character offsets remain stable, but uses a non-whitespace
-        joiner when adjacent text nodes belong to the same block and contain no
-        literal whitespace between them.
+
+        Delegates entirely to :mod:`src.utils.ebook_dom_map`'s
+        ``content_string_nodes``/``runs_from_nodes``/``joined_text`` -- the
+        exact same node enumeration and inline-join decision
+        ``build_dom_anchor_map`` (the read-along builder's DOM-anchored map)
+        uses, so the two can never drift apart. They used to: a hand-rolled
+        node walker here that didn't match ``content_string_nodes``'s type
+        filtering (e.g. it would surface ``<rt>``/``<rp>`` ruby annotation
+        text that bs4's own ``get_text()`` -- and therefore every existing
+        character offset -- has always excluded) or its own inline-join
+        decision would silently corrupt every downstream xpath/CFI/percentage
+        offset, or raise "DOM anchor mismatch" and abort read-along
+        generation. ``content_string_nodes`` also enumerates via bs4's
+        already-iterative ``.descendants`` rather than a recursive walk, so it
+        does not risk ``RecursionError`` on pathologically deep markup.
+
+        Preserves one output character for every separator bs4's own
+        ``get_text`` would have emitted, so existing character offsets remain
+        stable; see ``INLINE_TEXT_JOINER``'s docstring for when a joiner
+        replaces the usual space.
         """
-        pieces = []
-        previous_node = None
-        previous_raw = ""
-        pending_space = False
-        ignored_types = (Comment, Doctype, ProcessingInstruction)
-        ignored_tags = {"script", "style"}
-
-        def emit_text(node) -> None:
-            nonlocal previous_node, previous_raw, pending_space
-            raw = str(node)
-            clean = raw.strip()
-            if not clean:
-                pending_space = pending_space or bool(raw)
-                return
-
-            if previous_node is not None:
-                literal_space = (
-                    pending_space
-                    or (bool(previous_raw) and previous_raw[-1].isspace())
-                    or (bool(raw) and raw[0].isspace())
-                )
-                previous_block = cls._nearest_text_block(previous_node)
-                current_block = cls._nearest_text_block(node)
-                same_block = previous_block is not None and previous_block is current_block
-                pieces.append(" " if literal_space or not same_block else cls.INLINE_TEXT_JOINER)
-
-            pieces.append(clean)
-            previous_node = node
-            previous_raw = raw
-            pending_space = False
-
-        def walk(node) -> None:
-            nonlocal pending_space
-            if isinstance(node, ignored_types):
-                return
-            if isinstance(node, NavigableString):
-                emit_text(node)
-                return
-            if not isinstance(node, Tag):
-                return
-
-            name = (node.name or "").lower()
-            if name in ignored_tags:
-                return
-            for child in node.children:
-                walk(child)
-            if name in cls.TEXT_BLOCK_TAGS:
-                pending_space = True
-
-        walk(soup)
-        return "".join(pieces).strip()
+        nodes = content_string_nodes(soup)
+        return joined_text(nodes, runs_from_nodes(nodes))
 
     def extract_text_and_map(self, filepath, progress_callback=None):
         """
@@ -827,7 +792,7 @@ class EbookParser:
             global_offset = target_item['start'] + found_offset
             start = max(0, global_offset)
             end = min(len(full_text), global_offset + 500)
-            return full_text[start:end]
+            return strip_inline_joiner(full_text[start:end])
 
         except Exception as e:
             logger.error(f"❌ Error resolving locator ID '{fragment_id}' in '{filename}': {e}", exc_info=True)
@@ -890,7 +855,7 @@ class EbookParser:
                 "resolve_href_progression: '%s' href='%s' progression=%.4f -> char %d "
                 "(chapter %d..%d)", filename, href, progression, offset, start, start + char_len,
             )
-            return full_text[offset: min(len(full_text), offset + 500)] or None
+            return strip_inline_joiner(full_text[offset: min(len(full_text), offset + 500)]) or None
 
         except Exception as e:
             logger.error(
@@ -1092,33 +1057,55 @@ class EbookParser:
                 return None
             total_len = len(full_text)
 
+            # Exact substring/uniqueness matching below must run against a
+            # joiner-free view of full_text: search_phrase is always
+            # joiner-free (it comes from callers like get_text_at_percentage,
+            # which already strips it), but full_text still has one wherever
+            # the book has an inline (e.g. bionic-reading) word split. Without
+            # this, both `full_text.find(...)` and the count()==1 uniqueness
+            # check below silently fail to match any phrase spanning such a
+            # split, and every sync for that book falls back to the slow
+            # normalized full-book scan (step 2), which has no uniqueness
+            # guarantee. `display_to_raw` converts a match position found in
+            # the joiner-free text back into full_text's own offset space,
+            # which spine_map bounds and xpath/CFI generation assume.
+            if INLINE_TEXT_JOINER in full_text:
+                display_text, display_to_raw = strip_inline_joiner_with_map(full_text)
+            else:
+                display_text, display_to_raw = full_text, None
+
+            def _to_raw_index(display_index: int) -> int:
+                return display_to_raw[display_index] if display_to_raw is not None else display_index
+
             # Global uniqueness check (the anchor logic)
             # Try to find a 10-word sequence that appears EXACTLY once in the book.
             # This prevents jumping to duplicate phrases (e.g., "Chapter 1" in the ToC vs the actual chapter).
             clean_search = " ".join(search_phrase.split())
             words = clean_search.split()
-            
+
             match_index = -1
-            
+
             if len(words) >= 10:
                 N = 10
                 # Scan through the search phrase to find a unique anchor
                 for i in range(len(words) - N + 1):
                     candidate = " ".join(words[i:i+N])
-                    
+
                     # Check if this phrase exists exactly ONCE in the text
-                    if full_text.count(candidate) == 1:
-                        found_idx = full_text.find(candidate)
+                    if display_text.count(candidate) == 1:
+                        found_idx = display_text.find(candidate)
                         if found_idx != -1:
-                            match_index = found_idx
+                            match_index = _to_raw_index(found_idx)
                             logger.info(f"⚓ Found unique text anchor: '{candidate[:30]}...' at index {match_index}")
                             break
-            
+
             # [End of NEW logic] - Continue to existing fallbacks
 
             # 1. Exact match (if anchor logic didn't find anything)
             if match_index == -1:
-                match_index = full_text.find(search_phrase)
+                found_idx = display_text.find(search_phrase)
+                if found_idx != -1:
+                    match_index = _to_raw_index(found_idx)
 
             # 2. Normalized match
             if match_index == -1:
@@ -2060,7 +2047,7 @@ class EbookParser:
                 # 3. Return text from the Main Source of Truth (full_text)
                 start = max(0, global_index)
                 end = min(len(full_text), global_index + 600) # Grab enough context
-                return full_text[start:end]
+                return strip_inline_joiner(full_text[start:end])
             
             else:
                 # Fallback: If exact match fails (rare), try the old calculation method
@@ -2092,7 +2079,7 @@ class EbookParser:
                      global_offset = target_item['start'] + local_pos
                      start = max(0, global_offset)
                      end = min(len(full_text), global_offset + 500)
-                     return full_text[start:end]
+                     return strip_inline_joiner(full_text[start:end])
 
                 return None
 
@@ -2507,7 +2494,7 @@ class EbookParser:
             start_pos = max(0, global_offset - context)
             end_pos = min(len(full_text), global_offset + context)
 
-            snippet = full_text[start_pos:end_pos]
+            snippet = strip_inline_joiner(full_text[start_pos:end_pos])
             logger.info(f"Snippet extracted: {snippet[:30]}...")
             return snippet
 

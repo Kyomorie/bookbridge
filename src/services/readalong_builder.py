@@ -200,6 +200,7 @@ from src.utils.ebook_dom_map import (
     SpineDomMap,
     content_string_nodes,
     build_dom_anchor_map,
+    joined_text,
     locate_offset,
     original_body_scope,
     parse_original_spine_xml,
@@ -1380,7 +1381,7 @@ def _resolve_spine_injection_target(
         reference_soup = BeautifulSoup(reference_content, "html.parser")
 
     if reference_soup is None:
-        if " ".join(run.text for run in local_runs) != expected_text:
+        if joined_text(nodes, local_runs) != expected_text:
             return None
         canonical_runs = ref_entry.runs
         mapped_runs = list(zip(canonical_runs, local_runs))
@@ -1393,7 +1394,7 @@ def _resolve_spine_injection_target(
         # whitespace nodes. Only the path scope is body-relative.
         canonical_nodes = content_string_nodes(reference_soup)
         canonical_runs = runs_from_nodes(canonical_nodes)
-        if " ".join(run.text for run in canonical_runs) != expected_text:
+        if joined_text(canonical_nodes, canonical_runs) != expected_text:
             return None
         if len(canonical_runs) != len(ref_entry.runs):
             return None

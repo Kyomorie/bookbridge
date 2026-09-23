@@ -87,6 +87,42 @@ _BLOCK_TAGS = frozenset({
     "pre", "section", "table", "td", "th", "tr", "ul",
 })
 
+# A single character substituted for the separator ``extract_text_and_map``
+# would otherwise insert between two adjacent content-string runs, when (and
+# only when) that separator is a mid-word split introduced by "bionic
+# reading" EPUB markup -- e.g. ``<b>Th</b>e``, which bs4's
+# ``get_text(separator=' ')`` turns into ``Th e``. Kept at exactly one
+# character so every downstream offset (xpath/CFI generation, chapter
+# percentage math, spine ``char_len``) stays the width it always was: the
+# joiner REPLACES the separator rather than removing it. U+2063 INVISIBLE
+# SEPARATOR is a Unicode format character with no glyph, is not
+# alphanumeric (so ``EbookParser._normalize_with_map``'s ``ch.isalnum()``
+# filter already drops it for free) and is not whitespace (so it cannot be
+# mistaken for a real word boundary by a naive ``.split()``) -- and Unicode
+# reserves it for exactly this purpose ("used to indicate word or morpheme
+# boundaries ... in situations where the use of a visible word divider is
+# not desired"). It must never reach anything outside this module and
+# :class:`~src.utils.ebook_utils.EbookParser` -- see :func:`strip_inline_joiner`.
+INLINE_TEXT_JOINER = "⁣"
+
+# Inline tags whose only rendering effect is character-level styling, with no
+# content or structural meaning of their own. "Bionic reading" tools split a
+# single word's characters across runs of exactly these tags with no literal
+# whitespace at the split, which is the one case ``extract_text_and_map``
+# should reunite with :data:`INLINE_TEXT_JOINER` instead of a real space.
+#
+# Deliberately narrow. ``span``/``a``/``sub``/``sup`` are excluded on purpose:
+# they routinely mark a REAL word boundary with no source whitespace either --
+# verse lines as sibling ``<span class="line">``, or a footnote reference as
+# ``word<a><sup>1</sup></a>`` -- and joining those fuses two words that must
+# stay separate (an alignment map built from the joined text would then anchor
+# on "word1" or "linesecond", which never occurs in the narrated audio).
+# Restricting the join to this list means ``<a>``/``<sup>``/``<sub>`` (and any
+# ``epub:type="noteref"`` marker, which is always carried on one of those, not
+# on a bare ``<b>``/``<i>``) can never join, without needing a separate
+# noteref-specific check.
+INLINE_JOIN_SAFE_TAGS = frozenset({"b", "strong", "i", "em", "u"})
+
 # XML's five predefined entities -- the only named entity references a strict
 # XML parser understands without an external/internal DTD. Left untouched by
 # :func:`escape_named_html_entities` (rewriting ``&amp;`` to ``&#38;`` would be
@@ -128,6 +164,11 @@ class SpineDomMap:
     or one whose nodes all strip to empty. ``node_count`` is the total number of
     content-string nodes considered for this item (including ones that stripped to
     empty and so produced no run) -- an upper bound for validating a ``node_index``.
+    ``text`` is this item's slice of ``extract_text_and_map``'s combined text
+    (``combined_text[start:end]``), already verified equal to the rebuilt
+    :func:`joined_text` of ``runs`` by :func:`build_dom_anchor_map` -- stored
+    rather than re-derived so :func:`reconstruct_text` needs no join logic of
+    its own.
     """
     spine_index: int
     href: str
@@ -135,6 +176,7 @@ class SpineDomMap:
     end: int
     runs: List[DomRun] = field(default_factory=list)
     node_count: int = 0
+    text: str = ""
 
 
 def content_string_nodes(soup: BeautifulSoup) -> List[NavigableString]:
@@ -240,19 +282,138 @@ def runs_from_nodes(nodes: List[NavigableString]) -> List[DomRun]:
     return runs
 
 
+def _nearest_join_boundary(node: NavigableString) -> Optional[Tag]:
+    """The nearest ancestor of ``node`` that is not a pure character-styling
+    tag (see :data:`INLINE_JOIN_SAFE_TAGS`).
+
+    Two adjacent runs are considered the same "typographic run" -- i.e. two
+    fragments of one word split by inline styling markup -- exactly when this
+    returns the identical :class:`Tag` object (by identity, not just name) for
+    both of them: the climb from each node stops the moment it leaves the
+    chain of safe styling tags, so it lands on the first shared real content
+    container only if both nodes are reachable from it through nothing but
+    styling. Two separate ``<span>`` (or ``<a>``, ``<sup>``, ``<sub>``, ...)
+    siblings never share this ancestor, because the climb from each stops at
+    its own span/anchor/sup, not the container both spans sit in.
+    """
+    parent = node.parent
+    while parent is not None:
+        name = getattr(parent, "name", None)
+        if not name or name.lower() not in INLINE_JOIN_SAFE_TAGS:
+            return parent
+        parent = parent.parent
+    return None
+
+
+def _has_literal_whitespace_between(nodes: List[NavigableString], prev_index: int, next_index: int) -> bool:
+    """Whether the source markup had a real whitespace character between the
+    content-string nodes at ``prev_index`` and ``next_index`` in ``nodes``
+    (which need not be adjacent -- any node stripped to empty in between,
+    always whitespace-only, counts as one), i.e. whether bs4's own
+    ``get_text(separator=' ')`` output would have had a literal space there
+    regardless of the separator it inserts.
+    """
+    if next_index > prev_index + 1:
+        return True  # a node (necessarily whitespace-only, or it would survive) was skipped
+    prev_raw = str(nodes[prev_index])
+    if prev_raw and prev_raw[-1].isspace():
+        return True
+    next_raw = str(nodes[next_index])
+    if next_raw and next_raw[0].isspace():
+        return True
+    return False
+
+
+def joined_text(nodes: List[NavigableString], runs: List[DomRun]) -> str:
+    """Reconstruct a spine item's text from ``runs``, using
+    :data:`INLINE_TEXT_JOINER` in place of the usual single-space separator
+    wherever two adjacent runs are a mid-word inline split (see
+    :func:`_nearest_join_boundary`) with no literal whitespace between them.
+
+    The one canonical join decision, called from both
+    ``EbookParser.extract_text_and_map`` (via
+    ``EbookParser._extract_text_from_soup``) and this module's own
+    :func:`_spine_item_runs` / :func:`block_break_offsets` -- so the DOM-anchored
+    read-along map's rebuilt text always matches ``extract_text_and_map``'s
+    reference text exactly, including at inline joins, instead of only when
+    the book happens to have none.
+
+    Every boundary still contributes exactly one separator character (space or
+    joiner), matching :func:`runs_from_nodes`'s offset arithmetic, which does
+    not (and does not need to) know which of the two was used.
+    """
+    if not runs:
+        return ""
+    parts: List[str] = [runs[0].text]
+    previous_boundary = _nearest_join_boundary(nodes[runs[0].node_index])
+    for position in range(1, len(runs)):
+        run = runs[position]
+        current_boundary = _nearest_join_boundary(nodes[run.node_index])
+        if _has_literal_whitespace_between(nodes, runs[position - 1].node_index, run.node_index):
+            separator = " "
+        elif previous_boundary is not None and previous_boundary is current_boundary:
+            separator = INLINE_TEXT_JOINER
+        else:
+            separator = " "
+        parts.append(separator)
+        parts.append(run.text)
+        previous_boundary = current_boundary
+    return "".join(parts)
+
+
+def strip_inline_joiner(text: Optional[str]) -> Optional[str]:
+    """Remove :data:`INLINE_TEXT_JOINER` from ``text``.
+
+    Every return value, log line, or search haystack that leaves this module
+    and :class:`~src.utils.ebook_utils.EbookParser` must be passed through this
+    (or :func:`strip_inline_joiner_with_map`, when the caller also needs to
+    convert a match position back into raw-text offsets) -- the joiner exists
+    only to keep ``extract_text_and_map``'s character-offset math stable while
+    a book has bionic-reading mid-word splits; no other consumer should ever
+    see it.
+    """
+    if not text:
+        return text
+    return text.replace(INLINE_TEXT_JOINER, "")
+
+
+def strip_inline_joiner_with_map(text: str) -> Tuple[str, List[int]]:
+    """Like :func:`strip_inline_joiner`, but also returns a list mapping each
+    character index of the stripped text back to its index in ``text``.
+
+    For exact-match text search (substring ``find``, uniqueness-by-``count``
+    anchors) against ``full_text``: a search phrase sourced from
+    ``get_text_at_percentage`` or similar is already joiner-free, so it can
+    only ever match the joiner-free view of ``full_text``. The returned map
+    converts a match position found there back into ``full_text``'s own
+    character space, which is what spine-item bounds, percentage math, and
+    xpath/CFI generation all assume.
+    """
+    if INLINE_TEXT_JOINER not in text:
+        return text, list(range(len(text)))
+    chars: List[str] = []
+    index_map: List[int] = []
+    for raw_idx, ch in enumerate(text):
+        if ch == INLINE_TEXT_JOINER:
+            continue
+        chars.append(ch)
+        index_map.append(raw_idx)
+    return "".join(chars), index_map
+
+
 def _spine_item_runs(content: Union[str, bytes]) -> Tuple[List[DomRun], int, str]:
     """Build provenance-carrying runs for one spine item's raw XHTML ``content``.
 
     Returns ``(runs, node_count, item_text)`` where ``item_text`` is
-    ``" ".join(run.text for run in runs)`` -- the reconstruction of what
-    ``soup.get_text(separator=' ', strip=True)`` would have returned for the same
+    :func:`joined_text` of ``runs`` -- the reconstruction of what
+    ``EbookParser.extract_text_and_map`` would have produced for the same
     ``content``. Offsets in the returned runs are *local* to this item (0-based);
     the caller shifts them into the book's global char space.
     """
     soup = BeautifulSoup(content, 'html.parser')
     nodes = content_string_nodes(soup)
     runs = runs_from_nodes(nodes)
-    item_text = " ".join(run.text for run in runs)
+    item_text = joined_text(nodes, runs)
     return runs, len(nodes), item_text
 
 
@@ -281,7 +442,7 @@ def block_break_offsets(content: Union[str, bytes], expected_text: str) -> Optio
     soup = BeautifulSoup(content, 'html.parser')
     nodes = content_string_nodes(soup)
     runs = runs_from_nodes(nodes)
-    if " ".join(run.text for run in runs) != expected_text:
+    if joined_text(nodes, runs) != expected_text:
         return None
 
     breaks: List[int] = []
@@ -460,6 +621,7 @@ def build_dom_anchor_map(parser: "EbookParser", filepath: Union[str, Path]) -> L
             end=end,
             runs=global_runs,
             node_count=node_count,
+            text=item_text,
         ))
 
     return dom_maps
@@ -470,13 +632,13 @@ def reconstruct_text(dom_map: List[SpineDomMap]) -> str:
 
     Mirrors ``" ".join(full_text_parts)`` in ``extract_text_and_map`` exactly,
     including the inter-item single-space gap even when an item's own text is
-    empty. Intended for tests/verification -- the result should be byte-identical
-    to ``extract_text_and_map(filepath)[0]`` for the same book.
+    empty, and using each item's already-validated ``text`` (see
+    :class:`SpineDomMap`) rather than re-deriving it from ``runs`` -- so this
+    stays correct at inline joins without duplicating :func:`joined_text`'s
+    decision. Intended for tests/verification -- the result should be
+    byte-identical to ``extract_text_and_map(filepath)[0]`` for the same book.
     """
-    parts = []
-    for item in dom_map:
-        parts.append(" ".join(run.text for run in item.runs))
-    return " ".join(parts)
+    return " ".join(item.text for item in dom_map)
 
 
 def locate_offset(dom_map: List[SpineDomMap], offset: int) -> Optional[Tuple[int, int, int]]:

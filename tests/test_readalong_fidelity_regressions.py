@@ -7,8 +7,10 @@ from src.services.readalong_builder import (
     _verify_marker_injection,
 )
 from src.utils.ebook_dom_map import (
+    INLINE_TEXT_JOINER,
     SpineDomMap,
     content_string_nodes,
+    joined_text,
     original_body_scope,
     parse_original_spine_xml,
     runs_from_nodes,
@@ -41,6 +43,32 @@ def test_original_mapping_preserves_body_text_and_uses_child_structure():
     assert b'Leading text. ' in modified
     assert b'data-book="keep"' in modified
     assert b'href="book.css"' in modified
+
+
+def test_original_mapping_survives_an_inline_word_join():
+    """The reference/original text-equality check inside
+    ``_resolve_spine_injection_target`` used to reconstruct the "original"
+    side with a blind ``" ".join(run.text ...)``, which never equals a
+    combined-text slice containing ``INLINE_TEXT_JOINER`` -- silently
+    refusing the higher-fidelity original-bytes injection path (falling back
+    to the lossy ebooklib-reconstructed path) for any spine item with a
+    bionic-reading inline word split such as ``<b>T</b>he``.
+    """
+    canonical = b"<html><body><p><b>T</b>he cat sat.</p></body></html>"
+    original = (
+        b'<html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" href="book.css"/></head>'
+        b'<body><p><b>T</b>he cat sat.</p></body></html>'
+    )
+    soup = BeautifulSoup(canonical, "html.parser")
+    nodes = content_string_nodes(soup)
+    runs = runs_from_nodes(nodes)
+    expected = joined_text(nodes, runs)
+    assert INLINE_TEXT_JOINER in expected
+    ref = SpineDomMap(1, "OEBPS/ch1.xhtml", 0, len(expected), runs, len(nodes))
+
+    resolved = _resolve_spine_injection_target(original, ref, expected, canonical)
+
+    assert resolved is not None
 
 
 def test_original_mapping_refuses_same_text_with_different_structure():

@@ -8,6 +8,14 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **EPUBs that style part of a word (e.g. "bionic reading" bold formatting)
+  extract correctly.** Some EPUBs render a few letters of each word in bold to
+  help reading speed. BookBridge's text extraction previously read these as
+  separate words with an extra space injected mid-word (`<b>Th</b>e` became
+  "Th e" instead of "The"), which could break audiobook alignment, position
+  syncing, and read-along generation for affected books. Word boundaries are
+  now preserved without changing anything for ordinary books.
+
 - **Asking for a read-along at match time works without Storyteller.** Ticking the
   read-along box and then using **Match All** recorded nothing, so no read-along was
   ever built unless the book also went through Storyteller. The request now sticks,
