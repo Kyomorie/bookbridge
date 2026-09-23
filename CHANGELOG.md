@@ -8,6 +8,12 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Read-along narration no longer doubles in BookOrbit's web reader.** On longer
+  books, the web reader could start the next audio file twice at each file change,
+  so two copies of the narration played over each other and got worse as the book
+  went on. The BookOrbit app was unaffected. Regenerate an existing read-along to
+  pick this up.
+
 - **Read-alongs now highlight in BookOrbit's web reader.** Generated read-alongs
   played their audio in the web reader but never highlighted the sentence being
   read (the BookOrbit app was unaffected). The book now declares the highlight

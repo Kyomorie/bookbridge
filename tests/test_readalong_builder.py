@@ -1989,7 +1989,11 @@ def test_audio_split_into_multiple_files_for_a_long_book(monkeypatch):
             for entry in group:
                 assert entry["begin"] >= 0.0
                 assert entry["begin"] <= entry["end"]
+            for entry in group[:-1]:
                 assert entry["end"] <= real_duration + 1e-3, (archive_path, entry, real_duration)
+            # The file's last clip ends PAST the file, so only `ended` hands
+            # over to the next file (see _FILE_END_CLIP_OVERSHOOT_SECONDS).
+            assert group[-1]["end"] > real_duration, (archive_path, group[-1], real_duration)
             for i in range(len(group) - 1):
                 assert group[i]["end"] == pytest.approx(group[i + 1]["begin"], abs=1e-6), (
                     "clips within one physical file must stay contiguous", archive_path, group,

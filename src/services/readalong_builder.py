@@ -245,6 +245,23 @@ _READALONG_DIR_BASE = "readalong"
 # name. It is also the EPUB 3 conventional name, and what Storyteller declares.
 _MEDIA_OVERLAY_ACTIVE_CLASS = "-epub-media-overlay-active"
 
+# The LAST clip in each audio file, when it ends at (or within this window of)
+# the file's real end, is pushed PAST the end by the overshoot below, so the
+# file hands over to the
+# next one only through the audio's `ended` event. foliate-js (BookOrbit's web
+# reader) advances to the next file from BOTH its `timeupdate` handler (once
+# playback passes the run's last clipEnd) and its `ended` handler. At end of
+# media the browser fires `timeupdate` while `paused` is still false and then
+# `ended`, so a clipEnd even a few ms short of the file's end triggers both:
+# two players start the next file and the narration doubles, again at every
+# file after. The split files run ~20ms longer than their cut points (AAC
+# frame padding), which is exactly how the bridge's clips landed short.
+# Storyteller's clips end 10-25ms past their files' ends. The window exceeds
+# the 250ms maximum `timeupdate` interval; the overshoot exceeds one AAC frame
+# at the encoder's sample rates.
+_FILE_END_CLIP_WINDOW_SECONDS = 0.5
+_FILE_END_CLIP_OVERSHOOT_SECONDS = 0.1
+
 # bs4's own ``BeautifulSoup.ASCII_SPACES`` (space, LF, tab, form-feed, CR) --
 # verified against the installed bs4, not assumed. See
 # :func:`_verify_marker_injection` for why its comparison collapses runs of
@@ -2346,6 +2363,16 @@ def _build_readalong_epub_impl(
             idx = bisect.bisect_right(file_starts, ts_start) - 1
             return max(0, min(idx, len(audio_files_on_disk) - 1))
 
+        # The clip that plays last in each physical file -- the only one whose
+        # end may be pushed past the file (see _FILE_END_CLIP_OVERSHOOT_SECONDS).
+        last_clip_by_file: Dict[int, str] = {}
+        last_start_by_file: Dict[int, float] = {}
+        for c in flat_clips:
+            file_index = _file_index_for(c.ts_start)
+            if c.ts_start >= last_start_by_file.get(file_index, float("-inf")):
+                last_start_by_file[file_index] = c.ts_start
+                last_clip_by_file[file_index] = c.sentence_id
+
         modified_files: Dict[str, bytes] = {}
         new_bytes_files: Dict[str, bytes] = {}
         overlays: List[SpineOverlayResult] = []
@@ -2398,6 +2425,11 @@ def _build_readalong_epub_impl(
                     _file_path, file_real_duration = audio_files_on_disk[file_index]
                     rel_start = max(0.0, c.ts_start - file_start)
                     rel_end = max(rel_start, min(c.ts_end - file_start, file_real_duration))
+                    if (
+                        last_clip_by_file.get(file_index) == c.sentence_id
+                        and rel_end >= file_real_duration - _FILE_END_CLIP_WINDOW_SECONDS
+                    ):
+                        rel_end = file_real_duration + _FILE_END_CLIP_OVERSHOOT_SECONDS
                 placed_clips.append(_PlacedClip(
                     sentence_id=id_map[c.sentence_id],
                     ts_start=rel_start,
