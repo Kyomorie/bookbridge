@@ -68,6 +68,10 @@ ALL_SETTINGS = [
     'BOOKORBIT_SHELF_WATCH_ENABLED', 'BOOKORBIT_SHELF_WATCH_NAME',
     'BOOKORBIT_SHELF_WATCH_THRESHOLD', 'BOOKORBIT_SHELF_WATCH_RESCAN_HOURS',
     'BOOKORBIT_ANNOTATION_SYNC_MINUTES', 'BOOKORBIT_KOSYNC_OWNER',
+    'BOOKORBIT_READALONG_POLICY',
+
+    # Read-along EPUB 3 generation
+    'READALONG_AUDIO_BITRATE',
 
     # Kavita
     'KAVITA_ENABLED', 'KAVITA_SERVER', 'KAVITA_WEB_URL', 'KAVITA_API_KEY',
@@ -162,7 +166,7 @@ ALL_SETTINGS = [
     'JOB_MAX_RETRIES', 'JOB_RETRY_DELAY_MINS', 'WHISPER_MODEL',
     'WHISPER_DEVICE', 'WHISPER_COMPUTE_TYPE',
     'TRANSCRIPTION_PROVIDER', 'DEEPGRAM_API_KEY', 'DEEPGRAM_MODEL', 'WHISPER_CPP_URL', 'WHISPER_CPP_TIMEOUT', 'WHISPER_CPP_SEND_ORIGINAL', 'WHISPER_CPP_CHUNK_MINUTES',
-    'CTC_ENABLED', 'CTC_MODEL', 'CTC_DEVICE',
+    'CTC_ENABLED', 'CTC_MODEL', 'CTC_DEVICE', 'CTC_CHAPTER_SEARCH',
     'ALIGNMENT_SEGMENTED_MAPS',
     'CONTENT_MATCH_GUARD', 'CONTENT_MATCH_MIN_OVERLAP',
     'AUDIO_SPLIT_DURATION_MINUTES',
@@ -217,6 +221,10 @@ DEFAULT_CONFIG = {
     'CTC_ENABLED': 'false',
     'CTC_MODEL': 'mms_fa',
     'CTC_DEVICE': 'auto',
+    # Build the CTC chunking prior by locating each spine chapter in the greedy-decoded
+    # emissions (src/services/ctc_search.py) instead of waiting for a Whisper transcript.
+    # See AlignmentService.chapter_search_enabled().
+    'CTC_CHAPTER_SEARCH': 'false',
     # Per-chapter RANSAC segment placement (issue #426 phase 2), replacing the global
     # monotonic LIS filter only for books whose narration order genuinely differs from
     # spine order. See docs/PLAN_OUT_OF_ORDER_NARRATION.md and
@@ -336,6 +344,12 @@ DEFAULT_CONFIG = {
     'BOOKORBIT_SHELF_WATCH_RESCAN_HOURS': '24',
     'BOOKORBIT_ANNOTATION_SYNC_MINUTES': '15',
     'BOOKORBIT_KOSYNC_OWNER': '',
+    'BOOKORBIT_READALONG_POLICY': 'defer',
+    # 32kbps mono AAC -- see src/services/readalong_builder.py's
+    # _DEFAULT_AUDIO_BITRATE (must match), which documents the reference
+    # data point (Storyteller ships 141MB for a 10.1h book, ~31kbps) behind
+    # this default.
+    'READALONG_AUDIO_BITRATE': '32k',
     'KAVITA_ENABLED': 'false',
     'KAVITA_SERVER': '',
     'KAVITA_WEB_URL': '',

@@ -76,6 +76,32 @@ as a bonus alignment source.
 - If a book exists in BookOrbit but will not link, make sure it is visible in BookOrbit and that the bridge can reach the BookOrbit server.
 - If you switched from Grimmory to BookOrbit, you do not need to rematch — run `scripts/migrate_grimmory_to_bookorbit.py` (see the [Configuration Guide](configuration.md#bookorbit)).
 
+### A read-along book keeps shifting position, or BookOrbit and BookBridge disagree
+
+BookOrbit 3.0.0 and later syncs read-along books by itself. When one BookOrbit entry holds
+an EPUB 3 with media overlays *and* audio of matching length, BookOrbit keeps that entry's
+audiobook position, EPUB position, Kobo state and KOReader progress in step — and it does
+so from the same endpoints BookBridge writes to. On a book where BookBridge maps **both**
+formats onto that **one** entry, both would be writing it.
+
+BookBridge detects this and steps back: it writes the ebook side only and lets BookOrbit
+move the audio position. You will see a line like:
+
+```
+🔗 'ebook-1a2b…' 'Title' BookOrbit read-along sync is active on entry 5180 —
+   writing the ebook side only; the audio position is BookOrbit's mirror of that
+   write, so it cannot lead or be written
+```
+
+- This only applies when a book's audio and text are the **same** BookOrbit entry. If they
+  are separate entries — the usual arrangement — nothing changes.
+- To have BookBridge drive both sides instead, set **BookOrbit → Read-Along Sync** to
+  *Turn BookOrbit's off and drive both sides*, or switch the book's own read-along toggle
+  off on its Details tab in BookOrbit. Note that BookOrbit's per-book default is **on**.
+- Point your KOReader devices at **one** sync server, not both. BookOrbit is a KOSync
+  server in its own right, so a device syncing to BookOrbit *and* to BookBridge for the
+  same book will see the two servers hand back different positions.
+
 ### Highlights or notes are not syncing
 
 - Update the **Bridge Sync** KOReader plugin to the current release or newer on every KOReader device that should sync annotations.
@@ -119,6 +145,62 @@ as a bonus alignment source.
 - The bridge now accepts more Storyteller filename layouts, but the files still need real Storyteller timeline data.
 - Each chapter JSON should contain `wordTimeline` or compatible Storyteller timeline data.
 - If the filenames are right but the data format is wrong, the bridge will skip those files and fall back to SMIL or Whisper.
+
+### KOReader cannot connect: "Unknown server error"
+
+KOReader reports **Unauthorized** when the address is right but the credentials are wrong,
+and **Unknown server error** when it never got a valid KOSync response at all — so this
+error is almost always the address, the port, or the network path, not the password.
+
+Work through it in this order:
+
+1. **Use the address BookBridge suggests.** Open **Account -> Connect a KOReader device**.
+   The suggested address is built from the address bar of the browser you are using, so it
+   already carries the right port.
+2. **Enter the base address only.** No `/api`, `/koreader`, or `/users/auth` suffix —
+   KOReader appends those itself.
+   - Default compose (`8080:5757`): `http://<server>:8080`
+   - Split-port mode: `http://<server>:5758`, but only with `KOSYNC_PORT=5758` set **and**
+     `5758:5758` published.
+3. **Use the KOSync username and password from My Integrations** — not your BookBridge web
+   login, and not your Audiobookshelf account.
+4. **Prove the path from another device on the same network:**
+
+   ```bash
+   curl http://<server>:<port>/healthcheck
+   ```
+
+   It must return `OK`. If it does not, the problem is the Docker port mapping, the host
+   firewall, or your VPN — not BookBridge.
+5. **Read the bridge log while the device retries:**
+
+   ```bash
+   docker compose logs -f | grep "KOSync Auth"
+   ```
+
+   - `KOSync Auth: Failed auth attempt for user '<name>' from '<ip>'` — the address
+     works and the request arrived; the credentials are wrong.
+   - `KOSync Auth: Missing credentials from '<ip>'` — the request arrived with no
+     username/password headers at all.
+   - **No line at all** — at the default `LOG_LEVEL=INFO` a *successful* auth is silent
+     too, so this only means "no failure". If the device still reports an error, the
+     request never reached BookBridge: go back to step 4. To see successes as well, set
+     `LOG_LEVEL=DEBUG` and retry — a good login then logs
+     `KOSync Auth: User '<name>' authenticated successfully`.
+
+### Connecting a Kindle or Kobo over Tailscale
+
+- Use the server's **Tailscale IP** (or MagicDNS name), not its LAN IP. The LAN address is
+  unreachable once the device leaves the network.
+- The port still has to be the one you published. Tailscale does not change port mapping,
+  so `8080:5757` still means `:8080`.
+- On a jailbroken Kindle running Tailscale through KUAL in **userspace/proxy mode**,
+  starting Tailscale is not enough on its own. KOReader also has to be told to use the
+  proxy: **Settings -> Network -> HTTP proxy**, set to `http://localhost:1055`, and
+  enabled. Without this, KOReader's requests bypass the tunnel and fail with
+  "Unknown server error" while other Tailscale checks look healthy.
+- Confirm the tunnel independently before blaming BookBridge: from the device's own
+  network tools (or another tailnet device), fetch `/healthcheck` as shown above.
 
 ### KOSync split-port mode is not working
 

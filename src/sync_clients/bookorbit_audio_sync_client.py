@@ -75,6 +75,15 @@ class BookOrbitAudioSyncClient(SyncClient):
             or getattr(book, "audio_source_id", None)
         )
 
+    def resolve_bookorbit_book_id(self, book: Book):
+        """The BookOrbit entry id this book's audio maps to, or None.
+
+        Public because the sync cycle has to compare it against the ebook side's
+        entry id to spot the two formats sharing one entry, which is what makes
+        BookOrbit's read-along sync mirror BookBridge's writes.
+        """
+        return self._resolve_book_id(book)
+
     @staticmethod
     def _get_track_ranges(info: Optional[dict]) -> list[dict]:
         """Cumulative [start, end) ranges for each audio track, in play order."""

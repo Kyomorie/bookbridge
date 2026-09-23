@@ -6,7 +6,74 @@ All notable changes to BookBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Asking for a read-along at match time works without Storyteller.** Ticking the
+  read-along box and then using **Match All** recorded nothing, so no read-along was
+  ever built unless the book also went through Storyteller. The request now sticks,
+  and the read-along is generated as soon as the book's alignment finishes.
+
+- **Synced ebook positions land in the right place.** When progress from an
+  audiobook was sent to an ebook reader, the position could land in the previous
+  paragraph (KOReader and CFI-based readers alike), and a position that fell on a
+  "* * *" scene break jumped back to the start of the chapter, which could be tens
+  of thousands of words. A line repeated elsewhere in a chapter could also resolve
+  to its first copy. Positions now resolve to the right paragraph. Positions read
+  from Storyteller and the Audiobookshelf ebook reader also no longer land about a
+  sentence early.
+
+- **Read-along narration no longer doubles in BookOrbit's web reader.** On longer
+  books, the web reader could start the next audio file twice at each file change,
+  so two copies of the narration played over each other and got worse as the book
+  went on. The BookOrbit app was unaffected. Regenerate an existing read-along to
+  pick this up.
+
+- **Read-alongs now highlight in BookOrbit's web reader.** Generated read-alongs
+  played their audio in the web reader but never highlighted the sentence being
+  read (the BookOrbit app was unaffected). The book now declares the highlight
+  style readers look for. Lines without ending punctuation, such as headings,
+  credits and captions, now get their own highlight instead of being merged with
+  the next paragraph. Regenerate an existing read-along to pick this up.
+
+- **Read-along generation review fixes completed.** Terminal audio cuts no longer
+  emit empty chunks; delivery rejects unsafe shared or nested library roots; EPUB 2
+  conversion preserves publication identifiers required by IDPF-obfuscated fonts;
+  generation isolates job kinds and worker-owned IDs, coordinates admission with
+  shared per-book reservations, releases failed dispatches, and recovers stale rows
+  after restart; marker injection preserves escaped XHTML IDs and `<pre>` content;
+  and Forge/alignment `__main__` entry points now receive callbacks.
+
+- **Read-along EPUB generation now covers EPUB 2 books and no longer mis-times
+  unnarrated sections.** Several correctness fixes landed together: a stretch of text
+  with no narration behind it used to be given a nearby chapter's audio instead of
+  being left alone; a book whose audio and text were both already in hand could have
+  its generation job marked finished by an unrelated sync; and generating with the
+  output pointed at the source book could overwrite the original file. Books can also
+  now opt in to a read-along at match time, so it is built automatically once
+  alignment finishes. Books that already carry read-along narration are refused rather
+  than rebuilt.
+
+
+- Readalong EPUB generation preserves original chapter markup and nonbreaking
+  whitespace, keeps audio clips within their narration segments, and refuses
+  incomplete exports instead of publishing a book with missing chapters. A failed
+  regeneration leaves the previous EPUB in place and does not trigger a library scan.
+
 ### Added
+
+- **Long audiobooks can get CTC alignment without waiting for Whisper.** A book too
+  long to align in one pass used to need a full Whisper transcript first, which takes
+  a long time on a long audiobook. With **CTC chapter search** switched on (Settings,
+  CTC alignment section), BookBridge finds each chapter directly in the audio and
+  aligns against that: a 39-hour audiobook took about 8 minutes. Tested against 15
+  existing books, the result matched the old one on 12, fixed a book whose old
+  alignment was up to 2 hours off, and handed the rest to the usual Whisper route
+  because their chapters are narrated out of order or the audiobook retells the text
+  instead of reading it. **Off by default** for now.
+
+- **The dashboard shows which books have a read-along.** A blue headphones pill
+  appears under the ratings on books with a finished read-along EPUB, next to the CTC
+  pill, which moved there from the card footer.
 
 - **Recently-read books can now be shared between your devices.** KOReader writes its
   History only when you open a book *on that device*, so a book you read on the Kobo
@@ -78,6 +145,24 @@ All notable changes to BookBridge will be documented in this file.
   anything your readers receive.
 
 ### Fixed
+
+- **BookBridge and BookOrbit 3.0 no longer both write a read-along book.** BookOrbit
+  3.0.0 added its own sync that keeps one entry's audiobook and EPUB in step, for entries
+  holding an EPUB 3 with media overlays plus audio of matching length — and it runs off
+  the same endpoints BookBridge writes to. On a book whose audio and text are the *same*
+  BookOrbit entry, each side would answer the other's write and the position could drift.
+  BookBridge now recognises when BookOrbit has a book in hand, writes only the ebook side,
+  and treats the audio position as BookOrbit's mirror of that write rather than as
+  somewhere you moved to. Books whose audio and text live in separate BookOrbit entries —
+  the usual arrangement — are untouched. A new **BookOrbit → Read-Along Sync** setting can
+  instead switch BookOrbit's per-book sync off so BookBridge drives both sides. Note that
+  BookOrbit's own default for a qualifying book is **on**.
+
+- **BookOrbit progress now reads and writes the same primary ebook when a book
+  contains multiple ebook formats (#443).** A secondary KEPUB listed before the
+  primary EPUB could receive every update while the EPUB stayed at its old
+  position, causing repeated syncs. Cached ebook selection now respects the
+  primary file, and writes use the same resolver as reads.
 
 - **Going back on a second reader now sticks, once you carry on reading.** Going back
   in a book on one KOReader device while another device sat further ahead could never

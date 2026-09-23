@@ -13,7 +13,7 @@ import re
 import shutil
 from pathlib import Path
 from statistics import median
-from typing import List, Dict, Optional, Tuple
+from typing import Any, List, Dict, Optional, Tuple
 
 from src.utils.time_utils import utcnow
 
@@ -79,7 +79,7 @@ def _nearest_segment_edge_ts(char: int, segments: List[Dict]) -> float:
     of that segment's own two edges. When ``char`` lands in a gap between
     segments, it is the edge of whichever neighbouring segment is closer.
     Interpolating across the boundary instead of clamping here is exactly
-    what produced "22% of the text inside 23 seconds" (see the plan doc).
+    what produced "22% of the text inside 23 seconds".
     """
     containing = _segment_for_char(segments, char)
     if containing is not None:
@@ -294,6 +294,13 @@ class AlignmentService:
         spelling is honored, not just "true"."""
         return env_truthy("ALIGNMENT_SEGMENTED_MAPS", "false")
 
+    @staticmethod
+    def chapter_search_enabled() -> bool:
+        """Whether a CTC pass with no usable prior builds one by locating each spine
+        chapter in the greedy-decoded emissions (`src/services/ctc_search.py`)
+        instead of refusing and waiting for a Whisper transcript. Read per call."""
+        return env_truthy("CTC_CHAPTER_SEARCH", "false")
+
     @time_execution
     def align_forced_and_store(self, abs_id: str, audio_path: str, ebook_text: str,
                                spine_chapters: Optional[List[Dict]] = None,
@@ -378,6 +385,24 @@ class AlignmentService:
             logger.info("⚙️ CTC: excluding likely unnarrated interior text for %s: %s",
                         abs_id, exclude_spans)
 
+        # Chapter search: with no usable prior, run the
+        # model once, locate each spine chapter in its greedy decode, and use that as
+        # the prior, so a long book aligns without a Whisper transcript. The emissions
+        # are handed to `align` so the model runs only once.
+        precomputed = None
+        if (boundaries is None and spine_chapters and self.chapter_search_enabled()
+                and not (audio_duration and audio_duration > 0
+                         and self._forced_aligner.can_single_pass(
+                             audio_duration, ebook_text, text_range=text_range,
+                             exclude_spans=exclude_spans))):
+            precomputed = self._forced_aligner.emissions_for(audio_path)
+            if precomputed is None:
+                return False
+            search_prior = self._search_prior(abs_id, precomputed, ebook_text, spine_chapters)
+            if search_prior is None:
+                return False
+            boundaries, text_range, exclude_spans = search_prior
+
         # Decode-free pre-flight (issue #426 phase 3): when there is no chunking
         # prior, `align()` would decode the whole file only to then discover the
         # pass is too large and bail — audio duration and token count are both known
@@ -393,10 +418,11 @@ class AlignmentService:
             )
             return False
 
-        alignment_map = self._forced_aligner.align(
-            audio_path, ebook_text, text_range=text_range, boundaries=boundaries,
-            exclude_spans=exclude_spans,
-        )
+        align_kwargs = {"text_range": text_range, "boundaries": boundaries,
+                        "exclude_spans": exclude_spans}
+        if precomputed is not None:
+            align_kwargs["precomputed"] = precomputed
+        alignment_map = self._forced_aligner.align(audio_path, ebook_text, **align_kwargs)
         if not alignment_map or len(alignment_map) < 2:
             logger.warning(f"⚠️ CTC alignment produced no usable map for {abs_id}")
             return False
@@ -412,6 +438,186 @@ class AlignmentService:
             f"({len(alignment_map)} anchors)"
         )
         return True
+
+    # Chapter-search gates. Provisional until the sweep on human-narrated
+    # books calibrates them. Measured so far: Good
+    # Intentions (correct pairing) 0.997 coverage; another book's text against its
+    # audio 0.0.
+    _SEARCH_MIN_COVERAGE = 0.5
+    # A chapter shorter than this has too little text to vouch for narration order:
+    # an 80-char chapter whose text recurs later in its book was placed an hour late.
+    _SEARCH_ORDER_MIN_CHARS = 2000
+    # Query chars between search anchors. Storyteller's 2000 (~2 min of speech) is
+    # for its own per-chapter Viterbi; here the anchors window chunked forced_align
+    # by interpolation inside a 15s margin, so they must be dense enough that
+    # interpolation stays well inside it.
+    _SEARCH_ANCHOR_SPACING = 250
+
+    def _search_prior(self, abs_id: str, precomputed: Tuple[Any, float], ebook_text: str,
+                      spine_chapters: List[Dict]
+                      ) -> Optional[Tuple[List[Dict], Tuple[int, int], List[Tuple[int, int]]]]:
+        """Build CTC's chunking prior from the audio itself: ``(boundaries, text_range,
+        exclude_spans)``, or ``None`` to fall back to the Whisper path.
+
+        Each spine chapter is located in the greedy decode of ``precomputed``'s
+        emissions. Refuses when too little of the book's text is found (the audio
+        is probably not this book), or when chapters with enough text to vouch for
+        it are narrated out of spine order (the Whisper path's segment placement
+        handles those). A short chapter found out of order is dropped and
+        interpolated rather than trusted.
+        """
+        from src.services.ctc_search import PositionedDocument, greedy_decode_argmax, search_chapters
+
+        emission, seconds_per_frame = precomputed
+        blank_id, id_to_char = self._forced_aligner.ctc_vocab()
+        argmaxes = emission[0].argmax(dim=-1).cpu().numpy()
+        text, frames = greedy_decode_argmax(argmaxes, blank_id, id_to_char)
+        chapters = [(int(c["start"]), int(c["end"])) for c in spine_chapters if c["end"] > c["start"]]
+        results = search_chapters(PositionedDocument(text=text, positions=frames), ebook_text,
+                                  chapters, int(emission.size(1)),
+                                  anchor_spacing=self._SEARCH_ANCHOR_SPACING)
+
+        total_chars = sum(r.end_char - r.start_char for r in results) or 1
+        found_chars = sum(r.end_char - r.start_char for r in results if r.found)
+        coverage = found_chars / total_chars
+        for r in results:
+            if r.found:
+                logger.info(
+                    "🔎 CTC search %s: chapter chars %s-%s found at %.1f-%.1fs (confidence %.2f, %s anchors)",
+                    abs_id, r.start_char, r.end_char, r.start_frame * seconds_per_frame,
+                    r.end_frame * seconds_per_frame, r.confidence, len(r.anchors),
+                )
+            else:
+                logger.info("🔎 CTC search %s: chapter chars %s-%s not found", abs_id, r.start_char, r.end_char)
+        logger.info(
+            "🔎 CTC search %s: found %s/%s chapters, %.1f%% of the text",
+            abs_id, sum(r.found for r in results), len(results), coverage * 100,
+        )
+        if coverage < self._SEARCH_MIN_COVERAGE:
+            logger.warning(
+                "🚫 CTC search %s: only %.1f%% of the text was found in the audio (< %.0f%%); "
+                "the audio may not be this book -- falling back to the transcript path",
+                abs_id, coverage * 100, self._SEARCH_MIN_COVERAGE * 100,
+            )
+            return None
+
+        found = [r for r in results if r.found]
+        substantial = [r for r in found if r.end_char - r.start_char >= self._SEARCH_ORDER_MIN_CHARS]
+        if any(b.start_frame <= a.start_frame for a, b in zip(substantial, substantial[1:])):
+            logger.info(
+                "🔎 CTC search %s: chapters are narrated out of spine order -- falling back to "
+                "the transcript path, whose segment placement handles that", abs_id,
+            )
+            return None
+
+        substantial_ids = {id(r) for r in substantial}
+        accepted = []
+        for r in found:
+            if id(r) in substantial_ids:
+                accepted.append(r)
+                continue
+            before = [s for s in substantial if s.start_char < r.start_char]
+            after = [s for s in substantial if s.start_char > r.start_char]
+            lo = before[-1].start_frame if before else -1
+            hi = after[0].start_frame if after else float("inf")
+            if lo < r.start_frame < hi:
+                accepted.append(r)
+            else:
+                logger.info(
+                    "🔎 CTC search %s: dropping short chapter chars %s-%s found out of order at %.1fs",
+                    abs_id, r.start_char, r.end_char, r.start_frame * seconds_per_frame,
+                )
+
+        boundaries: List[Dict] = []
+        for r in accepted:
+            for char, frame in self._plausible_anchors(abs_id, r.anchors, ebook_text):
+                ts = round(frame * seconds_per_frame, 3)
+                if not boundaries or (char > boundaries[-1]["char"] and ts >= boundaries[-1]["ts"]):
+                    boundaries.append({"char": int(char), "ts": ts})
+        if len(boundaries) < 2 or not accepted:
+            logger.warning("🚫 CTC search %s: too few anchors to chunk against", abs_id)
+            return None
+
+        text_range = (accepted[0].start_char, accepted[-1].end_char)
+        accepted_ids = {id(r) for r in accepted}
+        exclude_spans = [
+            (r.start_char, r.end_char) for r in results
+            if id(r) not in accepted_ids and text_range[0] < r.start_char and r.end_char < text_range[1]
+        ]
+        gap_fraction = self._long_gap_fraction(boundaries, text_range, exclude_spans, self._SEARCH_GAP_CHARS)
+        if gap_fraction > self._SEARCH_MAX_GAP_FRACTION:
+            logger.info(
+                "🔎 CTC search %s: %.1f%% of the narrated text sits in anchor gaps over %s chars "
+                "(> %.0f%%); the narration may not follow this ebook's text closely -- falling "
+                "back to the transcript path",
+                abs_id, gap_fraction * 100, self._SEARCH_GAP_CHARS, self._SEARCH_MAX_GAP_FRACTION * 100,
+            )
+            return None
+        return boundaries, text_range, exclude_spans
+
+    # Share of the narrated text allowed in anchor gaps wider than _SEARCH_GAP_CHARS.
+    # Measured (Phase 4, 15 books): 13 in-order human narrations 0.000-0.008; Push,
+    # whose audiobook retells passages in the third person, 0.108, and its search map
+    # scored below the transcript path's.
+    _SEARCH_GAP_CHARS = 1500
+    _SEARCH_MAX_GAP_FRACTION = 0.03
+
+    @staticmethod
+    def _long_gap_fraction(boundaries: List[Dict], text_range: Tuple[int, int],
+                           exclude_spans: List[Tuple[int, int]], min_gap: int) -> float:
+        """Fraction of the narrated text (``text_range`` minus ``exclude_spans``) lying
+        in gaps between consecutive anchors that are wider than ``min_gap`` chars."""
+        chars = [text_range[0]] + [b["char"] for b in boundaries] + [text_range[1]]
+        narrated = max(1, text_range[1] - text_range[0] - sum(hi - lo for lo, hi in exclude_spans))
+        long_gaps = 0
+        for a, b in zip(chars, chars[1:]):
+            gap = b - a - sum(max(0, min(hi, b) - max(lo, a)) for lo, hi in exclude_spans)
+            if gap > min_gap:
+                long_gaps += gap
+        return long_gaps / narrated
+
+    # The search's own slope bounds (ctc_search: min_slope 2, max_slope 15 frames per
+    # query char), applied locally between a chapter's consecutive anchors.
+    _SEARCH_MIN_FRAMES_PER_CHAR = 2.0
+    _SEARCH_MAX_FRAMES_PER_CHAR = 15.0
+
+    def _plausible_anchors(self, abs_id: str, anchors: List[Tuple[int, int]],
+                           ebook_text: str) -> List[Tuple[int, int]]:
+        """Drop a chapter's anchor when the speech rate into it AND out of it are
+        both impossible.
+
+        The chapter search fits one line per chapter with a wide tolerance, so a
+        coincidental unique n-gram inside paraphrased narration can pass it while
+        implying, locally, 397 chars in 181s followed by 3,830 chars in 74s (Push:
+        its audiobook retells a passage in the third person). One such anchor
+        misplaces every chunk window around it. Rates are counted in query chars
+        (the ``[a-z']`` letters the search itself measures), so the bounds are the
+        search's own.
+        """
+        from src.services.ctc_search import build_query
+
+        if len(anchors) < 3:
+            return list(anchors)
+
+        def frames_per_char(a: Tuple[int, int], b: Tuple[int, int]) -> Optional[float]:
+            chars = len(build_query(ebook_text, a[0], b[0])[0])
+            return (b[1] - a[1]) / chars if chars > 0 else None
+
+        def plausible(rate: Optional[float]) -> bool:
+            return rate is not None and self._SEARCH_MIN_FRAMES_PER_CHAR <= rate <= self._SEARCH_MAX_FRAMES_PER_CHAR
+
+        kept = [anchors[0]]
+        for i in range(1, len(anchors) - 1):
+            if not plausible(frames_per_char(kept[-1], anchors[i])) and \
+                    not plausible(frames_per_char(anchors[i], anchors[i + 1])):
+                logger.info(
+                    "🔎 CTC search %s: dropping implausible anchor at char %s (frame %s)",
+                    abs_id, anchors[i][0], anchors[i][1],
+                )
+                continue
+            kept.append(anchors[i])
+        kept.append(anchors[-1])
+        return kept
 
     def _ctc_text_range(self, abs_id: str, ebook_text: str,
                         spine_chapters: Optional[List[Dict]]) -> Optional[Tuple[int, int]]:

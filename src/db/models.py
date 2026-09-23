@@ -199,6 +199,16 @@ class Book(Base):
     abs_ebook_item_id = Column(String(255), nullable=True)  # Tracks the ebook item separately.
     series_name = Column(String(500), nullable=True, index=True)
     series_sequence = Column(Float, nullable=True)
+    # Read-along EPUB generation intent: set when a NEW match is queued with
+    # the "generate read-along" option checked, since generation needs a
+    # finished alignment map that does not
+    # exist until forging completes. Consumed (cleared) by the post-forge hook
+    # the first time it fires for this book, regardless of outcome, so a later
+    # re-forge never regenerates from a stale flag. Written only through
+    # DatabaseService.set_readalong_epub_requested/consume_readalong_epub_intent
+    # -- deliberately NOT part of save_book's update whitelist, so an unrelated
+    # field save elsewhere can never silently clear or set it as a side effect.
+    readalong_epub_requested = Column(Boolean, nullable=False, default=False)
     # Multi-user: the user who created this match. The catalog row is shared at
     # the schema level, but visibility/serving is scoped to the owner. NULL = the
     # default (admin) user (backfilled at migration time).
@@ -392,6 +402,19 @@ class State(Base):
         return f"<State(abs_id='{self.abs_id}', client='{self.client_name}', pct={self.percentage})>"
 
 
+# Job.kind values. 'alignment' is the pre-existing, undifferentiated kind:
+# every Job row created before this column existed (alignment-build/retry
+# tracking in sync_manager.py, and Forge & Match via
+# `web_server._record_forge_match_job`) belongs to it, and it stays the
+# default so those call sites need no change. 'readalong' isolates read-along
+# EPUB generation jobs so alignment-repair logic
+# (`SyncManager._promote_alignment_backed_book`) can never see or complete
+# them (CLAUDE.md-adjacent finding: a normal sync cycle was falsely marking
+# an in-flight read-along job as done).
+JOB_KIND_ALIGNMENT = "alignment"
+JOB_KIND_READALONG = "readalong"
+
+
 class Job(Base):
     """
     Job model storing job execution data for books.
@@ -404,20 +427,30 @@ class Job(Base):
     retry_count = Column(Integer, default=0)
     last_error = Column(Text)
     progress = Column(Float, default=0.0)
+    kind = Column(String(50), nullable=False, default=JOB_KIND_ALIGNMENT, server_default=JOB_KIND_ALIGNMENT)
+    # Free-text label for the current stage of a long-running job (e.g.
+    # 'transcoding_audio' for read-along generation). Nullable and additive: a
+    # job that never reports a stage (every kind but 'readalong' today) simply
+    # leaves it NULL, and callers treat
+    # None the same as "no stage recorded" rather than an error.
+    stage = Column(String(50), nullable=True)
 
     # Relationship
     book = relationship("Book", back_populates="jobs")
 
     def __init__(self, abs_id: str, last_attempt: float = None,
-                 retry_count: int = 0, last_error: str = None, progress: float = 0.0):
+                 retry_count: int = 0, last_error: str = None, progress: float = 0.0,
+                 kind: str = JOB_KIND_ALIGNMENT, stage: Optional[str] = None):
         self.abs_id = abs_id
         self.last_attempt = last_attempt
         self.retry_count = retry_count
         self.last_error = last_error
         self.progress = progress
+        self.kind = kind
+        self.stage = stage
 
     def __repr__(self):
-        return f"<Job(abs_id='{self.abs_id}', retries={self.retry_count})>"
+        return f"<Job(abs_id='{self.abs_id}', kind='{self.kind}', stage='{self.stage}', retries={self.retry_count})>"
 
 
 
