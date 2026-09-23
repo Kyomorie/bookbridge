@@ -22,6 +22,7 @@ import shutil
 import tempfile
 import threading
 import unittest
+from src.db.models import JOB_KIND_READALONG
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
@@ -603,6 +604,11 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
         # invented path.
         called_output_path = mock_remove.call_args[0][2]
         self.assertEqual(Path(called_output_path).parent, Path(self.temp_dir))
+        # The dashboard's read-along badge reads the latest read-along job, so a
+        # removed read-along must clear those rows (and only those).
+        self.mock_database_service.delete_jobs_for_book.assert_called_once_with(
+            "rl-book-1", kind=JOB_KIND_READALONG,
+        )
 
     def test_remove_reports_failure_when_service_fails(self):
         import src.web_server as ws
@@ -718,6 +724,34 @@ class ReadalongDashboardMappingTestCase(unittest.TestCase):
         button_start = html.rindex("<button", 0, call_idx)
         button_snippet = html[button_start:call_idx]
         self.assertNotIn("disabled", button_snippet)
+
+    def test_dashboard_shows_the_readalong_and_ctc_pills_under_the_ratings(self):
+        """The CTC pill moved from the card footer into the badge row under the
+        cover/ratings, beside the new read-along pill; each shows only when true."""
+        ready = _make_book(abs_id="book-ready-ra", abs_title="Ready Book")
+        plain = _make_book(abs_id="book-plain-ra", abs_title="Plain Book")
+        self.mock_database_service.get_all_books.return_value = [ready, plain]
+        self.mock_database_service.get_readalong_ready_book_ids.return_value = {"book-ready-ra"}
+        self.mock_database_service.get_ctc_aligned_book_ids.return_value = {"book-ready-ra"}
+
+        html = self.client.get('/').get_data(as_text=True)
+
+        def card(abs_id):
+            start = html.index(f'data-abs-id="{abs_id}"')
+            return html[start:html.index('class="card-footer"', start)]
+
+        def badge_row(abs_id):
+            snippet = card(abs_id)
+            return snippet[snippet.index('class="card-feature-badges"'):snippet.index('class="book-info"')]
+
+        ready_row, plain_row = badge_row("book-ready-ra"), badge_row("book-plain-ra")
+        ready_pill = ready_row[ready_row.index('class="readalong-badge"'):]
+        plain_pill = plain_row[plain_row.index('class="readalong-badge"'):]
+        self.assertNotIn("hidden", ready_pill[:ready_pill.index(">")])
+        self.assertIn("hidden", plain_pill[:plain_pill.index(">")])
+        self.assertIn('class="ctc-alignment-badge"', ready_row)
+        footer_start = html.index('class="card-footer"', html.index('data-abs-id="book-ready-ra"'))
+        self.assertNotIn('ctc-alignment-badge', html[footer_start:html.index('class="quick-actions"', footer_start)])
 
     def test_ineligible_button_is_clickable_so_the_click_is_never_swallowed(self):
         """An INELIGIBLE book's button keeps its reason as a hover title but is

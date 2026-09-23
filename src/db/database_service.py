@@ -45,6 +45,7 @@ from .models import (
     UserBookFusionLink,
     UserBookOrbitLink,
     Base,
+    JOB_KIND_READALONG,
 )
 from src.services.map_quality import ALIGNMENT_QUALITY_REALIGN_THRESHOLD, quality_detail_json, score_map
 from src.utils import secret_store
@@ -2011,12 +2012,36 @@ class DatabaseService:
                 return job
             return None
 
-    def delete_jobs_for_book(self, abs_id: str) -> int:
-        """Delete all jobs for a book."""
+    def delete_jobs_for_book(self, abs_id: str, kind: Optional[str] = None) -> int:
+        """Delete a book's jobs; all of them, or only those of ``kind``."""
         with self.get_session() as session:
-            count = session.query(Job).filter(Job.abs_id == abs_id).count()
-            session.query(Job).filter(Job.abs_id == abs_id).delete()
+            query = session.query(Job).filter(Job.abs_id == abs_id)
+            if kind is not None:
+                query = query.filter(Job.kind == kind)
+            count = query.count()
+            query.delete(synchronize_session=False)
             return count
+
+    def get_readalong_ready_book_ids(self) -> set[str]:
+        """Book IDs whose most recent read-along job finished (progress 1.0), the
+        state the read-along status endpoint reports as "done". One query, for the
+        dashboard's read-along badge; removing a read-along deletes its job rows."""
+        from sqlalchemy import func
+
+        with self.get_session() as session:
+            # Same "latest" as get_latest_job (by last_attempt), so the badge and
+            # the status endpoint never disagree.
+            latest = (
+                session.query(Job.abs_id.label("abs_id"), func.max(Job.last_attempt).label("last_attempt"))
+                .filter(Job.kind == JOB_KIND_READALONG)
+                .group_by(Job.abs_id)
+                .subquery()
+            )
+            return {
+                row[0] for row in session.query(Job.abs_id)
+                .join(latest, (Job.abs_id == latest.c.abs_id) & (Job.last_attempt == latest.c.last_attempt))
+                .filter(Job.kind == JOB_KIND_READALONG, Job.progress >= 1.0).all()
+            }
 
     # HardcoverDetails operations
     def get_hardcover_details(self, abs_id: str) -> Optional[HardcoverDetails]:

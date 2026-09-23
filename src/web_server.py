@@ -5492,6 +5492,7 @@ def _build_dashboard_mappings(
 
     ctc_aligned_book_ids = database_service.get_ctc_aligned_book_ids()
     readalong_alignment_book_ids = database_service.get_readalong_alignment_book_ids()
+    readalong_ready_book_ids = database_service.get_readalong_ready_book_ids()
     mappings = []
     total_duration = 0
     total_listened = 0
@@ -5510,6 +5511,7 @@ def _build_dashboard_mappings(
             bookorbit_authors=bookorbit_authors,
         )
         mapping["ctc_aligned"] = book.abs_id in ctc_aligned_book_ids
+        mapping["readalong_ready"] = book.abs_id in readalong_ready_book_ids
 
         # Read-along generation eligibility (Phase 6a). Cheap, locally-computable
         # conditions only -- whether BookOrbit can actually resolve the audio
@@ -9605,6 +9607,9 @@ def remove_readalong_epub_route(abs_id: str):
     ok = _remove_readalong_epub_file(clients.bookorbit_client, audio_book_id, output_path)
     if ok:
         logger.info("🗑️ Removed read-along EPUB for %s", sanitize_log_data(book.abs_title or abs_id))
+        # The dashboard badge and the status poll read the latest read-along job;
+        # a removed read-along must stop showing as ready.
+        database_service.delete_jobs_for_book(abs_id, kind=JOB_KIND_READALONG)
         return jsonify({"success": True, "removed": True})
     return jsonify({"success": False, "error": "Could not fully remove the read-along EPUB; see server logs."}), 500
 
@@ -10726,6 +10731,7 @@ def _build_dashboard_progress_rows(books, all_states):
     (issue #412)."""
     states_by_book = _group_dashboard_states_by_book(all_states)
     ctc_aligned_book_ids = database_service.get_ctc_aligned_book_ids()
+    readalong_ready_book_ids = database_service.get_readalong_ready_book_ids()
     rows = []
 
     for book in books or []:
@@ -10750,6 +10756,7 @@ def _build_dashboard_progress_rows(books, all_states):
         rows.append({
             "abs_id": abs_id,
             "ctc_aligned": abs_id in ctc_aligned_book_ids,
+            "readalong_ready": abs_id in readalong_ready_book_ids,
             "unified_progress": min(max_progress, 100.0),
             "last_sync": _format_dashboard_last_sync(latest_update_time),
             "last_sync_unix": latest_update_time,

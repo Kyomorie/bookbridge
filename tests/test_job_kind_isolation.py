@@ -310,3 +310,28 @@ class TestUpdateJobById(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_readalong_ready_ids_follow_the_latest_readalong_job_only(tmp_path):
+    """The dashboard read-along badge: a book counts as ready only when its most
+    recent read-along job finished; alignment jobs never count, and a newer
+    unfinished read-along attempt hides an older finished one."""
+    from src.db.database_service import DatabaseService
+    from src.db.models import Book, Job, JOB_KIND_ALIGNMENT, JOB_KIND_READALONG
+
+    db = DatabaseService(str(tmp_path / "ready.db"))
+    try:
+        for abs_id in ("done", "retrying", "align-only", "removed"):
+            db.save_book(Book(abs_id=abs_id, abs_title=abs_id, status="active"))
+        db.save_job(Job(abs_id="done", last_attempt=1.0, progress=1.0, kind=JOB_KIND_READALONG))
+        db.save_job(Job(abs_id="retrying", last_attempt=1.0, progress=1.0, kind=JOB_KIND_READALONG))
+        db.save_job(Job(abs_id="retrying", last_attempt=2.0, progress=0.3, kind=JOB_KIND_READALONG))
+        db.save_job(Job(abs_id="align-only", last_attempt=1.0, progress=1.0, kind=JOB_KIND_ALIGNMENT))
+        db.save_job(Job(abs_id="removed", last_attempt=1.0, progress=1.0, kind=JOB_KIND_READALONG))
+        db.save_job(Job(abs_id="removed", last_attempt=1.0, progress=1.0, kind=JOB_KIND_ALIGNMENT))
+
+        assert db.delete_jobs_for_book("removed", kind=JOB_KIND_READALONG) == 1
+        assert db.get_readalong_ready_book_ids() == {"done"}
+        assert db.get_latest_job("removed", kind=JOB_KIND_ALIGNMENT) is not None
+    finally:
+        db.db_manager.close()

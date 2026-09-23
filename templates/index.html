@@ -55,6 +55,22 @@
                 {% endif %}
             </div>
             {% endif %}
+
+            <div class="card-feature-badges">
+                <span class="ctc-alignment-badge" title="CTC word alignment is ready"
+                    {% if not mapping.ctc_aligned %}hidden{% endif %}>CTC</span>
+                <span class="readalong-badge" role="img" aria-label="Read-along EPUB ready"
+                    title="Read-along EPUB ready" {% if not mapping.readalong_ready %}hidden{% endif %}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M4.5 13.5a7.5 7.5 0 0 1 15 0" fill="none" stroke="currentColor"
+                            stroke-width="2" stroke-linecap="round"/>
+                        <rect x="2.5" y="12.5" width="3.6" height="6.5" rx="1.8" fill="currentColor"/>
+                        <rect x="17.9" y="12.5" width="3.6" height="6.5" rx="1.8" fill="currentColor"/>
+                        <path d="M12 11.6c-1.4-.9-3.1-1.2-4.7-1v7.6c1.6-.2 3.3.1 4.7 1z" fill="currentColor"/>
+                        <path d="M12 11.6c1.4-.9 3.1-1.2 4.7-1v7.6c-1.6-.2-3.3.1-4.7 1z" fill="currentColor"/>
+                    </svg>
+                </span>
+            </div>
         </div>
 
         {# Info section - always visible #}
@@ -355,8 +371,6 @@
             <div class="card-footer">
                 <div class="last-sync">
                     <span class="last-sync-age">Synced {{ mapping.last_sync }}</span>
-                    <span class="ctc-alignment-badge" title="CTC word alignment is ready"
-                        {% if not mapping.ctc_aligned %}hidden{% endif %}>CTC</span>
                 </div>
                 <div class="quick-actions">
                     <button type="button" class="action-btn" onclick="syncNow('{{ mapping.abs_id }}', this)"
@@ -1048,14 +1062,44 @@
         }
 
         .reset-menu { position: relative; display: inline-block; }
+        .card-feature-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+        .card-feature-badges:has(> :not([hidden])) {
+            margin-top: 4px;
+        }
+        .ctc-alignment-badge,
+        .readalong-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            height: 20px;
+            border-radius: 999px;
+        }
+        .ctc-alignment-badge[hidden],
+        .readalong-badge[hidden] {
+            display: none;
+        }
         .ctc-alignment-badge {
-            margin-left: 5px;
-            padding: 2px 5px;
-            border-radius: 4px;
+            padding: 0 8px;
             background: rgba(79, 195, 247, 0.18);
             color: var(--reading, #4fc3f7);
             font-size: 9px;
             font-weight: 700;
+            letter-spacing: 0.04em;
+        }
+        .readalong-badge {
+            width: 38px;
+            background: linear-gradient(135deg, #5cc0ff 0%, #2f8cf5 55%, #1f64dc 100%);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 1px 3px rgba(20, 70, 170, 0.45);
+            color: #fff;
+        }
+        .readalong-badge svg {
+            width: 16px;
+            height: 16px;
+            filter: drop-shadow(0 1px 0.5px rgba(10, 40, 110, 0.35));
         }
         /* Portaled to <body> and positioned in JS (position:fixed) so the card's
            overflow:hidden and hover transform can neither clip it nor paint over it. */
@@ -3181,6 +3225,7 @@
                             const card = document.querySelector(`.book-card[data-abs-id="${book.abs_id}"]`);
                             if (!card) return;
                             updateCtcAlignmentStatus(card, book.ctc_aligned === true);
+                            updateReadalongStatus(card, book.readalong_ready === true);
 
                             // Update progress percentage text
                             const progressPercent = card.querySelector('.progress-percent');
@@ -3413,6 +3458,15 @@
                     });
             }
 
+            function updateReadalongStatus(card, ready) {
+                const badge = card && card.querySelector('.readalong-badge');
+                if (badge) badge.hidden = !ready;
+            }
+
+            function _setReadalongBadge(absId, ready) {
+                updateReadalongStatus(document.querySelector(`.book-card[data-abs-id="${absId}"]`), ready);
+            }
+
             function updateCtcAlignmentStatus(card, isCtc) {
                 const badge = card.querySelector('.ctc-alignment-badge');
                 if (badge) badge.hidden = !isCtc;
@@ -3534,6 +3588,7 @@
                         }
                         if (data.state === 'done') {
                             btn.innerHTML = data.warning ? '⚠️ Delivered (unconfirmed)' : '✅ Read-along ready';
+                            _setReadalongBadge(absId, true);
                         } else if (data.state === 'failed') {
                             const stagePrefix = data.stage_label ? data.stage_label + ': ' : '';
                             btn.innerHTML = '❌ ' + stagePrefix + (data.error || 'Failed');
@@ -3584,6 +3639,7 @@
                     .then(data => {
                         if (data.success && data.removed) {
                             btn.innerHTML = '✅ Removed';
+                            _setReadalongBadge(absId, false);
                         } else if (data.success) {
                             btn.innerHTML = 'ℹ️ Nothing to remove';
                         } else {
