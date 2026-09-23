@@ -183,7 +183,20 @@ def greedy_decode(
     if t_count == 0:
         return "", np.array([], dtype=np.int64)
 
-    argmaxes = np.argmax(log_probs, axis=1)
+    return greedy_decode_argmax(np.argmax(log_probs, axis=1), blank_id, id_to_char)
+
+
+def greedy_decode_argmax(
+    argmaxes: np.ndarray, blank_id: int, id_to_char: Dict[int, str]
+) -> Tuple[str, np.ndarray]:
+    """``greedy_decode`` from per-frame argmax ids already computed by the caller.
+
+    Lets a caller holding GPU emissions take the argmax on the device and copy
+    only ``[T]`` ids to the host, instead of the whole ``[T, C]`` float array
+    (about 460 MB for a 22-hour book).
+    """
+    if len(argmaxes) == 0:
+        return "", np.array([], dtype=np.int64)
 
     change_mask = np.empty(len(argmaxes), dtype=bool)
     change_mask[0] = True

@@ -166,7 +166,7 @@ ALL_SETTINGS = [
     'JOB_MAX_RETRIES', 'JOB_RETRY_DELAY_MINS', 'WHISPER_MODEL',
     'WHISPER_DEVICE', 'WHISPER_COMPUTE_TYPE',
     'TRANSCRIPTION_PROVIDER', 'DEEPGRAM_API_KEY', 'DEEPGRAM_MODEL', 'WHISPER_CPP_URL', 'WHISPER_CPP_TIMEOUT', 'WHISPER_CPP_SEND_ORIGINAL', 'WHISPER_CPP_CHUNK_MINUTES',
-    'CTC_ENABLED', 'CTC_MODEL', 'CTC_DEVICE',
+    'CTC_ENABLED', 'CTC_MODEL', 'CTC_DEVICE', 'CTC_CHAPTER_SEARCH',
     'ALIGNMENT_SEGMENTED_MAPS',
     'CONTENT_MATCH_GUARD', 'CONTENT_MATCH_MIN_OVERLAP',
     'AUDIO_SPLIT_DURATION_MINUTES',
@@ -221,6 +221,10 @@ DEFAULT_CONFIG = {
     'CTC_ENABLED': 'false',
     'CTC_MODEL': 'mms_fa',
     'CTC_DEVICE': 'auto',
+    # Build the CTC chunking prior by locating each spine chapter in the greedy-decoded
+    # emissions (src/services/ctc_search.py) instead of waiting for a Whisper transcript.
+    # See docs/PLAN_CTC_CHAPTER_SEARCH.md and AlignmentService.chapter_search_enabled().
+    'CTC_CHAPTER_SEARCH': 'false',
     # Per-chapter RANSAC segment placement (issue #426 phase 2), replacing the global
     # monotonic LIS filter only for books whose narration order genuinely differs from
     # spine order. See docs/PLAN_OUT_OF_ORDER_NARRATION.md and
