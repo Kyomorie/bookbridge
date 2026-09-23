@@ -556,8 +556,8 @@ def _resolve_audio_bitrate() -> str:
 # through a Cloudflare-proxied BookOrbit, which never caches .m4a: 6.37MB took
 # 744-883ms and doubled on every web resume; Storyteller's 5.86MB .mp4 came
 # from Cloudflare's cache in ~470ms. Uncached throughput was ~8MB/s, so a
-# ~1.5MB file (planned files top out near 3MB) starts inside the window
-# without relying on any cache.
+# ~1.5MB file (a long section's pieces top out near 1.5x that) starts inside
+# the window without relying on any cache.
 _TARGET_AUDIO_FILE_BYTES = int(1.5 * 1024 * 1024)  # ~1.5MB
 
 # Bounds on the DERIVED target duration itself, so an unusually low or high
@@ -568,19 +568,14 @@ _TARGET_AUDIO_FILE_BYTES = int(1.5 * 1024 * 1024)  # ~1.5MB
 _MIN_AUDIO_FILE_SECONDS = 180.0    # 3 minutes
 _MAX_AUDIO_FILE_SECONDS = 7200.0   # 2 hours
 
-# How much longer than one target file a spine item's own narration span may
-# be and still be kept whole inside a single physical file
-# (:func:`_protected_spine_intervals`). A protected span becomes its own
-# file, so this multiple IS the real ceiling on physical file size: 2x the
-# ~1.5MB target is ~3MB, the most that still starts inside BookOrbit's 700ms
-# resume window (see _TARGET_AUDIO_FILE_BYTES).
-#
-# Chosen from the real distribution rather than picked: Ghost Academy's 44
-# chapters run 0-1626s (median 1097s / 4.19MB, max 6.20MB), so 1.0x would
-# protect only 21 of 44 and 1.5x only 42, while 2.0x protects all 44.
-# Storyteller's own artifact for that same book tops out at 1627s -- it
-# ships one audio file per chapter, which is exactly what 2.0x reproduces.
-_PROTECTED_SPAN_TARGET_MULTIPLE = 2.0
+# A spine item with less narrated audio than this gets no media overlay: every
+# overlaid section needs a physical file of its own (see
+# _compute_audio_file_boundaries), and a file this short is a stream-copy cut
+# of one or two AAC frames that may not probe at all. These are front-matter
+# pages the alignment squeezed into a few milliseconds -- Good Intentions'
+# title and copyright pages got 0.006-0.899s -- and Storyteller leaves the same
+# pages without narration. Their audio is absorbed by the preceding clip.
+_MIN_SECTION_NARRATION_SECONDS = 1.0
 
 # Unit suffixes ffmpeg's -b:a accepts (see _BITRATE_RE), mapped to their
 # multiplier against bits/second.
@@ -624,139 +619,71 @@ def _target_audio_file_seconds(bitrate: str) -> float:
     return max(_MIN_AUDIO_FILE_SECONDS, min(_MAX_AUDIO_FILE_SECONDS, target))
 
 
-def _protected_spine_intervals(
-    clips: Sequence[SentenceClip], max_span_seconds: float,
-) -> List[Tuple[float, float]]:
-    """The merged narration time spans of spine items short enough to be kept
-    whole inside a single physical audio file.
-
-    One span per spine item -- ``[min ts_start, max ts_end]`` over that
-    item's own clips -- merged wherever two spans overlap, since
-    out-of-order narration (issue #426) can interleave two spine items in
-    time and a cut placed between them would straddle both.
-
-    A merged interval longer than ``max_span_seconds`` is deliberately NOT
-    returned: keeping it whole would force a physical file that big, and
-    beyond some size that costs more than the straddle it avoids. Inside
-    such an interval :func:`_compute_audio_file_boundaries` falls back to
-    its clip-level rule and accepts the straddle -- a chapter longer than
-    any file we are willing to emit has no cut point that avoids one.
-    """
-    spans: Dict[int, Tuple[float, float]] = {}
-    for clip in clips:
-        low, high = spans.get(clip.spine_index, (clip.ts_start, clip.ts_end))
-        spans[clip.spine_index] = (min(low, clip.ts_start), max(high, clip.ts_end))
-
-    merged: List[Tuple[float, float]] = []
-    for low, high in sorted(spans.values()):
-        # STRICT overlap only. _extend_clips_to_contiguous pulls every
-        # chapter's last clip forward to the next chapter's first, so
-        # adjacent chapters always TOUCH (`previous high == low`); merging
-        # on touch would fuse the whole book into one interval, and that
-        # interval would then be longer than any target and protect nothing.
-        # A cut exactly on a shared edge is strictly inside neither span.
-        if merged and low < merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], high))
-        else:
-            merged.append((low, high))
-
-    return [(low, high) for low, high in merged if high - low <= max_span_seconds]
-
-
 def _compute_audio_file_boundaries(
     clips: List[SentenceClip], audio_duration_seconds: float, target_seconds: float,
 ) -> List[Tuple[float, float]]:
     """Partition ``[0, audio_duration_seconds)`` into contiguous ``(start,
-    end)`` physical-file ranges, choosing cut points that keep each SPINE
-    ITEM's whole narration -- not merely each individual clip -- inside one
-    physical file wherever that is possible.
+    end)`` physical-file ranges, one or more per run of a spine item's audio,
+    never one shared by two spine items.
 
-    ``clips`` must be every clip that will actually get a SMIL ``<par>``
-    (i.e. post :func:`_extend_clips_to_contiguous`, across every spine
-    item) -- NOT necessarily in book reading order; this function derives
-    each spine item's own span and sorts by time itself, since a physical
-    audio cut point is a property of the single embedded timeline,
-    independent of where a sentence sits in the EPUB (out-of-order
-    narration, issue #426, can place a temporally early clip after a
-    temporally later one in reading order).
+    Every change of spine item along the audio timeline is a cut, placed where
+    the earlier item's last clip ends, so that clip ends its file and foliate's
+    MediaOverlay moves to the next section on that file's ``ended`` event. iOS
+    WebKit lets a script start audio without a tap only just after another
+    audio finished playing, and foliate starts a new ``<audio>`` for every
+    section: a section change in the middle of a file (``timeupdate``, then
+    ``pause``) is refused with NotAllowedError and narration stops at every
+    chapter. Storyteller's artifacts cut at every section -- all 20 of Good
+    Intentions' section changes follow a file end, against 22 of 26 of ours
+    before this rule (88 of 109 on The Employees).
 
-    Cut points are protected at two tiers, in order:
+    A run longer than ``target_seconds`` is split into ``round(length /
+    target_seconds)`` roughly equal files, each cut nudged forward to the end
+    of the clip it would land inside, so no cut falls inside a clip and every
+    file still ends on a clip's end.
 
-    1. **Spine item** (:func:`_protected_spine_intervals`). A cut never
-       falls strictly inside a spine item's own narration span, so that
-       item's SMIL overlay references exactly one audio file. A reader has
-       to load a whole audio file before it can play the next clip from it,
-       so a file change in the MIDDLE of a chapter costs a silent stall
-       mid-sentence-run; at a chapter boundary the reader is changing
-       section anyway. (This is not a correctness rule -- Storyteller's own
-       artifacts straddle, and foliate's MediaOverlay groups a SMIL's pars
-       into per-``src`` runs on purpose -- it is a quality-of-playback one.)
-    2. **Clip.** Inside a span longer than
-       ``target_seconds * _PROTECTED_SPAN_TARGET_MULTIPLE`` -- a single
-       chapter too long to keep whole without defeating the split -- a cut
-       IS allowed, but still never lands strictly inside any clip's
-       ``[ts_start, ts_end)``. This is the pre-existing rule, and the reason
-       a one-chapter book still splits instead of yielding one huge file.
-
-    Targets ``round(audio_duration_seconds / target_seconds)`` evenly-sized
-    files up front (never a large leftover remainder on the last file), then
-    nudges each ideal cut point FORWARD past whatever it would otherwise
-    land inside, re-checking both tiers until it is clear of both. Returns a
-    single ``(0.0, audio_duration_seconds)`` range -- no split -- when the
-    audio is not long enough to need one, or when ``audio_duration_seconds``
-    is non-positive.
-
-    A protected span (or an unusually long extended clip -- see
-    :func:`_extend_clips_to_contiguous`'s own segment-boundary extension)
-    long enough to swallow more than one ideal cut point simply yields
-    fewer, larger files than the ideal count instead of an invalid split: a
-    candidate cut point is only ever accepted when it strictly exceeds the
-    previous one.
+    ``clips`` must be every clip that will get a SMIL ``<par>`` (after
+    :func:`_extend_clips_to_contiguous`), in any order: out-of-order narration
+    (issue #426) hands them over in reading order, so they are sorted by
+    ``ts_start`` here. An interleaved spine item simply gets several runs.
     """
     if audio_duration_seconds <= 0:
         return [(0.0, max(0.0, audio_duration_seconds))]
-    num_files = max(1, round(audio_duration_seconds / target_seconds))
-    if num_files <= 1:
-        return [(0.0, audio_duration_seconds)]
 
-    temporal = sorted(clips, key=lambda c: c.ts_start)
-    starts = [c.ts_start for c in temporal]
-    protected = _protected_spine_intervals(
-        clips, target_seconds * _PROTECTED_SPAN_TARGET_MULTIPLE,
-    )
-    protected_starts = [low for low, _high in protected]
-    ideal_step = audio_duration_seconds / num_files
+    runs: List[List[SentenceClip]] = []
+    for clip in sorted(clips, key=lambda c: c.ts_start):
+        if runs and runs[-1][-1].spine_index == clip.spine_index:
+            runs[-1].append(clip)
+        else:
+            runs.append([clip])
 
     cuts: List[float] = []
-    prev_cut = 0.0
-    for i in range(1, num_files):
-        candidate = ideal_step * i
-        # Each nudge moves `candidate` strictly past the end of the interval
-        # or clip that enclosed it, so it never revisits one; the bound is
-        # simply belt-and-braces against a pathological float.
-        for _attempt in range(2 * len(protected) + 2):
-            moved = False
-            p_index = bisect.bisect_right(protected_starts, candidate) - 1
-            if 0 <= p_index < len(protected):
-                low, high = protected[p_index]
-                if low < candidate < high:
-                    candidate = high
-                    moved = True
-            c_index = bisect.bisect_right(starts, candidate) - 1
-            if 0 <= c_index < len(temporal):
-                enclosing = temporal[c_index]
-                if enclosing.ts_start < candidate < enclosing.ts_end:
-                    candidate = enclosing.ts_end
-                    moved = True
-            if not moved:
-                break
-        candidate = min(candidate, audio_duration_seconds)
-        # The final interval already closes at audio_duration_seconds, so a
-        # cut nudged to that same endpoint would create an empty file.
-        if candidate <= prev_cut or candidate >= audio_duration_seconds:
-            continue
+
+    def add_cut(candidate: float) -> None:
+        # A cut at or before the previous one, or at the audio's own end,
+        # would create an empty file.
+        if (cuts and candidate <= cuts[-1]) or candidate <= 0.0 or candidate >= audio_duration_seconds:
+            return
         cuts.append(candidate)
-        prev_cut = candidate
+
+    for index, run in enumerate(runs):
+        run_start = cuts[-1] if cuts else 0.0
+        if index == len(runs) - 1:
+            run_end = audio_duration_seconds
+        else:
+            run_end = min(run[-1].ts_end, runs[index + 1][0].ts_start)
+        pieces = max(1, round((run_end - run_start) / target_seconds)) if target_seconds > 0 else 1
+        step = (run_end - run_start) / pieces
+        starts = [c.ts_start for c in run]
+        for k in range(1, pieces):
+            candidate = run_start + step * k
+            enclosing = bisect.bisect_right(starts, candidate) - 1
+            if 0 <= enclosing < len(run) and run[enclosing].ts_start < candidate < run[enclosing].ts_end:
+                candidate = run[enclosing].ts_end
+            if candidate < run_end:
+                add_cut(candidate)
+        if index < len(runs) - 1:
+            add_cut(run_end)
 
     boundaries: List[Tuple[float, float]] = []
     start = 0.0
@@ -764,16 +691,8 @@ def _compute_audio_file_boundaries(
         boundaries.append((start, cut))
         start = cut
     boundaries.append((start, audio_duration_seconds))
-
-    if len(boundaries) < num_files:
-        logger.info(
-            "🎧 Read-along audio split: %d files instead of the ideal %d -- "
-            "cut points nudged clear of %d protected spine-item span(s) "
-            "(target %.1fs/file over %.1fs of audio)",
-            len(boundaries), num_files, len(protected), target_seconds,
-            audio_duration_seconds,
-        )
     return boundaries
+
 
 
 def _split_audio_into_files(
@@ -2319,6 +2238,19 @@ def _build_readalong_epub_impl(
         # afterward, at cut points chosen never to fall inside a clip -- see
         # the module docstring's "Phase 4 Part C" section for why that keeps
         # every file's own clips contiguous without touching this function.
+        narrated_by_spine = {
+            spine_index: clips for spine_index, clips in located_by_spine.items()
+            if max(c.ts_end for c in clips) - min(c.ts_start for c in clips)
+            >= _MIN_SECTION_NARRATION_SECONDS
+        }
+        if narrated_by_spine and len(narrated_by_spine) < len(located_by_spine):
+            logger.info(
+                "📖 Read-along for '%s': %d spine item(s) with under %.1fs of "
+                "narration left without an overlay",
+                abs_id, len(located_by_spine) - len(narrated_by_spine),
+                _MIN_SECTION_NARRATION_SECONDS,
+            )
+            located_by_spine = narrated_by_spine
         flat_clips = [c for clips in located_by_spine.values() for c in clips]
         flat_clips = _extend_clips_to_contiguous(flat_clips, audio_duration)
         extended_by_spine: Dict[int, List[SentenceClip]] = {}
@@ -2366,16 +2298,35 @@ def _build_readalong_epub_impl(
             for i in range(len(audio_files_on_disk))
         ]
 
-        def _file_index_for(ts_start: float) -> int:
-            idx = bisect.bisect_right(file_starts, ts_start) - 1
+        def _file_at(ts: float) -> int:
+            idx = bisect.bisect_right(file_starts, ts) - 1
             return max(0, min(idx, len(audio_files_on_disk) - 1))
+
+        # Every file belongs to one spine item (_compute_audio_file_boundaries).
+        file_owner: Dict[int, int] = {}
+        for c in flat_clips:
+            if c.ts_end > c.ts_start:
+                file_owner.setdefault(_file_at(c.ts_start), c.spine_index)
+
+        def _file_index_for(clip: SentenceClip) -> int:
+            idx = _file_at(clip.ts_start)
+            # A zero-length clip exactly on a cut belongs to its own spine
+            # item's file: placed at 0s of the next item's file, it would end
+            # its item in the middle of that file.
+            if (
+                0 < idx and clip.ts_end <= file_starts[idx]
+                and file_owner.get(idx - 1) == clip.spine_index
+                and file_owner.get(idx) != clip.spine_index
+            ):
+                idx -= 1
+            return idx
 
         # The clip that plays last in each physical file -- the only one whose
         # end may be pushed past the file (see _FILE_END_CLIP_OVERSHOOT_SECONDS).
         last_clip_by_file: Dict[int, str] = {}
         last_start_by_file: Dict[int, float] = {}
         for c in flat_clips:
-            file_index = _file_index_for(c.ts_start)
+            file_index = _file_index_for(c)
             if c.ts_start >= last_start_by_file.get(file_index, float("-inf")):
                 last_start_by_file[file_index] = c.ts_start
                 last_clip_by_file[file_index] = c.sentence_id
@@ -2421,7 +2372,7 @@ def _build_readalong_epub_impl(
             # there was nothing to split).
             placed_clips: List[_PlacedClip] = []
             for c in located_clips:
-                file_index = _file_index_for(c.ts_start)
+                file_index = _file_index_for(c)
                 audio_href_from_smil = posixpath.relpath(
                     audio_archive_paths[file_index], readalong_dir,
                 )

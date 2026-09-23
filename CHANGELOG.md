@@ -17,6 +17,15 @@ All notable changes to BookBridge will be documented in this file.
   (about 6 minutes each) that load in time without any cache. Regenerate an
   existing read-along to pick this up.
 
+- **Read-alongs keep playing from chapter to chapter in Safari on iPhone and
+  iPad.** Narration stopped at every new chapter with "The request is not
+  allowed by the user agent or the platform" until you pressed Play again.
+  Safari only lets a page start audio on its own right after other audio has
+  finished, and read-alongs changed chapters partway through an audio file.
+  Each chapter now gets its own audio files, the way Storyteller builds them,
+  and front-matter pages with less than a second of narration are left without
+  it. Regenerate an existing read-along to pick this up.
+
 - **Registering from KOReader or Readest no longer pretends to succeed (#446).**
   Tapping "Register" against BookBridge's built-in sync server always reported
   success without creating anything, so the device then failed every login with no

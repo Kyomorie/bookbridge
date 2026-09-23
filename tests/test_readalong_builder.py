@@ -43,7 +43,6 @@ from src.services.readalong_builder import (
     _extend_clips_to_contiguous,
     _package_epub,
     _probe_duration_seconds,
-    _protected_spine_intervals,
     _safe_progress,
     _target_audio_file_seconds,
     _transcode_audio_for_embed,
@@ -1453,9 +1452,9 @@ def test_no_gap_between_consecutive_pars_within_one_spine_item():
 
 
 def test_no_gap_across_spine_item_boundary():
-    """The last sentence of chapter 1 and the first sentence of chapter 2 are
-    also contiguous -- the fix applies across spine items, not just within
-    one."""
+    """No gap across a spine item boundary either: each chapter has its own
+    audio file, so chapter 1's last sentence runs past its file's real end and
+    chapter 2's first sentence starts at 0s of the next file."""
     with tempfile.TemporaryDirectory() as tmp_str:
         tmp = Path(tmp_str)
         parser = _parser(tmp)
@@ -1470,10 +1469,82 @@ def test_no_gap_across_spine_item_boundary():
         result, output_path = _build(tmp, parser, epub_path, audio_path, combined_text, total_seconds=0.5)
         assert result is not None
 
-        pars = _all_pars_in_order(output_path)
+        pars = {p["id"]: p for p in _all_pars_with_audio(output_path)}
         assert len(pars) == 4
-        for i in range(len(pars) - 1):
-            assert pars[i]["end"] == pars[i + 1]["begin"], pars
+        assert pars["c1-s0"]["end"] == pars["c1-s1"]["begin"], pars
+        assert pars["c2-s0"]["end"] == pars["c2-s1"]["begin"], pars
+        assert pars["c2-s0"]["audio_archive_path"] != pars["c1-s1"]["audio_archive_path"], pars
+        assert pars["c2-s0"]["begin"] == 0.0, pars
+        with zipfile.ZipFile(output_path) as zf:
+            extracted_path = tmp / "chapter1.m4a"
+            extracted_path.write_bytes(zf.read(pars["c1-s1"]["audio_archive_path"]))
+        assert pars["c1-s1"]["end"] > _probe_duration_seconds(extracted_path), pars
+
+
+def test_a_page_with_under_a_second_of_narration_gets_no_overlay():
+    """Good Intentions' title and copyright pages got 0.006-0.899s of audio.
+    Each overlaid page needs an audio file of its own, and a cut that short
+    may not probe; like Storyteller, such pages are left unnarrated."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        long_text = " ".join(f"Sentence number {i} goes here." for i in range(8))
+        _write_epub(epub_path, {
+            "ch1": b"<html><body><p>Title.</p></body></html>",
+            "ch2": f"<html><body><p>{long_text}</p></body></html>".encode(),
+        })
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp, duration=4.0)
+
+        result, output_path = _build(tmp, parser, epub_path, audio_path, combined_text, total_seconds=4.0)
+        assert result is not None
+
+        with zipfile.ZipFile(output_path) as zf:
+            smils = [n for n in zf.namelist() if n.endswith(".smil")]
+        assert len(smils) == 1, smils
+        assert {p["id"].split("-")[0] for p in _all_pars_with_audio(output_path)} == {"c2"}
+
+
+def test_a_zero_length_sentence_on_a_cut_stays_in_its_own_chapters_file():
+    """Two sentences can share one timestamp (a flat stretch of the alignment
+    map). When the last of chapter 1 and the first of chapter 2 both sit on the
+    cut between them, each belongs to its own chapter's file; otherwise one
+    chapter would end, or start, in the middle of the other's file."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(epub_path, {
+            "ch1": b"<html><body><p>Alpha bravo. Charlie delta.</p></body></html>",
+            "ch2": b"<html><body><p>Echo foxtrot. Golf hotel.</p></body></html>",
+        })
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp, duration=3.0)
+        flat_from, flat_to, total = combined_text.index("Charlie"), combined_text.index("Golf"), len(combined_text)
+
+        def time_for_char(char: int) -> float:
+            if char <= flat_from:
+                return 1.5 * char / flat_from
+            if char <= flat_to:
+                return 1.5
+            return 1.5 + 1.5 * (char - flat_to) / (total - flat_to)
+
+        output_path = tmp / "out.epub"
+        result = build_readalong_epub(
+            parser=parser,
+            alignment_service=_FakeAlignmentService(terminal_char=total, time_for_char=time_for_char, total_chars=total),
+            epub_path=epub_path, audio_paths=audio_path, abs_id="abs1", output_path=output_path,
+        )
+        assert result is not None
+
+        pars = {p["id"]: p for p in _all_pars_with_audio(output_path)}
+        assert pars["c2-s0"]["begin"] == pars["c2-s0"]["end"] == 0.0, pars
+        files_by_chapter = {}
+        for par_id, par in pars.items():
+            files_by_chapter.setdefault(par_id.split("-")[0], set()).add(par["audio_archive_path"])
+        assert all(len(files) == 1 for files in files_by_chapter.values()), files_by_chapter
+        assert files_by_chapter["c1"] != files_by_chapter["c2"], files_by_chapter
 
 
 def test_last_clip_of_book_reaches_the_real_embedded_audio_duration():
@@ -1841,51 +1912,51 @@ def test_compute_audio_file_boundaries_never_produces_a_zero_length_interval():
         assert end > start, ("zero-length interval", start, end, boundaries)
 
 
-def test_compute_audio_file_boundaries_protects_interleaved_chapters_together():
-    """Two spine items whose narration spans OVERLAP in time (out-of-order
-    narration, issue #426) are protected as one merged interval -- a cut
-    placed between them would straddle both, so there is no cut point inside
-    the pair that protects either one."""
-    # Chapter 1 narrates 0-20s and 40-60s; chapter 2 narrates 20-40s in
-    # between, so their spans (0-60 and 20-40) overlap.
+def test_compute_audio_file_boundaries_cuts_interleaved_chapters_at_every_change():
+    """Two spine items interleaved in time (out-of-order narration, issue
+    #426) are cut at every change of item, so each file still belongs to one
+    item and each of chapter 1's two runs ends its own file."""
     clips = [_clip("c1-a", 1, 0.0, 20.0), _clip("c2-a", 2, 20.0, 40.0), _clip("c1-b", 1, 40.0, 60.0)]
-    assert _protected_spine_intervals(clips, max_span_seconds=60.0) == [(0.0, 60.0)]
 
-    # The ideal cut for 90s of audio at a 60s target lands at 45s -- squarely
-    # between the two interleaved chapters, where the old clip-level rule
-    # would have happily placed it.
     boundaries = _compute_audio_file_boundaries(
         clips, audio_duration_seconds=90.0, target_seconds=60.0,
     )
 
-    assert len(boundaries) > 1, "the interleaved pair must not suppress the split entirely"
-    for _start, cut in boundaries[:-1]:
-        assert not (0.0 < cut < 60.0), (cut, boundaries)
+    assert boundaries == [(0.0, 20.0), (20.0, 40.0), (40.0, 90.0)]
 
 
-def test_protected_spine_intervals_drops_a_span_over_the_ceiling():
-    """A span too long to keep whole is not protected -- that is what lets
-    the clip-level fallback tier split it."""
-    clips = [_clip("c1-s0", 1, 0.0, 5.0), _clip("c2-s0", 2, 5.0, 100.0)]
-    assert _protected_spine_intervals(clips, max_span_seconds=50.0) == [(0.0, 5.0)]
+def test_every_section_change_starts_a_new_audio_file():
+    """Reported on iPad Safari: narration stopped at every chapter with "The
+    request is not allowed by the user agent or the platform in the current
+    context" until Play was tapped again. foliate starts a new <audio> for
+    each section, and WebKit only allows that without a tap just after another
+    audio ENDED; a section change in the middle of a file is a pause instead.
+    The Employees had 88 of 109 section changes mid-file; Storyteller's Good
+    Intentions has none. Two chapters far below one target file still get a
+    cut between them, where the first chapter's audio ends."""
+    clips = [
+        _clip("c1-s0", 1, 0.0, 4.0), _clip("c1-s1", 1, 4.0, 10.0),
+        _clip("c2-s0", 2, 10.0, 16.0), _clip("c2-s1", 2, 16.0, 20.0),
+    ]
 
-
-def test_protected_spine_ceiling_is_a_multiple_of_the_target():
-    """A chapter somewhat LONGER than one target file is still kept whole.
-
-    Measured, not assumed: Ghost Academy's 44 chapters have a 1097s median
-    against a 1049s target, so protecting only spans within 1.0x the target
-    would leave 23 of its 44 chapters straddling a file boundary -- worse
-    than the 9 the defect shipped with."""
-    # One chapter of 1.5x the target: over the target, under the ceiling.
-    clips = [_clip(f"c1-s{i}", 1, i * 15.0, (i + 1) * 15.0) for i in range(10)]
     boundaries = _compute_audio_file_boundaries(
-        clips, audio_duration_seconds=450.0, target_seconds=100.0,
+        clips, audio_duration_seconds=20.0, target_seconds=100.0,
     )
-    for _start, cut in boundaries[:-1]:
-        assert not (0.0 < cut < 150.0), (
-            "a chapter within the ceiling must stay in one file", cut, boundaries,
-        )
+
+    assert boundaries == [(0.0, 10.0), (10.0, 20.0)]
+
+
+def test_a_long_section_splits_at_clip_ends_and_never_shares_a_file():
+    """A section longer than the target splits into round(length / target)
+    files at clip ends; the next section still starts a file of its own."""
+    clips = [_clip(f"c1-s{i}", 1, float(i) * 10, float(i + 1) * 10) for i in range(30)]
+    clips.append(_clip("c2-s0", 2, 300.0, 310.0))
+
+    boundaries = _compute_audio_file_boundaries(
+        clips, audio_duration_seconds=310.0, target_seconds=100.0,
+    )
+
+    assert boundaries == [(0.0, 100.0), (100.0, 200.0), (200.0, 300.0), (300.0, 310.0)]
 
 
 def test_default_audio_files_start_inside_bookorbits_resume_window():
