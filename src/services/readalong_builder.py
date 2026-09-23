@@ -238,6 +238,13 @@ _AUDIO_MEDIA_TYPES = {
 # rare chance a library EPUB already has an entry with this name.
 _READALONG_DIR_BASE = "readalong"
 
+# Declared as the OPF's `media:active-class`. foliate-js (BookOrbit's web
+# reader) adds `book.media.activeClass` to the playing sentence verbatim, so an
+# undeclared class becomes the literal class "undefined" and nothing
+# highlights, while BookOrbit's injected highlight CSS falls back to this exact
+# name. It is also the EPUB 3 conventional name, and what Storyteller declares.
+_MEDIA_OVERLAY_ACTIVE_CLASS = "-epub-media-overlay-active"
+
 # bs4's own ``BeautifulSoup.ASCII_SPACES`` (space, LF, tab, form-feed, CR) --
 # verified against the installed bs4, not assumed. See
 # :func:`_verify_marker_injection` for why its comparison collapses runs of
@@ -1786,6 +1793,15 @@ def _rewrite_opf(
     total_meta = etree.Element(f"{{{_OPF_NS}}}meta", attrib={"property": "media:duration"})
     total_meta.text = _format_smil_clock(total_duration)
     _append_with_tail(metadata, total_meta)
+
+    declares_active_class = any(
+        meta.get("property") == "media:active-class"
+        for meta in metadata.findall(f"{{{_OPF_NS}}}meta")
+    )
+    if not declares_active_class:
+        active_class_meta = etree.Element(f"{{{_OPF_NS}}}meta", attrib={"property": "media:active-class"})
+        active_class_meta.text = _MEDIA_OVERLAY_ACTIVE_CLASS
+        _append_with_tail(metadata, active_class_meta)
 
     return etree.tostring(tree, xml_declaration=True, encoding="utf-8", standalone=False)
 

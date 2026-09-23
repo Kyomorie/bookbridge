@@ -8,6 +8,13 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Read-alongs now highlight in BookOrbit's web reader.** Generated read-alongs
+  played their audio in the web reader but never highlighted the sentence being
+  read (the BookOrbit app was unaffected). The book now declares the highlight
+  style readers look for. Lines without ending punctuation, such as headings,
+  credits and captions, now get their own highlight instead of being merged with
+  the next paragraph. Regenerate an existing read-along to pick this up.
+
 - **Read-along generation review fixes completed.** Terminal audio cuts no longer
   emit empty chunks; delivery rejects unsafe shared or nested library roots; EPUB 2
   conversion preserves publication identifiers required by IDPF-obfuscated fonts;

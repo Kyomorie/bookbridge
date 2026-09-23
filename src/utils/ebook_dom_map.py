@@ -75,6 +75,18 @@ _CONTENT_STRING_TYPES = (NavigableString, CData)
 # for the XML path.
 _EXCLUDED_STRING_PARENTS = frozenset({"script", "style", "template", "head"})
 
+# Elements whose edges end a read-along sentence regardless of punctuation.
+# Credit lines, headings and captions often carry no terminal punctuation, so
+# the punctuation-only splitter merged them with the next paragraph into one
+# "sentence" whose marker could only wrap its first block -- the rest of the
+# lines were never highlighted. Storyteller segments per block element too.
+_BLOCK_TAGS = frozenset({
+    "address", "article", "aside", "blockquote", "body", "caption", "dd",
+    "div", "dl", "dt", "figcaption", "figure", "footer", "h1", "h2", "h3",
+    "h4", "h5", "h6", "header", "hgroup", "li", "main", "nav", "ol", "p",
+    "pre", "section", "table", "td", "th", "tr", "ul",
+})
+
 # XML's five predefined entities -- the only named entity references a strict
 # XML parser understands without an external/internal DTD. Left untouched by
 # :func:`escape_named_html_entities` (rewriting ``&amp;`` to ``&#38;`` would be
@@ -242,6 +254,44 @@ def _spine_item_runs(content: Union[str, bytes]) -> Tuple[List[DomRun], int, str
     runs = runs_from_nodes(nodes)
     item_text = " ".join(run.text for run in runs)
     return runs, len(nodes), item_text
+
+
+def _block_ancestor(node: NavigableString) -> Optional[Tag]:
+    """The nearest enclosing :data:`_BLOCK_TAGS` element of ``node``, or ``None``."""
+    parent = node.parent
+    while parent is not None:
+        name = getattr(parent, "name", None)
+        if name and name.lower() in _BLOCK_TAGS:
+            return parent
+        parent = parent.parent
+    return None
+
+
+def block_break_offsets(content: Union[str, bytes], expected_text: str) -> Optional[List[int]]:
+    """Local offsets in one spine item's text where a new block element begins.
+
+    Each offset is the start of a text run whose nearest block ancestor differs
+    from the previous run's, in the same local character space as
+    :func:`_spine_item_runs` (and so as ``extract_text_and_map``'s slice for
+    this item). Returns ``None`` when the rebuilt text does not equal
+    ``expected_text`` -- offsets computed against drifted text would cut
+    sentences in the wrong place, so the caller falls back to punctuation-only
+    splitting.
+    """
+    soup = BeautifulSoup(content, 'html.parser')
+    nodes = content_string_nodes(soup)
+    runs = runs_from_nodes(nodes)
+    if " ".join(run.text for run in runs) != expected_text:
+        return None
+
+    breaks: List[int] = []
+    previous_block: Optional[Tag] = None
+    for position, run in enumerate(runs):
+        block = _block_ancestor(nodes[run.node_index])
+        if position > 0 and block is not previous_block:
+            breaks.append(run.start)
+        previous_block = block
+    return breaks
 
 
 def _resolve_named_entity(match: "re.Match") -> str:

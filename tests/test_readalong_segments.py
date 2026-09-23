@@ -19,6 +19,7 @@ from src.services.readalong_segments import (
     sentence_id_for,
     split_sentences,
 )
+from src.utils.ebook_dom_map import block_break_offsets
 from src.utils.ebook_utils import EbookParser
 
 _CONTAINER_XML = (
@@ -176,6 +177,41 @@ def test_split_sentences_no_trailing_punctuation_still_emits_full_span():
 
 def test_split_sentences_empty_text():
     assert split_sentences("") == []
+
+
+def test_split_sentences_hard_breaks_split_unpunctuated_lines():
+    text = "Cover design by Grim Poppy Design Edited by Danielle Sundby"
+    brk = text.index("Edited")
+    spans = split_sentences(text, [brk])
+    assert [text[s:e] for s, e in spans] == ["Cover design by Grim Poppy Design", "Edited by Danielle Sundby"]
+
+
+def test_split_sentences_hard_break_at_punctuation_boundary_adds_nothing():
+    text = "Alpha bravo. Charlie delta."
+    assert split_sentences(text, [text.index("Charlie")]) == split_sentences(text)
+
+
+def test_split_sentences_hard_break_inside_punctuated_sentence():
+    """A sentence split across two paragraphs without terminal punctuation
+    (a heading followed by body text) becomes two targets, one per block."""
+    text = "Chapter One It was a dark night. The end."
+    spans = split_sentences(text, [text.index("It was")])
+    assert [text[s:e] for s, e in spans] == ["Chapter One", "It was a dark night.", "The end."]
+
+
+# ---------------------------------------------------------------------------
+# block_break_offsets
+# ---------------------------------------------------------------------------
+
+def test_block_break_offsets_marks_each_new_block_but_not_inline_runs():
+    content = b"<html><body><h1>Chapter One</h1><p>It was <em>very</em> dark</p><p>Next</p></body></html>"
+    text = "Chapter One It was very dark Next"
+    assert block_break_offsets(content, text) == [text.index("It was"), text.index("Next")]
+
+
+def test_block_break_offsets_refuses_drifted_text():
+    content = b"<html><body><p>Alpha</p><p>Bravo</p></body></html>"
+    assert block_break_offsets(content, "Alpha Charlie") is None
 
 
 # ---------------------------------------------------------------------------

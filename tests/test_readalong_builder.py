@@ -752,6 +752,77 @@ def test_opf_preserves_preexisting_manifest_items_and_adds_overlay_refs():
             assert m.text  # non-empty clock value
 
 
+def test_opf_declares_media_overlay_active_class():
+    """BookOrbit's web reader (foliate-js) adds ``book.media.activeClass`` to
+    the playing sentence verbatim. With no ``media:active-class`` declared it
+    added the literal class "undefined" -- audio played, nothing highlighted,
+    while Storyteller's read-alongs (which declare it) highlighted fine."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(epub_path, {"ch1": b"<html><body><p>Alpha bravo. Charlie delta.</p></body></html>"})
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp)
+
+        result, output_path = _build(tmp, parser, epub_path, audio_path, combined_text)
+        assert result is not None
+
+        with zipfile.ZipFile(output_path) as zf:
+            tree = etree.fromstring(zf.read("OEBPS/content.opf"))
+        ns = "{http://www.idpf.org/2007/opf}"
+        active = [
+            m for m in tree.find(f"{ns}metadata").findall(f"{ns}meta")
+            if m.get("property") == "media:active-class"
+        ]
+        assert [m.text for m in active] == ["-epub-media-overlay-active"]
+
+
+def test_unpunctuated_block_lines_each_get_their_own_highlight_target():
+    """Real symptom, Apex Prey copyright page (c11.xhtml): five one-line
+    paragraphs with no terminal punctuation merged into one "sentence" with
+    the ISBN line, whose marker could wrap only that first paragraph -- the
+    other lines were never highlighted. Each block is its own SMIL target now."""
+    lines = [
+        "ISBN: 9798287057268",
+        "Cover design by Grim Poppy Design",
+        "Edited by Danielle Sundby",
+        "© 2025 Apex Prey: Polly by Lesley A. Camphouse",
+        "Book 1 of the Apex Prey trilogy",
+    ]
+    body = "".join(f"<p>{line}</p>" for line in lines)
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        parser = _parser(tmp)
+        epub_path = tmp / "books" / "book.epub"
+        _write_epub(epub_path, {"ch1": f"<html><body>{body}</body></html>".encode("utf-8")})
+        combined_text, _ = parser.extract_text_and_map(str(epub_path))
+        audio_path = _make_audio(tmp)
+
+        result, output_path = _build(tmp, parser, epub_path, audio_path, combined_text)
+        assert result is not None
+        assert result.sentences_crossing_inline_elements == 0
+
+        with zipfile.ZipFile(output_path) as zf:
+            xhtml = etree.fromstring(zf.read("OEBPS/ch1.xhtml"))
+            smil_names = [n for n in zf.namelist() if n.endswith(".smil")]
+            assert len(smil_names) == 1
+            smil = etree.fromstring(zf.read(smil_names[0]))
+
+        xhtml_ns = "{http://www.w3.org/1999/xhtml}"
+        paragraphs = list(xhtml.iter(f"{xhtml_ns}p", "p"))
+        assert len(paragraphs) == len(lines)
+        targets = {
+            t.get("src").split("#", 1)[1]
+            for t in smil.iter("{http://www.w3.org/ns/SMIL}text")
+        }
+        assert len(targets) == len(lines)
+        for paragraph, line in zip(paragraphs, lines):
+            spans = [el for el in paragraph.iter() if el.get("id") in targets]
+            assert len(spans) == 1, f"{line!r} has no highlight target of its own"
+            assert "".join(spans[0].itertext()) == line
+
+
 def test_defect2_refuses_source_with_existing_media_overlays():
     """Defect 2 (independent review): _rewrite_opf always appends its own new
     publication-level media:duration meta without touching any existing

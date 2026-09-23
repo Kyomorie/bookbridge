@@ -40,11 +40,13 @@ the monotonic clamp in :func:`build_sentence_clips`.
 """
 import logging
 import re
+from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union, TYPE_CHECKING
+from typing import Dict, List, Optional, Sequence, Tuple, Union, TYPE_CHECKING
 
 from src.services.alignment_service import _segment_for_char
+from src.utils.ebook_dom_map import block_break_offsets
 
 if TYPE_CHECKING:
     from src.services.alignment_service import AlignmentService
@@ -153,7 +155,7 @@ def _is_real_boundary(text: str, punct_start: int, punct: str, after: str) -> bo
     return ch.isupper() or ch.isdigit() or ch in _SENTENCE_START_CHARS
 
 
-def split_sentences(text: str) -> List[Tuple[int, int]]:
+def split_sentences(text: str, hard_breaks: Optional[Sequence[int]] = None) -> List[Tuple[int, int]]:
     """Split ``text`` into sentence spans, half-open ``[start, end)``.
 
     Deterministic and dependency-free: a regex scan for terminal punctuation
@@ -177,8 +179,15 @@ def split_sentences(text: str) -> List[Tuple[int, int]]:
     sentence never crosses the end of ``text`` -- callers scope this to one
     spine item's slice so a sentence never spans two XHTML documents.
 
+    ``hard_breaks`` are local offsets where a sentence must end regardless of
+    punctuation -- block-element starts from
+    :func:`src.utils.ebook_dom_map.block_break_offsets` -- so an unpunctuated
+    line (a heading, a credit, a caption) is its own sentence rather than
+    merging into the next paragraph.
+
     :param text: one spine item's text, in ``extract_text_and_map``'s
         combined-text character space (a local, 0-based slice of it).
+    :param hard_breaks: local offsets that always start a new sentence.
     :return: half-open ``(start, end)`` spans covering ``text``, in order.
     """
     if not text:
@@ -199,7 +208,26 @@ def split_sentences(text: str) -> List[Tuple[int, int]]:
 
     if start < len(text):
         spans.append((start, len(text)))
-    return spans
+
+    if not hard_breaks:
+        return spans
+
+    breaks = sorted(set(hard_breaks))
+    split_spans: List[Tuple[int, int]] = []
+    for span_start, span_end in spans:
+        cursor = span_start
+        for brk in breaks[bisect_right(breaks, span_start):]:
+            if brk >= span_end:
+                break
+            left_end = brk
+            while left_end > cursor and text[left_end - 1].isspace():
+                left_end -= 1
+            if left_end > cursor:
+                split_spans.append((cursor, left_end))
+            cursor = brk
+        if span_end > cursor:
+            split_spans.append((cursor, span_end))
+    return split_spans
 
 
 def sentence_id_for(spine_index: int, local_index: int) -> str:
@@ -420,7 +448,14 @@ def build_sentence_clips(
 
     for entry in spine_map:
         item_text = combined_text[entry["start"]:entry["end"]]
-        for local_index, (local_start, local_end) in enumerate(split_sentences(item_text)):
+        block_breaks = block_break_offsets(entry["content"], item_text) if item_text else None
+        if item_text and block_breaks is None:
+            logger.warning(
+                "'%s' spine item %s: block boundaries could not be recovered, "
+                "splitting sentences on punctuation only",
+                abs_id, entry["spine_index"],
+            )
+        for local_index, (local_start, local_end) in enumerate(split_sentences(item_text, block_breaks)):
             char_start = entry["start"] + local_start
             char_end = entry["start"] + local_end
             sentence_id = sentence_id_for(entry["spine_index"], local_index)
