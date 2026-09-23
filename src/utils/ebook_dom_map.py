@@ -103,7 +103,7 @@ _BLOCK_TAGS = frozenset({
 # boundaries ... in situations where the use of a visible word divider is
 # not desired"). It must never reach anything outside this module and
 # :class:`~src.utils.ebook_utils.EbookParser` -- see :func:`strip_inline_joiner`.
-INLINE_TEXT_JOINER = "⁣"
+INLINE_TEXT_JOINER = "\u2063"
 
 # Inline tags whose only rendering effect is character-level styling, with no
 # content or structural meaning of their own. "Bionic reading" tools split a
@@ -324,6 +324,26 @@ def _has_literal_whitespace_between(nodes: List[NavigableString], prev_index: in
     return False
 
 
+def _has_element_break_between(prev_node: NavigableString, next_node: NavigableString) -> bool:
+    """Whether any element other than a pure styling tag (or ``<wbr>``) opens
+    between ``prev_node`` and ``next_node`` in document order.
+
+    Void elements such as ``<br/>`` and ``<img/>`` produce no content string of
+    their own, so :func:`_nearest_join_boundary` alone cannot see them:
+    ``first line<br/>second line`` would otherwise fuse into one word.
+    ``<wbr>`` marks a word-break *opportunity* with no rendered space, so it
+    does not count as a break.
+    """
+    for element in prev_node.next_elements:
+        if element is next_node:
+            return False
+        if isinstance(element, Tag):
+            name = (element.name or "").lower()
+            if name not in INLINE_JOIN_SAFE_TAGS and name != "wbr":
+                return True
+    return False
+
+
 def joined_text(nodes: List[NavigableString], runs: List[DomRun]) -> str:
     """Reconstruct a spine item's text from ``runs``, using
     :data:`INLINE_TEXT_JOINER` in place of the usual single-space separator
@@ -351,7 +371,11 @@ def joined_text(nodes: List[NavigableString], runs: List[DomRun]) -> str:
         current_boundary = _nearest_join_boundary(nodes[run.node_index])
         if _has_literal_whitespace_between(nodes, runs[position - 1].node_index, run.node_index):
             separator = " "
-        elif previous_boundary is not None and previous_boundary is current_boundary:
+        elif (
+            previous_boundary is not None
+            and previous_boundary is current_boundary
+            and not _has_element_break_between(nodes[runs[position - 1].node_index], nodes[run.node_index])
+        ):
             separator = INLINE_TEXT_JOINER
         else:
             separator = " "

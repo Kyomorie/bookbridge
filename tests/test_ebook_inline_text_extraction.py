@@ -141,6 +141,21 @@ class TestEbookInlineTextExtraction(unittest.TestCase):
         self.assertEqual(extracted, "K J")
         self.assertNotIn(INLINE_TEXT_JOINER, extracted)
 
+    def test_void_elements_between_runs_do_not_join(self):
+        """``<br/>`` and ``<img/>`` produce no text node of their own, but still
+        separate words: verse and addresses routinely use ``line<br/>line`` with
+        no source whitespace. ``<wbr>`` (a break opportunity, no space) and pure
+        styling tags still join."""
+        cases = {
+            '<p>first line<br/>second line</p>': "first line second line",
+            '<p>end<img src="x.png"/>start</p>': "end start",
+            '<p>super<wbr/>cali</p>': f"super{INLINE_TEXT_JOINER}cali",
+            '<p><b>Th</b>e</p>': f"Th{INLINE_TEXT_JOINER}e",
+        }
+        for html_content, expected in cases.items():
+            with self.subTest(html=html_content):
+                self.assertEqual(self._extract(html_content), expected)
+
     def test_adjacent_sibling_spans_do_not_join(self):
         """Two sibling ``<span>``s with no literal whitespace between them
         (a common verse-line shape) are separate words and must not fuse
