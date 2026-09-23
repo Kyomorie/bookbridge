@@ -71,6 +71,121 @@ def test_is_available_true_when_torch_present():
 
 
 # --------------------------------------------------------------------------- #
+# _emissions: window batching, fp16 autocast, OOM fallback
+# --------------------------------------------------------------------------- #
+
+def _emissions_fixture(torch):
+    """A fake model + waveform for the _emissions batching tests below.
+
+    9 full windows (16000 samples/window @ 16 kHz, window seconds patched to 1)
+    plus a half-length tail window (8000 samples) = 9.5 windows total. Every full
+    window is filled with a distinct constant so a per-window mean uniquely
+    identifies it; the fake model turns each row's mean into a constant emission
+    row of ``len // 320`` frames, independent of what else is in its batch.
+    """
+    window = 16000
+    n_full = 9
+    tail_len = 8000
+    pieces_data = [torch.full((1, window), float(i + 1)) for i in range(n_full)]
+    pieces_data.append(torch.full((1, tail_len), 100.0))
+    waveform = torch.cat(pieces_data, dim=1)
+
+    def compute(piece):
+        frames = piece.size(1) // 320
+        vals = piece.mean(dim=1, keepdim=True)
+        return vals.unsqueeze(1).expand(piece.size(0), frames, 1).clone()
+
+    return waveform, pieces_data, compute
+
+
+def test_emissions_batches_full_windows_and_matches_unbatched_concatenation():
+    """Batched _emissions == concatenating one-window-at-a-time calls, in order."""
+    torch = pytest.importorskip("torch")
+    aligner = ForcedAligner()
+    aligner._device = "cpu"
+    aligner._sample_rate = 16000
+    waveform, pieces_data, compute = _emissions_fixture(torch)
+
+    calls = []
+
+    def fake_model(piece):
+        calls.append(piece.size(0))
+        return compute(piece), None
+
+    aligner._model = fake_model
+    expected = torch.cat([compute(p) for p in pieces_data], dim=1)
+    calls.clear()  # drop the calls made while building `expected` above
+
+    with patch("src.utils.forced_aligner._EMIT_WINDOW_SECONDS", 1):
+        actual = aligner._emissions(waveform)
+
+    # 9 full windows batched 4, 4, 1; the half-length tail always runs alone.
+    assert calls == [4, 4, 1, 1]
+    assert actual.shape == expected.shape
+    assert torch.equal(actual, expected)
+
+
+def test_emissions_oom_fallback_matches_unbatched_and_disables_further_batching(caplog):
+    """A batched forward's OutOfMemoryError still yields the unbatched result."""
+    torch = pytest.importorskip("torch")
+    aligner = ForcedAligner()
+    aligner._device = "cpu"
+    aligner._sample_rate = 16000
+    waveform, pieces_data, compute = _emissions_fixture(torch)
+
+    calls = []
+
+    def fake_model(piece):
+        calls.append(piece.size(0))
+        if piece.size(0) > 1:
+            raise torch.cuda.OutOfMemoryError("simulated OOM")
+        return compute(piece), None
+
+    aligner._model = fake_model
+    expected = torch.cat([compute(p) for p in pieces_data], dim=1)
+    calls.clear()
+
+    with patch("src.utils.forced_aligner._EMIT_WINDOW_SECONDS", 1), \
+         patch("torch.cuda.empty_cache") as empty_cache, \
+         caplog.at_level("WARNING"):
+        actual = aligner._emissions(waveform)
+
+    assert torch.equal(actual, expected)
+    # First batch attempt (4 full windows) OOMs and is retried one window at a
+    # time; every batch after that goes straight to single windows too (no more
+    # batch attempts), and the tail was always single.
+    assert calls[0] == 4
+    assert 4 not in calls[1:]
+    assert calls.count(1) == 10
+    empty_cache.assert_called_once()
+    assert "CTC" in caplog.text
+    assert "memory" in caplog.text.lower()
+
+
+def test_emissions_cpu_path_never_enters_autocast():
+    """CPU stays plain float32: torch.autocast is never invoked."""
+    torch = pytest.importorskip("torch")
+    aligner = ForcedAligner()
+    aligner._device = "cpu"
+    aligner._sample_rate = 16000
+    window = 16000
+    waveform = torch.zeros(1, window * 2)  # exactly 2 full windows, no tail
+
+    def fake_model(piece):
+        frames = piece.size(1) // 320
+        return torch.zeros(piece.size(0), frames, 1), None
+
+    aligner._model = fake_model
+
+    with patch("src.utils.forced_aligner._EMIT_WINDOW_SECONDS", 1), \
+         patch("torch.autocast") as autocast_mock:
+        actual = aligner._emissions(waveform)
+
+    autocast_mock.assert_not_called()
+    assert actual.shape == (1, 2 * (window // 320), 1)
+
+
+# --------------------------------------------------------------------------- #
 # Real forced_align math via a synthetic emission (no model download)
 # --------------------------------------------------------------------------- #
 
@@ -105,11 +220,16 @@ def test_align_end_to_end_with_synthetic_emission(device, with_bonus, caplog):
     frame_cursor = 0
 
     def fake_model(piece):
+        # piece is [B, samples]: B stacked equal-length windows (or B=1 for the
+        # tail/single-window path). Each row draws its frames from the next
+        # contiguous slice of the true emission, so batching never changes content.
         nonlocal frame_cursor
         assert piece.device.type == device
+        b = piece.size(0)
         count = piece.size(1) // 1600
-        chunk = emission[:, frame_cursor:frame_cursor + count]
-        frame_cursor += count
+        total = b * count
+        chunk = emission[0, frame_cursor:frame_cursor + total].reshape(b, count, -1)
+        frame_cursor += total
         return chunk, None
 
     def fake_load(self):
@@ -179,10 +299,14 @@ def test_chunked_align_covers_whole_book_via_boundaries():
     cursor = 0
 
     def fake_model(piece):
+        # piece is [B, samples]; see the analogous fake_model above for why this
+        # reshape reproduces the unbatched per-window slices exactly.
         nonlocal cursor
+        b = piece.size(0)
         cnt = piece.size(1) // 1600
-        chunk = emission[:, cursor:cursor + cnt]
-        cursor += cnt
+        total = b * cnt
+        chunk = emission[0, cursor:cursor + total].reshape(b, cnt, -1)
+        cursor += total
         return chunk, None
 
     def fake_load(self):

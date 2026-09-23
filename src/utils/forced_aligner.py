@@ -35,6 +35,9 @@ _MMS_CHARS_RE = re.compile(r"[^a-z']")
 # Emission is computed in windows of this many seconds to bound peak memory on the
 # model forward pass for long audiobooks; the log-prob frames are concatenated.
 _EMIT_WINDOW_SECONDS = 30
+# Consecutive full-length windows are grouped into one forward call of up to this
+# many rows; fewer, larger forward calls cut Python/kernel-launch overhead on GPU.
+_EMIT_BATCH_WINDOWS = 4
 
 
 class ForcedAligner:
@@ -135,24 +138,86 @@ class ForcedAligner:
     # -- alignment ----------------------------------------------------------- #
 
     def _emissions(self, waveform):
-        """Model forward in windows; concatenate log-prob frames [1, T, C]."""
+        """Model forward in batches of equal-length windows; concatenate log-prob
+        frames into a single ``[1, T, C]`` tensor.
+
+        Consecutive full-length ``_EMIT_WINDOW_SECONDS`` windows are grouped into
+        batches of up to ``_EMIT_BATCH_WINDOWS`` and run as one ``[B, window]``
+        forward call; the final window (usually shorter) is never batched or
+        padded and always runs alone as ``[1, len]``, so the per-window frame
+        counts stay exactly what an unbatched loop would produce. On CUDA every
+        forward runs under ``torch.autocast(..., dtype=torch.float16)`` and the
+        emission is cast back to float32 before it is stored; on CPU precision is
+        unchanged. A batched forward that raises ``torch.cuda.OutOfMemoryError``
+        is logged once, clears the CUDA cache, retries that batch's windows one at
+        a time, and disables further batching for the rest of this call.
+        """
         import torch
 
         window = int(_EMIT_WINDOW_SECONDS * self._sample_rate)
         total = waveform.size(1)
+        use_amp = getattr(self._device, "type", self._device) == "cuda"
+        num_full = total // window
+        tail_len = total - num_full * window
+
+        def forward(batch):
+            batch = batch.to(self._device)
+            if use_amp:
+                with torch.autocast(device_type="cuda", dtype=torch.float16):
+                    emission, _ = self._model(batch)
+                # forced_align/merge_tokens need float32; autocast output may be fp16.
+                return emission.float()
+            emission, _ = self._model(batch)
+            return emission
+
         chunks = []
+        processed = 0
+        logged = 0
+        batching_disabled = False
+
+        def maybe_log():
+            nonlocal logged
+            if processed - logged >= 300 * self._sample_rate or processed >= total:
+                logger.info(
+                    "⚙️ CTC: emissions %.0f/%.0fs on %s",
+                    processed / self._sample_rate, total / self._sample_rate, self._device,
+                )
+                logged = processed
+
         with torch.inference_mode():
-            for start in range(0, total, window):
-                piece = waveform[:, start : start + window].to(self._device)
-                emission, _ = self._model(piece)
-                # forced_align dispatches on the emission device.
-                chunks.append(emission)
-                if len(chunks) % 10 == 0 or start + window >= total:
-                    logger.info(
-                        "⚙️ CTC: emissions %.0f/%.0fs on %s",
-                        min(start + window, total) / self._sample_rate,
-                        total / self._sample_rate, self._device,
-                    )
+            for batch_start in range(0, num_full, _EMIT_BATCH_WINDOWS):
+                indices = range(batch_start, min(batch_start + _EMIT_BATCH_WINDOWS, num_full))
+                pieces = [waveform[:, idx * window : (idx + 1) * window].squeeze(0) for idx in indices]
+                emission = None
+                if not batching_disabled:
+                    try:
+                        emission = forward(torch.stack(pieces, dim=0))
+                    except torch.cuda.OutOfMemoryError:
+                        logger.warning(
+                            "⚠️ CTC: batched emissions forward ran out of GPU memory; "
+                            "falling back to single-window forwards for the rest of this call",
+                            exc_info=True,
+                        )
+                        torch.cuda.empty_cache()
+                        batching_disabled = True
+                        emission = None
+                if emission is not None:
+                    # forced_align dispatches on the emission device.
+                    for row in range(emission.size(0)):
+                        chunks.append(emission[row : row + 1])
+                        processed += window
+                        maybe_log()
+                else:
+                    for piece in pieces:
+                        chunks.append(forward(piece.unsqueeze(0)))
+                        processed += window
+                        maybe_log()
+
+            if tail_len > 0:
+                chunks.append(forward(waveform[:, num_full * window : total]))
+                processed = total
+                maybe_log()
+
         return torch.cat(chunks, dim=1)
 
     def _load_audio(self, audio_paths):
