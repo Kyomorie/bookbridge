@@ -40,6 +40,7 @@ from src.services.readalong_builder import (
     _MIN_AUDIO_FILE_SECONDS,
     _bitrate_to_bps,
     _compute_audio_file_boundaries,
+    _existing_ids_in_markup,
     _extend_clips_to_contiguous,
     _package_epub,
     _probe_duration_seconds,
@@ -1596,6 +1597,22 @@ def test_target_audio_file_seconds_is_clamped_to_a_sane_range():
     assert _target_audio_file_seconds("10000k") == pytest.approx(_MIN_AUDIO_FILE_SECONDS)
 
 
+def test_existing_ids_in_markup_decodes_character_references():
+    """Independent review, finding 6: an id written with a decimal or hex
+    XML character reference must be collected in its DECODED form, matching
+    what the document's own parser (bs4/lxml) will actually assign to that
+    element -- not the literal, still-escaped attribute text.
+
+    Without this, ``id="c1&#45;s0"`` is collected as the literal string
+    ``c1&#45;s0``, leaving the clean id ``c1-s0`` looking unused; the
+    allocator then hands ``c1-s0`` to a new marker, and once the document is
+    actually parsed both the original element and the new marker span carry
+    the SAME resolved id -- reproduced in a full build as duplicate ids
+    ``['c1-s0', 'c1-s0', 'c1-s1']``."""
+    markup = b'<html><body><p id="c1&#45;s0">Existing.</p><p id="c1&#x2d;s1">Also existing.</p></body></html>'
+    assert _existing_ids_in_markup(markup) == {"c1-s0", "c1-s1"}
+
+
 def test_compute_audio_file_boundaries_no_split_when_audio_is_short():
     """A book well under the target duration gets exactly one, whole-book
     file -- the common case for most of the library, and byte-for-byte the
@@ -1729,6 +1746,29 @@ def test_compute_audio_file_boundaries_still_splits_a_chapter_longer_than_the_ta
     for _start, cut in boundaries[:-1]:
         for clip in clips:
             assert not (clip.ts_start < cut < clip.ts_end), (cut, clip, boundaries)
+
+
+def test_compute_audio_file_boundaries_never_produces_a_zero_length_interval():
+    """Independent review, finding 1 (P1): a candidate cut nudged all the way
+    to the audio's own end used to be accepted as a real cut -- but the
+    unconditional final `boundaries.append((start, audio_duration_seconds))`
+    ALSO closes at audio_duration_seconds, so that cut produced a (X, X)
+    zero-length trailing interval. `_split_audio_into_files` then runs
+    ffmpeg with `-t 0.000`, which the real builder observed as an
+    unprobeable output file -- refusing the entire book.
+
+    Repro: one chapter spanning the audio's own [0, 1.75) end at a 1.0s
+    target. The ideal cut (1.0s) lands inside the chapter and gets nudged to
+    its end (1.75s) -- exactly the audio's own duration."""
+    clips = [_clip("c1-s0", 1, 0.0, 1.75)]
+
+    boundaries = _compute_audio_file_boundaries(
+        clips, audio_duration_seconds=1.75, target_seconds=1.0,
+    )
+
+    assert boundaries == [(0.0, 1.75)]
+    for start, end in boundaries:
+        assert end > start, ("zero-length interval", start, end, boundaries)
 
 
 def test_compute_audio_file_boundaries_protects_interleaved_chapters_together():

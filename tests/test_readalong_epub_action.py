@@ -20,6 +20,7 @@ auth-enabled harness this needs.
 import os
 import shutil
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
@@ -82,6 +83,9 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
         self.mock_database_service.get_latest_job.return_value = None
 
     def tearDown(self):
+        import src.web_server as ws
+        with ws._READALONG_GENERATION_LOCK:
+            ws._ACTIVE_READALONG_GENERATIONS.clear()
         import src.db.migration_utils
         src.db.migration_utils.initialize_database = self.original_init_db
         if self._orig_template_dir is None:
@@ -95,6 +99,15 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     # ---- eligibility refusals (surfaced, not a silent no-op on click) ----
+
+    def test_forge_runtime_callbacks_are_injected_from_web_server(self):
+        """Forge workers use this live module's callbacks in __main__ mode."""
+        import src.web_server as ws
+
+        forge = self.mock_container.mock_forge_service
+        self.assertIs(forge.readalong_epub_worker, ws._readalong_epub_worker)
+        self.assertIs(forge.readalong_generation_admitter, ws._claim_readalong_generation)
+        self.assertIs(forge.readalong_generation_releaser, ws._release_readalong_generation)
 
     def test_book_not_found_returns_404(self):
         self.mock_database_service.get_book.return_value = None
@@ -134,10 +147,7 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
         self.assertIn("alignment map", resp.get_json()["error"])
 
     def test_accepts_ctc_or_lexical(self):
-        """Finding 4: 'lexical_timed' (measured word timings) is accepted
-        alongside 'ctc'/'lexical' -- it was previously rejected here even
-        though it is fine-grained enough, giving a disabled dashboard button
-        and an HTTP 400 for books whose alignment pipeline emitted it."""
+        """Word-timed lexical alignment is eligible alongside ctc and lexical."""
         for method in ("ctc", "lexical", "lexical_timed"):
             with self.subTest(method=method):
                 self.mock_database_service.get_alignment_method.return_value = method
@@ -145,6 +155,8 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
                     resp = self.client.post('/api/readalong-epub/rl-book-1')
                 self.assertEqual(resp.status_code, 200)
                 self.assertTrue(resp.get_json()["success"])
+                import src.web_server as ws
+                ws._release_readalong_generation("rl-book-1")
 
     # ---- dispatch is user-scoped, not a bare thread ----------------------
 
@@ -162,6 +174,8 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
         args, kwargs = mock_spawn.call_args
         self.assertIs(args[0], ws._readalong_epub_worker)
         self.assertEqual(args[1], "rl-book-1")
+        # The worker receives its own row id for unambiguous status writes.
+        self.assertEqual(args[2], self.mock_database_service.save_job.return_value.id)
         # A Job row is recorded synchronously so the very first status poll
         # (which can race the background thread starting) already sees
         # "running" instead of "idle".
@@ -169,16 +183,113 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
         saved_job = self.mock_database_service.save_job.call_args[0][0]
         self.assertEqual(saved_job.abs_id, "rl-book-1")
         self.assertEqual(saved_job.progress, 0.0)
-        # Finding 2: tagged as a read-along job, not the undifferentiated
-        # "alignment" kind, so a normal sync cycle's alignment-repair pass
-        # can never mistake it for the alignment-build job it's meant to
-        # promote and mark it falsely "done".
+        # The normal alignment pass must never mistake this for its own job.
         self.assertEqual(saved_job.kind, ws.JOB_KIND_READALONG)
         # Staged progress reporting: the very first status poll (which can
         # race the background thread starting, same reasoning as the
         # synchronous save above) already has a real stage to show instead
         # of an empty/idle-looking one.
         self.assertEqual(saved_job.stage, "queued")
+
+    # ---- duplicate concurrent requests -----------------------------------
+
+    def test_refuses_a_second_request_while_one_is_in_flight(self):
+        """A read-along job already mid-generation (progress < 1.0, no
+        error yet) for this book must refuse a second request outright
+        rather than creating a second Job row and spawning a second worker
+        -- the repro that produced two workers racing to write "the latest
+        job" and to replace the same deterministic output file."""
+        in_flight = Mock(progress=0.3, last_error=None)
+        self.mock_database_service.get_latest_job.return_value = in_flight
+        import src.web_server as ws
+        ws._claim_readalong_generation("rl-book-1")
+
+        with patch("src.web_server._spawn_user_background") as mock_spawn:
+            resp = self.client.post('/api/readalong-epub/rl-book-1')
+
+        self.assertEqual(resp.status_code, 409)
+        data = resp.get_json()
+        self.assertFalse(data["success"])
+        self.assertIn("already in progress", data["error"])
+        mock_spawn.assert_not_called()
+        self.mock_database_service.save_job.assert_not_called()
+
+    def test_manual_requests_share_atomic_admission(self):
+        """Two simultaneous dashboard clicks create one worker reservation."""
+        first_started = threading.Event()
+        allow_first = threading.Event()
+
+        def hold_spawn(*_args, **_kwargs):
+            first_started.set()
+            allow_first.wait(timeout=2)
+
+        responses = []
+
+        def post_once():
+            with self.app.test_client() as client:
+                responses.append(client.post('/api/readalong-epub/rl-book-1'))
+
+        with patch("src.web_server._spawn_user_background", side_effect=hold_spawn) as mock_spawn:
+            first = threading.Thread(target=post_once)
+            first.start()
+            self.assertTrue(first_started.wait(timeout=2))
+            second = threading.Thread(target=post_once)
+            second.start()
+            second.join(timeout=2)
+            allow_first.set()
+            first.join(timeout=2)
+
+        self.assertEqual(sorted(response.status_code for response in responses), [200, 409])
+        mock_spawn.assert_called_once()
+        self.mock_database_service.save_job.assert_called_once()
+
+    def test_stale_incomplete_job_after_restart_does_not_block_retry(self):
+        """A persisted queued row has no live worker after process restart."""
+        self.mock_database_service.get_latest_job.return_value = Mock(
+            progress=0.3, last_error=None, last_attempt=0.0,
+        )
+        with patch("src.web_server._spawn_user_background") as mock_spawn:
+            resp = self.client.post('/api/readalong-epub/rl-book-1')
+        self.assertEqual(resp.status_code, 200)
+        mock_spawn.assert_called_once()
+
+    def test_admission_is_released_when_dispatch_fails(self):
+        with patch("src.web_server._spawn_user_background", side_effect=RuntimeError("thread failed")):
+            failed = self.client.post('/api/readalong-epub/rl-book-1')
+        self.assertEqual(failed.status_code, 500)
+        self.mock_database_service.update_job_by_id.assert_called_once()
+        self.assertIn("failed to start", self.mock_database_service.update_job_by_id.call_args.kwargs["last_error"])
+
+        with patch("src.web_server._spawn_user_background") as mock_spawn:
+            retried = self.client.post('/api/readalong-epub/rl-book-1')
+        self.assertEqual(retried.status_code, 200)
+        mock_spawn.assert_called_once()
+
+    def test_allows_a_new_request_after_the_prior_job_finished(self):
+        """A COMPLETED prior job (progress >= 1.0) must never block a fresh
+        regeneration request."""
+        finished = Mock(progress=1.0, last_error=None)
+        self.mock_database_service.get_latest_job.return_value = finished
+
+        with patch("src.web_server._spawn_user_background") as mock_spawn:
+            resp = self.client.post('/api/readalong-epub/rl-book-1')
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.get_json()["success"])
+        mock_spawn.assert_called_once()
+
+    def test_allows_a_new_request_after_the_prior_job_failed(self):
+        """A FAILED prior job (last_error set, regardless of progress) must
+        never block a fresh retry request."""
+        failed = Mock(progress=0.2, last_error="BookOrbit audio sync is not available")
+        self.mock_database_service.get_latest_job.return_value = failed
+
+        with patch("src.web_server._spawn_user_background") as mock_spawn:
+            resp = self.client.post('/api/readalong-epub/rl-book-1')
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.get_json()["success"])
+        mock_spawn.assert_called_once()
 
     def test_no_direct_thread_bypasses_user_scoping(self):
         """A naive `threading.Thread(target=...).start()` would run with
@@ -210,12 +321,13 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
         with patch.object(ws, "uc", return_value=clients), \
              patch.object(ws, "deliver_readalong_epub") as mock_deliver:
             mock_deliver.return_value = Mock(confirmed=True, read_aloud_sync={"state": "enabled"})
-            ws._readalong_epub_worker("rl-book-1")
+            ws._readalong_epub_worker("rl-book-1", 42)
 
         self.assertEqual(self.book.ebook_filename, before_ebook)
         self.assertEqual(self.book.original_ebook_filename, before_original)
-        self.mock_database_service.update_latest_job.assert_called_once_with(
-            "rl-book-1", kind=ws.JOB_KIND_READALONG, progress=1.0, last_error=None
+        # Writes target the worker's own job id.
+        self.mock_database_service.update_job_by_id.assert_called_once_with(
+            42, progress=1.0, last_error=None
         )
 
     def test_worker_never_mutates_ebook_filename_on_refusal(self):
@@ -226,12 +338,12 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
         clients = self._worker_clients()
         with patch.object(ws, "uc", return_value=clients), \
              patch.object(ws, "deliver_readalong_epub", return_value=None):
-            ws._readalong_epub_worker("rl-book-1")
+            ws._readalong_epub_worker("rl-book-1", 42)
 
         self.assertEqual(self.book.ebook_filename, before_ebook)
         self.assertEqual(self.book.original_ebook_filename, before_original)
-        args, kwargs = self.mock_database_service.update_latest_job.call_args
-        self.assertEqual(args[0], "rl-book-1")
+        args, kwargs = self.mock_database_service.update_job_by_id.call_args
+        self.assertEqual(args[0], 42)
         self.assertIn("refused", kwargs.get("last_error", ""))
 
     def test_worker_never_mutates_ebook_filename_on_exception(self):
@@ -242,13 +354,30 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
         clients = self._worker_clients()
         with patch.object(ws, "uc", return_value=clients), \
              patch.object(ws, "deliver_readalong_epub", side_effect=RuntimeError("boom")):
-            ws._readalong_epub_worker("rl-book-1")
+            ws._readalong_epub_worker("rl-book-1", 42)
 
         self.assertEqual(self.book.ebook_filename, before_ebook)
         self.assertEqual(self.book.original_ebook_filename, before_original)
-        args, kwargs = self.mock_database_service.update_latest_job.call_args
-        self.assertEqual(args[0], "rl-book-1")
+        args, kwargs = self.mock_database_service.update_job_by_id.call_args
+        self.assertEqual(args[0], 42)
         self.assertIn("boom", kwargs.get("last_error", ""))
+
+    def test_worker_never_mutates_ebook_filename_on_missing_job_id(self):
+        """A missing job_id
+        (ForgeService's own best-effort Job creation failed) must not raise
+        and must not attempt any job-state write at all -- there is no row
+        to write to, and guessing at "the latest job" is exactly the bug
+        this fix removes."""
+        import src.web_server as ws
+
+        clients = self._worker_clients()
+        with patch.object(ws, "uc", return_value=clients), \
+             patch.object(ws, "deliver_readalong_epub") as mock_deliver:
+            mock_deliver.return_value = Mock(confirmed=True, read_aloud_sync={"state": "enabled"})
+            ws._readalong_epub_worker("rl-book-1", None)  # must not raise
+
+        self.mock_database_service.update_job_by_id.assert_not_called()
+        self.mock_database_service.update_latest_job.assert_not_called()
 
     def test_worker_reports_unconfirmed_delivery(self):
         import src.web_server as ws
@@ -258,17 +387,17 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
             mock_deliver.return_value = Mock(
                 confirmed=False, read_aloud_sync={"state": "unavailable"}
             )
-            ws._readalong_epub_worker("rl-book-1")
+            ws._readalong_epub_worker("rl-book-1", 42)
 
-        args, kwargs = self.mock_database_service.update_latest_job.call_args
-        self.assertEqual(args[0], "rl-book-1")
+        args, kwargs = self.mock_database_service.update_job_by_id.call_args
+        self.assertEqual(args[0], 42)
         self.assertEqual(kwargs.get("progress"), 1.0)
         self.assertIn("not confirmed", kwargs.get("last_error", ""))
 
     # ---- status polling ---------------------------------------------------
 
     def test_status_route_filters_by_readalong_kind(self):
-        """Finding 2: the status poll must scope its `Job` lookup to
+        """The status poll must scope its `Job` lookup to
         `kind=JOB_KIND_READALONG` -- without it, a newer Forge & Match or
         alignment-repair job on the same book (sharing the same `jobs`
         table) could be read here as if it were this action's own status."""
@@ -348,10 +477,8 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
 
     def test_worker_reports_stage_progress_in_order_and_kind_scoped(self):
         """The worker threads a progress_callback into deliver_readalong_epub;
-        each stage transition it reports must land in the Job row via
-        `update_latest_job`, kind-scoped to JOB_KIND_READALONG -- an
-        untagged or mis-scoped write is exactly the defect an earlier review
-        caught (a normal sync falsely completing a read-along job)."""
+        each stage transition it reports must land in the worker's OWN Job
+        row via `update_job_by_id`, so each stage stays bound to its worker."""
         import src.web_server as ws
 
         def _fake_deliver(*args, **kwargs):
@@ -364,9 +491,9 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
         clients = self._worker_clients()
         with patch.object(ws, "uc", return_value=clients), \
              patch.object(ws, "deliver_readalong_epub", side_effect=_fake_deliver):
-            ws._readalong_epub_worker("rl-book-1")
+            ws._readalong_epub_worker("rl-book-1", 42)
 
-        calls = self.mock_database_service.update_latest_job.call_args_list
+        calls = self.mock_database_service.update_job_by_id.call_args_list
         # 3 stage-progress calls, then the pre-existing final completion call.
         self.assertEqual(len(calls), 4)
         expected_stage_calls = [
@@ -376,15 +503,13 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
         ]
         for call, (expected_stage, expected_fraction) in zip(calls[:3], expected_stage_calls):
             args, kwargs = call
-            self.assertEqual(args[0], "rl-book-1")
-            self.assertEqual(kwargs.get("kind"), ws.JOB_KIND_READALONG)
+            self.assertEqual(args[0], 42)
             self.assertEqual(kwargs.get("stage"), expected_stage)
             self.assertEqual(kwargs.get("progress"), expected_fraction)
         # Final call is the pre-existing, untouched completion update.
-        _final_args, final_kwargs = calls[-1]
-        self.assertEqual(
-            final_kwargs, {"kind": ws.JOB_KIND_READALONG, "progress": 1.0, "last_error": None},
-        )
+        final_args, final_kwargs = calls[-1]
+        self.assertEqual(final_args[0], 42)
+        self.assertEqual(final_kwargs, {"progress": 1.0, "last_error": None})
 
     def test_progress_write_failure_does_not_abort_generation(self):
         """A DB error while recording a stage-progress update must not fail
@@ -401,7 +526,7 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
                 raise RuntimeError("db is down")
             return Mock()
 
-        self.mock_database_service.update_latest_job.side_effect = _raise_only_for_stage_writes
+        self.mock_database_service.update_job_by_id.side_effect = _raise_only_for_stage_writes
 
         def _fake_deliver(*args, **kwargs):
             callback = kwargs["progress_callback"]
@@ -412,11 +537,10 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
         clients = self._worker_clients()
         with patch.object(ws, "uc", return_value=clients), \
              patch.object(ws, "deliver_readalong_epub", side_effect=_fake_deliver):
-            ws._readalong_epub_worker("rl-book-1")  # must not raise
+            ws._readalong_epub_worker("rl-book-1", 42)  # must not raise
 
-        final_args, final_kwargs = self.mock_database_service.update_latest_job.call_args
-        self.assertEqual(final_args[0], "rl-book-1")
-        self.assertEqual(final_kwargs.get("kind"), ws.JOB_KIND_READALONG)
+        final_args, final_kwargs = self.mock_database_service.update_job_by_id.call_args
+        self.assertEqual(final_args[0], 42)
         self.assertEqual(final_kwargs.get("progress"), 1.0)
         self.assertIsNone(final_kwargs.get("last_error"))
 

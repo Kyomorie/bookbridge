@@ -2806,8 +2806,8 @@ class SyncManager:
         if not target_book and not had_pending:
             failed_books = self.database_service.get_books_by_status('failed_retry_later')
             for book in failed_books:
-                # Check if this book has a job record and if it's eligible for retry
-                job = self.database_service.get_latest_job(book.abs_id)
+                # This loop drives alignment-worker retry eligibility.
+                job = self.database_service.get_latest_job(book.abs_id, kind=JOB_KIND_ALIGNMENT)
                 if job:
                     retry_count = job.retry_count or 0
                     last_attempt = job.last_attempt or 0
@@ -3028,8 +3028,8 @@ class SyncManager:
                 elif phase == 3:
                     global_pct = 0.9 + (local_pct * 0.1)
 
-                # Save to DB every time for now (or throttle if too frequent)
-                self.database_service.update_latest_job(abs_id, progress=global_pct)
+                # Save to DB every time for now (or throttle if too frequent).
+                self.database_service.update_latest_job(abs_id, kind=JOB_KIND_ALIGNMENT, progress=global_pct)
 
             # --- Heavy Lifting (Blocks this thread, but not the Main thread) ---
             # Step 1: Get EPUB file
@@ -3120,7 +3120,7 @@ class SyncManager:
                 book.status = 'active'
                 persist_book()
 
-                job = self.database_service.get_latest_job(abs_id)
+                job = self.database_service.get_latest_job(abs_id, kind=JOB_KIND_ALIGNMENT)
                 if job:
                     job.retry_count = 0
                     job.last_error = None
@@ -3355,8 +3355,8 @@ class SyncManager:
             book.status = 'active'
             persist_book()
 
-            # Update job record to reset retry count and mark 100%
-            job = self.database_service.get_latest_job(abs_id)
+            # Update the alignment job record to reset retry count and mark 100%.
+            job = self.database_service.get_latest_job(abs_id, kind=JOB_KIND_ALIGNMENT)
             if job:
                 job.retry_count = 0
                 job.last_error = None
@@ -3378,8 +3378,8 @@ class SyncManager:
             logger.error(f"❌ {sanitize_log_data(abs_title)}: {e}", exc_info=True)
 
             # --- Failure Update using database service ---
-            # Get current job to increment retry count
-            job = self.database_service.get_latest_job(abs_id)
+            # Get the current alignment job to increment its retry count.
+            job = self.database_service.get_latest_job(abs_id, kind=JOB_KIND_ALIGNMENT)
             current_retry_count = job.retry_count if job else 0
             new_retry_count = current_retry_count + 1
 

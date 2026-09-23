@@ -155,6 +155,9 @@ class _FakeBookOrbitClient:
     def __init__(self, tracks, library_id=7, libraries=None):
         self._tracks = tracks
         self._detail = {"libraryId": library_id, "files": []}
+        if libraries is None and tracks and tracks[0].get("absolute_path"):
+            library_root = Path(tracks[0]["absolute_path"]).parent.parent
+            libraries = [{"id": library_id, "folders": [{"path": str(library_root)}]}]
         self._libraries = libraries if libraries is not None else []
         self._sync_state = {"state": "unavailable", "unavailableReason": "no_media_overlay_epub"}
         self.scan_calls = []
@@ -350,9 +353,78 @@ def test_deliver_refuses_when_audio_sits_loose_in_the_audiobook_library_root(tmp
     assert not list(audiobooks_root.glob("*.epub"))
 
 
+def test_deliver_refuses_when_audio_sits_loose_in_a_nested_library_root(tmp_path, monkeypatch):
+    """Independent review, finding 2 (P1): the mount-root-equality guard
+    above only catches a loose book at ``AUDIOBOOKS_DIR`` itself. BookOrbit
+    can register a library one level further down (a "Shared Library"
+    folder under the mount), and a loose book sitting directly in THAT
+    folder resolves to the library's own shared root just the same way --
+    BookOrbit's own ``/api/v1/libraries`` is the only source of truth for
+    what counts as a library root, not any single env var. Without this
+    fix, delivery would have written the EPUB straight into that shared
+    folder and requested a scan, exactly the placement the root guard
+    exists to refuse."""
+    parser, alignment_service, book, _tracks, _ = _setup(tmp_path, monkeypatch)
+    audiobooks_root = tmp_path / "audiobooks"
+    shared_library_root = audiobooks_root / "Shared Library"
+    loose_track = _make_audio(shared_library_root, name="track_000")
+    # A second, independent loose book sitting in the SAME shared folder --
+    # the whole reason writing there is unsafe, not just theoretically wrong.
+    _make_audio(shared_library_root, name="another_book")
+    client = _FakeBookOrbitClient(
+        tracks=[{"absolute_path": str(loose_track)}],
+        library_id=9,
+        libraries=[{"id": 9, "folders": [{"path": str(shared_library_root)}]}],
+    )
+
+    result = deliver_readalong_epub(
+        parser, alignment_service, client,
+        _FakeEbookSyncClient("ebook-1"), _FakeAudioSyncClient("audio-1"), book,
+    )
+
+    assert result is None
+    assert not client.scan_calls
+    assert not list(shared_library_root.glob("*.epub"))
+
+
 # ---------------------------------------------------------------------------
 # Happy path: writes into the audio folder, scans, confirms
 # ---------------------------------------------------------------------------
+
+def test_deliver_refuses_when_library_root_metadata_is_unavailable(tmp_path, monkeypatch):
+    """An unknown BookOrbit ownership result must not permit a write."""
+    parser, alignment_service, book, tracks, audio_folder = _setup(tmp_path, monkeypatch)
+    client = _FakeBookOrbitClient(tracks=tracks, libraries=[])
+
+    result = deliver_readalong_epub(
+        parser, alignment_service, client,
+        _FakeEbookSyncClient("ebook-1"), _FakeAudioSyncClient("audio-1"), book,
+    )
+
+    assert result is None
+    assert not client.scan_calls
+    assert not list(audio_folder.glob("*.readalong.epub"))
+
+
+def test_deliver_refuses_malformed_library_metadata(tmp_path, monkeypatch):
+    """Malformed detail, library, or folder data cannot authorize a destination."""
+    parser, alignment_service, book, tracks, audio_folder = _setup(tmp_path, monkeypatch)
+    cases = [
+        ([], [{"id": 7, "folders": []}]),
+        ({"libraryId": 7}, [{"id": 7, "folders": 42}]),
+        ({"libraryId": 7}, [{"id": 7, "folders": [{"path": "\x00"}]}]),
+    ]
+    for detail, libraries in cases:
+        client = _FakeBookOrbitClient(tracks=tracks, libraries=libraries)
+        client._detail = detail
+        result = deliver_readalong_epub(
+            parser, alignment_service, client,
+            _FakeEbookSyncClient("ebook-1"), _FakeAudioSyncClient("audio-1"), book,
+        )
+        assert result is None
+        assert not client.scan_calls
+    assert not list(audio_folder.glob("*.readalong.epub"))
+
 
 def test_deliver_writes_into_audio_folder_and_confirms_enabled(tmp_path, monkeypatch):
     parser, alignment_service, book, tracks, audio_folder = _setup(tmp_path, monkeypatch)

@@ -117,7 +117,7 @@ class ResolvedAudioSource:
 
 
 def resolve_audiobook_folder(
-    bookorbit_client: "BookOrbitClient", audio_book_id,
+    bookorbit_client: "BookOrbitClient", audio_book_id: object,
 ) -> Optional[ResolvedAudioSource]:
     """Resolve a BookOrbit audio entry's real track files and their shared folder.
 
@@ -156,7 +156,7 @@ def resolve_audiobook_folder(
 
 
 def _resolve_library_id(
-    bookorbit_client: "BookOrbitClient", audio_book_id, audio_folder: Path,
+    bookorbit_client: "BookOrbitClient", audio_book_id: object, audio_folder: Path,
 ) -> Optional[int]:
     """The BookOrbit library id owning ``audio_folder``.
 
@@ -183,6 +183,89 @@ def _resolve_library_id(
             if _is_within(audio_folder, Path(folder_path)):
                 return library.get("id")
     return None
+
+
+def _is_bookorbit_library_root(
+    bookorbit_client: "BookOrbitClient", audio_book_id: object, folder: Path,
+) -> bool:
+    """Whether ``folder`` is unsafe for a generated read-along.
+
+    Queries BookOrbit's advertised folder roots and the audio entry's
+    ``libraryId``. A failed, empty, malformed, or unrelated lookup fails
+    closed; a book-owned folder is safe only beneath its owning root.
+    """
+    try:
+        detail = bookorbit_client.get_book_detail(audio_book_id) or {}
+        libraries = bookorbit_client.get_libraries()
+    except Exception:
+        logger.warning(
+            "BookOrbit: could not inspect library roots for read-along delivery",
+            exc_info=True,
+        )
+        return True
+    if not isinstance(detail, dict):
+        logger.warning(
+            "BookOrbit: audio entry metadata is malformed; refusing read-along delivery"
+        )
+        return True
+    if not isinstance(libraries, list) or not libraries:
+        logger.warning(
+            "BookOrbit: library root metadata unavailable; refusing read-along delivery"
+        )
+        return True
+
+    owning_library_id = detail.get("libraryId")
+    if owning_library_id is not None:
+        libraries = [
+            library for library in libraries
+            if isinstance(library, dict)
+            and str(library.get("id")) == str(owning_library_id)
+        ]
+        if not libraries:
+            logger.warning(
+                "BookOrbit: library metadata does not include owning library %s; "
+                "refusing read-along delivery",
+                owning_library_id,
+            )
+            return True
+
+    try:
+        normalized_folder = folder.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        logger.warning(
+            "BookOrbit: could not normalize resolved audio folder '%s'; "
+            "refusing read-along delivery",
+            folder,
+            exc_info=True,
+        )
+        return True
+    folder_is_under_advertised_root = False
+    for library in libraries:
+        if not isinstance(library, dict):
+            continue
+        folders = library.get("folders")
+        if not isinstance(folders, list):
+            continue
+        for lib_folder in folders:
+            if not isinstance(lib_folder, dict) or not lib_folder.get("path"):
+                continue
+            try:
+                root = Path(lib_folder["path"]).resolve(strict=False)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                continue
+            if normalized_folder == root:
+                return True
+            if _is_within(normalized_folder, root):
+                folder_is_under_advertised_root = True
+
+    if not folder_is_under_advertised_root:
+        logger.warning(
+            "BookOrbit: resolved audio folder '%s' is outside its owning library "
+            "roots; refusing read-along delivery",
+            folder,
+        )
+        return True
+    return False
 
 
 def _wait_for_read_aloud_sync(
@@ -327,16 +410,15 @@ def deliver_readalong_epub(
             abs_id, resolved.folder, books_root,
         )
         return None
-    if resolved.folder == audiobooks_root:
+    if resolved.folder == audiobooks_root or _is_bookorbit_library_root(
+        bookorbit_client, audio_book_id, resolved.folder,
+    ):
         logger.error(
-            "🚫 Refusing read-along delivery for '%s': BookOrbit audio entry %s is a loose "
-            "file sitting directly in the audiobook library root ('%s') rather than in its "
-            "own folder. BookOrbit groups a folder's files into one entry, so a read-along "
-            "written to the root would be grouped with every other root-level book instead "
-            "of this one -- and BookOrbit's own record of this entry's folder is the audio "
-            "file itself, so uploading to it cannot work either. Move '%s' into its own "
-            "folder and rescan the library, then regenerate.",
-            abs_id, audio_book_id, audiobooks_root, resolved.track_paths[0],
+            "🚫 Refusing read-along delivery for '%s': resolved audio folder '%s' is a "
+            "shared BookOrbit library root or its ownership could not be verified; "
+            "move loose audio into its own book folder under the owning library root "
+            "and rescan before regenerating",
+            abs_id, resolved.folder,
         )
         return None
 
@@ -352,7 +434,7 @@ def deliver_readalong_epub(
     except FileNotFoundError:
         logger.warning(
             "🚫 Refusing read-along delivery for '%s': could not locate source EPUB '%s' on disk",
-            abs_id, epub_filename,
+            abs_id, epub_filename, exc_info=True,
         )
         return None
 
@@ -429,7 +511,7 @@ def deliver_readalong_epub(
 
 
 def remove_readalong_epub(
-    bookorbit_client: "BookOrbitClient", audio_book_id, output_path: "Path | str",
+    bookorbit_client: "BookOrbitClient", audio_book_id: object, output_path: "Path | str",
 ) -> bool:
     """Remove a previously-delivered read-along EPUB, in BookOrbit and on disk.
 

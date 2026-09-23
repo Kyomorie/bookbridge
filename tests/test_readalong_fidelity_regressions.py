@@ -177,6 +177,50 @@ def test_marker_verification_still_catches_a_real_text_change():
         _verify_marker_injection(original, corrupted, spine_index=1, href="ch1.xhtml")
 
 
+def test_marker_verification_still_catches_a_corrupted_newline_inside_pre():
+    """Independent review, finding 7: the ASCII-whitespace-run collapse that
+    tolerates an ordinary double space / tab at a marker split (see the two
+    tests above) must NOT also tolerate a genuinely meaningful newline
+    inside <pre> (CSS `white-space: pre`) being flattened to a space --
+    that is real content corruption, not an artifact of where a marker
+    split happened to land. `test_marker_verification_still_catches_a_real_text_change`
+    above only covers a dropped word; this covers the whitespace-specific
+    hole a purely regex-based collapse would otherwise leave."""
+    original = b"<html><body><pre>First line.\nSecond line.</pre></body></html>"
+    corrupted = b"<html><body><pre>First line. Second line.</pre></body></html>"
+
+    with pytest.raises(ValueError):
+        _verify_marker_injection(original, corrupted, spine_index=1, href="ch1.xhtml")
+
+
+def test_marker_verification_preserves_prefixed_pre_whitespace():
+    """The XHTML namespace prefix must not hide a preformatted element."""
+    original = (
+        b'<h:html xmlns:h="http://www.w3.org/1999/xhtml"><h:body>'
+        b"<h:pre>First line.\nSecond line.</h:pre></h:body></h:html>"
+    )
+    corrupted = original.replace(b"First line.\nSecond", b"First line. Second")
+
+    with pytest.raises(ValueError):
+        _verify_marker_injection(original, corrupted, spine_index=1, href="ch1.xhtml")
+
+
+def test_marker_verification_pre_content_survives_a_legitimate_injection_elsewhere():
+    """A <pre> block elsewhere in the same spine item, left completely
+    untouched by marker injection, must not itself cause a false mismatch
+    -- the <pre> protection has to be transparent on the happy path, not
+    just strict on the corruption path above."""
+    original = (
+        b"<html><body><p>Hello world.</p><pre>Keep\n  this exact\tspacing.</pre></body></html>"
+    )
+    soup = parse_original_spine_xml(original)
+    assert soup is not None
+    nodes = content_string_nodes(original_body_scope(soup))
+    modified = _inject_markers_into_original(soup, nodes, [(0, 0, len("Hello world."), "c1-s0")])
+
+    _verify_marker_injection(original, modified, spine_index=1, href="ch1.xhtml")
+
+
 def test_prefixed_xhtml_gets_marker_in_the_source_namespace():
     original = (
         b'<h:html xmlns:h="http://www.w3.org/1999/xhtml"><h:body><h:p>First sentence.</h:p>'

@@ -61,6 +61,9 @@ class ForgeService:
         self.alignment_service = alignment_service
         self.active_tasks = set()
         self.lock = threading.Lock()
+        self.readalong_epub_worker = None
+        self.readalong_generation_admitter = None
+        self.readalong_generation_releaser = None
         
         # Load environment variables
         self.ABS_API_TOKEN = os.environ.get("ABS_KEY")
@@ -181,6 +184,9 @@ class ForgeService:
         )
         worker.active_tasks = self.active_tasks
         worker.lock = self.lock
+        worker.readalong_epub_worker = self.readalong_epub_worker
+        worker.readalong_generation_admitter = self.readalong_generation_admitter
+        worker.readalong_generation_releaser = self.readalong_generation_releaser
         worker.ABS_API_TOKEN = getattr(worker.abs_client, "token", self.ABS_API_TOKEN)
         worker.ABS_API_URL = getattr(worker.abs_client, "base_url", self.ABS_API_URL)
         return worker
@@ -291,14 +297,29 @@ class ForgeService:
         abs_id = getattr(book, "abs_id", None)
         if not abs_id or not self.database_service:
             return
+
+        admit = self.readalong_generation_admitter
+        release = self.readalong_generation_releaser
+        if admit is None or release is None:
+            logger.error(
+                "Read-along EPUB: runtime admission callbacks are not configured for '%s'",
+                abs_id,
+            )
+            return
+        if not admit(abs_id):
+            logger.info("Read-along EPUB: generation already active for '%s'; skipping duplicate post-forge request", abs_id)
+            return
+
         try:
             if not self.database_service.consume_readalong_epub_intent(abs_id):
+                release(abs_id)
                 return
         except Exception as e:
             logger.error(
                 "Read-along EPUB: could not read/consume generation intent for '%s': %s",
                 abs_id, e, exc_info=True,
             )
+            release(abs_id)
             return
 
         if getattr(book, "audio_source", None) != "BookOrbit":
@@ -310,6 +331,7 @@ class ForgeService:
                 "Read-along EPUB: intent found for '%s' but audio_source is '%s', not BookOrbit; skipping",
                 abs_id, getattr(book, "audio_source", None),
             )
+            release(abs_id)
             return
 
         align_method = None
@@ -324,10 +346,12 @@ class ForgeService:
                 "Read-along EPUB: skipping '%s' -- forge produced alignment method '%s', not eligible",
                 abs_id, align_method or "none",
             )
+            release(abs_id)
             return
 
         logger.info("📖 Read-along EPUB: generation intent consumed for '%s'; starting", abs_id)
 
+        job_id = None
         try:
             from src.db.models import Job, JOB_KIND_READALONG
             # Must carry the read-along kind. Untagged it defaults to
@@ -336,12 +360,14 @@ class ForgeService:
             # worker ever running, and the worker's own kind-scoped
             # update_latest_job calls would not find it, so its real progress
             # and failures would silently no-op.
-            self.database_service.save_job(
+            job = self.database_service.save_job(
                 Job(
                     abs_id=abs_id, last_attempt=time.time(), retry_count=0,
                     progress=0.0, last_error=None, kind=JOB_KIND_READALONG,
                 )
             )
+            # Keep the row id so progress writes stay bound to this attempt.
+            job_id = getattr(job, "id", None)
         except Exception as e:
             logger.warning(
                 "Read-along EPUB: could not record a job row for '%s'; proceeding without status tracking: %s",
@@ -349,19 +375,49 @@ class ForgeService:
             )
 
         user_id = getattr(book, "user_id", None)
-        threading.Thread(
-            target=self._run_readalong_epub_after_forge,
-            args=(abs_id, user_id),
-            daemon=True,
-            name=f"readalong-epub-{abs_id}",
-        ).start()
+        try:
+            threading.Thread(
+                target=self._run_readalong_epub_after_forge,
+                args=(abs_id, user_id, job_id),
+                daemon=True,
+                name=f"readalong-epub-{abs_id}",
+            ).start()
+        except Exception as e:
+            if job_id is not None:
+                try:
+                    self.database_service.update_job_by_id(
+                        job_id, last_error=f"Read-along generation failed to start: {e}",
+                    )
+                except Exception as update_error:
+                    logger.debug("Read-along: could not record start failure for '%s': %s", abs_id, update_error)
+            release(abs_id)
+            logger.error(
+                "Read-along EPUB: could not start generation for '%s': %s",
+                abs_id, e, exc_info=True,
+            )
 
-    def _run_readalong_epub_after_forge(self, abs_id: str, user_id) -> None:
+    def _run_readalong_epub_after_forge(self, abs_id: str, user_id, job_id=None) -> None:
         """Worker thread body: bind the owning user's context, then run the
         existing Phase 6a worker. See ``_maybe_generate_readalong_epub`` for why
-        this needs its own thread and its own ambient-context binding."""
+        this needs its own thread and its own ambient-context binding.
+
+        ``job_id`` is forwarded straight through to ``_readalong_epub_worker``;
+        it is ``None`` when
+        ``_maybe_generate_readalong_epub``'s own best-effort ``save_job`` call
+        failed, in which case the worker skips every job-state write rather
+        than guessing at an ambiguous "latest" row."""
         uid_token = None
         creds_token = None
+        worker_started = False
+
+        def _mark_failure(message: str) -> None:
+            if job_id is None:
+                return
+            try:
+                self.database_service.update_job_by_id(job_id, last_error=message)
+            except Exception as update_error:
+                logger.debug("Read-along: could not record worker failure for '%s': %s", abs_id, update_error)
+
         try:
             from src.utils.user_context import (
                 set_current_user_id, reset_current_user_id,
@@ -387,13 +443,32 @@ class ForgeService:
                     abs_id,
                 )
 
-            from src.web_server import _readalong_epub_worker
-            _readalong_epub_worker(abs_id)
+            worker = self.readalong_epub_worker
+            if worker is None:
+                logger.error(
+                    "Read-along EPUB: runtime worker callback is not configured for '%s'",
+                    abs_id,
+                )
+                _mark_failure("Read-along generation worker is not configured")
+                return
+            worker_started = True
+            worker(abs_id, job_id)
         except Exception as e:
             logger.error(
                 "❌ Read-along EPUB: post-forge generation failed for '%s': %s", abs_id, e, exc_info=True,
             )
+            _mark_failure(f"Unexpected error: {e}")
         finally:
+            release = self.readalong_generation_releaser
+            # The web worker owns the reservation once handed the job. This
+            # wrapper only owns cleanup before handoff.
+            if not worker_started and release is not None:
+                release(abs_id)
+            elif not worker_started:
+                logger.error(
+                    "Read-along EPUB: runtime release callback is not configured for '%s'",
+                    abs_id,
+                )
             if creds_token is not None:
                 reset_current_user_credentials(creds_token)
             if uid_token is not None:
@@ -409,9 +484,9 @@ class ForgeService:
         if last_error is not None:
             updates["last_error"] = last_error
         try:
-            updated = self.database_service.update_latest_job(abs_id, **updates)
+            from src.db.models import Job, JOB_KIND_ALIGNMENT
+            updated = self.database_service.update_latest_job(abs_id, kind=JOB_KIND_ALIGNMENT, **updates)
             if not updated:
-                from src.db.models import Job
                 self.database_service.save_job(
                     Job(
                         abs_id=abs_id,

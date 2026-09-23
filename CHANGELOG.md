@@ -8,6 +8,14 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Read-along generation review fixes completed.** Terminal audio cuts no longer
+  emit empty chunks; delivery rejects unsafe shared or nested library roots; EPUB 2
+  conversion preserves publication identifiers required by IDPF-obfuscated fonts;
+  generation isolates job kinds and worker-owned IDs, coordinates admission with
+  shared per-book reservations, releases failed dispatches, and recovers stale rows
+  after restart; marker injection preserves escaped XHTML IDs and `<pre>` content;
+  and Forge/alignment `__main__` entry points now receive callbacks.
+
 - **Read-along EPUB generation now covers EPUB 2 books and no longer mis-times
   unnarrated sections.** Several correctness fixes landed together: a stretch of text
   with no narration behind it used to be given a nearby chapter's audio instead of

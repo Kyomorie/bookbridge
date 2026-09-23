@@ -1,37 +1,19 @@
-"""Finding 2 (P1) regression coverage: a normal sync cycle must never falsely
-complete an in-flight read-along generation job.
+"""Regression coverage for isolation between alignment and read-along jobs.
 
-Mechanism confirmed by reading the code: `SyncManager._promote_alignment_backed_book`
-(called from the main per-book sync loop on every active book, every cycle --
-not just on crash recovery) looked up "the latest `Job` row for this abs_id"
-with no notion of what kind of job that was, and if it looked unfinished
-(progress < 1.0, a retry_count, or a last_error) stamped it
-progress=1.0/last_error=None. Phase 6a's read-along EPUB generation
-(`web_server.generate_readalong_epub`) creates a `Job` row in the very same
-table, so an ordinary sync cycle that ran while generation was still in
-flight (or had genuinely failed) would silently mark that job "done" without
-its worker ever finishing -- and erase a recorded failure.
-
-The fix adds `Job.kind` (migration `3f6c8a1d9e42_add_job_kind.py`) and scopes
-`_promote_alignment_backed_book`'s lookup/update to `kind=JOB_KIND_ALIGNMENT`
-via `DatabaseService.get_latest_job`/`update_latest_job`'s new optional
-`kind` filter. Read-along jobs are `kind=JOB_KIND_READALONG` throughout
-(`generate_readalong_epub`, `_readalong_epub_worker`, `readalong_epub_status`)
-so they are never the "latest alignment job" regardless of timestamp.
-
-Uses a real `DatabaseService` (temp SQLite, full Alembic migration chain)
-rather than a MagicMock so the SQL-level kind filtering in
-`get_latest_job`/`update_latest_job` is exercised for real, not merely
-asserted via call arguments a stub could ignore.
+The tests use a real temporary SQLite database so kind filters are exercised at
+the SQL layer.
 """
 
 import shutil
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from src.db.database_service import DatabaseService
 from src.db.models import Book, Job, JOB_KIND_ALIGNMENT, JOB_KIND_READALONG
+from src.services.forge_service import ForgeService
 from src.sync_manager import SyncManager
 
 
@@ -142,10 +124,7 @@ class TestJobKindIsolation(unittest.TestCase):
         self.assertIsNone(readalong_job.last_error)
 
     def test_get_and_update_latest_job_default_to_unfiltered_for_compatibility(self) -> None:
-        """Existing callers that never pass `kind` (Forge & Match's
-        `_record_forge_match_job`/`_update_forge_match_job`, the dashboard's
-        processing/forging job-progress lookup) must keep seeing "the newest
-        job regardless of kind" -- the historical behavior."""
+        """The database helpers retain their historical unfiltered default."""
         self.db.save_job(
             Job(abs_id=self.abs_id, last_attempt=1000.0, retry_count=0, progress=0.2,
                 last_error=None, kind=JOB_KIND_ALIGNMENT)
@@ -161,6 +140,172 @@ class TestJobKindIsolation(unittest.TestCase):
         updated = self.db.update_latest_job(self.abs_id, last_error="unfiltered update")
         self.assertEqual(updated.kind, JOB_KIND_READALONG)
         self.assertEqual(updated.last_error, "unfiltered update")
+
+    def test_dashboard_processing_state_uses_alignment_job(self) -> None:
+        """Dashboard progress must ignore a newer read-along job."""
+        self.db.save_job(
+            Job(abs_id=self.abs_id, last_attempt=1000.0, progress=0.25,
+                last_error="alignment wait", kind=JOB_KIND_ALIGNMENT)
+        )
+        self.db.save_job(
+            Job(abs_id=self.abs_id, last_attempt=2000.0, progress=0.8,
+                last_error="read-along build", kind=JOB_KIND_READALONG)
+        )
+        book = self.db.get_book(self.abs_id)
+        book.status = "processing"
+        import src.web_server as ws
+        with patch.object(ws, "database_service", self.db):
+            mapping = ws._build_dashboard_mapping(
+                book, {}, {}, {}, {}, {}, {},
+            )
+        self.assertEqual(mapping["job_progress"], 25.0)
+        self.assertEqual(mapping["job_last_error"], "alignment wait")
+
+
+class TestCheckPendingJobsRetryKindIsolation(unittest.TestCase):
+    """Alignment retry eligibility reads only alignment jobs."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.mkdtemp()
+        self.db_path = str(Path(self.temp_dir) / "retry_job_kind.db")
+        self.db = DatabaseService(self.db_path)
+        self.manager = SyncManager(
+            database_service=self.db,
+            alignment_service=_StubAlignmentService(has_alignment=True),
+            sync_clients={},
+            epub_cache_dir=Path(self.temp_dir) / "epub_cache",
+            data_dir=Path(self.temp_dir),
+            books_dir=Path(self.temp_dir) / "books",
+        )
+        self.manager._job_thread = None
+        self.abs_id = "book-retry-overlap"
+        # audiobook_only short-circuits straight to "mark active" with no
+        # worker thread, so the retry-eligibility decision itself is the only
+        # thing under test here -- no transcription/alignment pipeline needed.
+        self.db.save_book(Book(
+            abs_id=self.abs_id, abs_title="Retry Overlap Book",
+            status="failed_retry_later", sync_mode="audiobook_only",
+        ))
+
+    def tearDown(self) -> None:
+        self.db.db_manager.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_retry_eligibility_reads_the_alignment_jobs_own_retry_count(self) -> None:
+        """The alignment job is retry-eligible (retry_count below the max,
+        last_attempt well outside the delay window); a NEWER, unrelated
+        read-along job has already exhausted its own retry budget. Retry
+        eligibility must be decided from the alignment job's own state, not
+        the read-along job's -- the newer row must never suppress a
+        legitimate alignment retry just because IT looks exhausted."""
+        old_enough = time.time() - 3600  # well past the default 15-minute delay
+        self.db.save_job(
+            Job(abs_id=self.abs_id, last_attempt=old_enough, retry_count=1,
+                last_error="transient failure", kind=JOB_KIND_ALIGNMENT)
+        )
+        self.db.save_job(
+            Job(abs_id=self.abs_id, last_attempt=time.time(), retry_count=99,
+                last_error="unrelated read-along failure", kind=JOB_KIND_READALONG)
+        )
+
+        self.manager.check_pending_jobs()
+
+        book = self.db.get_book(self.abs_id)
+        self.assertEqual(book.status, "active", "the eligible alignment retry must have run")
+
+
+class TestForgeMatchJobKindIsolation(unittest.TestCase):
+    """Forge progress updates only its alignment job row."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.mkdtemp()
+        self.db_path = str(Path(self.temp_dir) / "forge_job_kind.db")
+        self.db = DatabaseService(self.db_path)
+        self.forge = ForgeService(
+            database_service=self.db, abs_client=None, booklore_client=None,
+            storyteller_client=None, library_service=None, ebook_parser=None,
+            transcriber=None, alignment_service=None,
+        )
+        self.abs_id = "book-forge-overlap"
+        self.db.save_book(Book(abs_id=self.abs_id, abs_title="Forge Overlap Book", status="active"))
+
+    def tearDown(self) -> None:
+        self.db.db_manager.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_forge_progress_update_does_not_complete_a_newer_readalong_job(self) -> None:
+        """A read-along job created AFTER the alignment job Forge is actually
+        tracking must survive a Forge & Match progress update untouched."""
+        self.db.save_job(
+            Job(abs_id=self.abs_id, last_attempt=1000.0, retry_count=0, progress=0.2,
+                last_error=None, kind=JOB_KIND_ALIGNMENT)
+        )
+        self.db.save_job(
+            Job(abs_id=self.abs_id, last_attempt=2000.0, retry_count=0, progress=0.0,
+                last_error=None, kind=JOB_KIND_READALONG)
+        )
+
+        self.forge._update_forge_match_job(self.abs_id, progress=1.0)
+
+        alignment_job = self.db.get_latest_job(self.abs_id, kind=JOB_KIND_ALIGNMENT)
+        readalong_job = self.db.get_latest_job(self.abs_id, kind=JOB_KIND_READALONG)
+        self.assertEqual(alignment_job.progress, 1.0)
+        self.assertEqual(readalong_job.progress, 0.0)
+        self.assertIsNone(readalong_job.last_error)
+
+    def test_forge_progress_update_still_updates_its_own_alignment_job(self) -> None:
+        """The job Forge & Match actually exists to track still gets updated
+        when no newer, unrelated job is around to be mistaken for it."""
+        self.db.save_job(
+            Job(abs_id=self.abs_id, last_attempt=1000.0, retry_count=0, progress=0.2,
+                last_error=None, kind=JOB_KIND_ALIGNMENT)
+        )
+
+        self.forge._update_forge_match_job(self.abs_id, progress=0.6)
+
+        alignment_job = self.db.get_latest_job(self.abs_id, kind=JOB_KIND_ALIGNMENT)
+        self.assertEqual(alignment_job.progress, 0.6)
+
+
+class TestUpdateJobById(unittest.TestCase):
+    """A worker can update its own row even when a newer row exists."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.mkdtemp()
+        self.db_path = str(Path(self.temp_dir) / "update_by_id.db")
+        self.db = DatabaseService(self.db_path)
+        self.abs_id = "book-two-jobs"
+        self.db.save_book(Book(abs_id=self.abs_id, abs_title="Two Jobs Book", status="active"))
+
+    def tearDown(self) -> None:
+        self.db.db_manager.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_updates_only_the_named_row_even_when_a_newer_row_of_the_same_kind_exists(self) -> None:
+        first = self.db.save_job(
+            Job(abs_id=self.abs_id, last_attempt=1000.0, retry_count=0, progress=0.0,
+                last_error=None, kind=JOB_KIND_READALONG, stage="queued")
+        )
+        second = self.db.save_job(
+            Job(abs_id=self.abs_id, last_attempt=2000.0, retry_count=0, progress=0.0,
+                last_error=None, kind=JOB_KIND_READALONG, stage="queued")
+        )
+        self.assertNotEqual(first.id, second.id)
+        self.assertGreater(second.last_attempt, first.last_attempt)  # second really is "the latest"
+
+        updated = self.db.update_job_by_id(first.id, progress=1.0, last_error=None)
+
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated.id, first.id)
+        self.assertEqual(updated.progress, 1.0)
+        # The newer row -- what update_latest_job would have resolved to --
+        # is completely untouched.
+        untouched = self.db.get_latest_job(self.abs_id, kind=JOB_KIND_READALONG)
+        self.assertEqual(untouched.id, second.id)
+        self.assertEqual(untouched.progress, 0.0)
+
+    def test_returns_none_for_an_unknown_job_id(self) -> None:
+        self.assertIsNone(self.db.update_job_by_id(999999, progress=1.0))
 
 
 if __name__ == "__main__":

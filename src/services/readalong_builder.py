@@ -179,6 +179,7 @@ ceiling on file count: several short chapters still pack into one file, and
 a book that is one enormous chapter still splits.
 """
 import bisect
+import html
 import logging
 import mimetypes
 import os
@@ -374,13 +375,9 @@ def _opf_package_version(opf_bytes: bytes) -> Optional[str]:
     """The OPF ``<package version="...">`` attribute, or ``None`` if the OPF
     fails to parse or the attribute is absent.
 
-    Used by the Finding 2 fix (independent review): an EPUB 2 ``package``
-    element is versioned ``"2.0"``; EPUB 3 is ``"3.0"`` (or a later 3.x).
     ``build_readalong_epub`` refuses anything that does not start with
-    ``"3"`` rather than silently emitting a package that still claims to be
-    EPUB 2 while carrying EPUB-3-only media overlays and no EPUB 3
-    navigation document -- BookOrbit accepting the SMIL does not make the
-    package conformant.
+    ``"3"`` rather than emitting a package that claims to be EPUB 2 while
+    carrying EPUB-3-only media overlays.
     """
     try:
         parser = etree.XMLParser(resolve_entities=False, no_network=True)
@@ -398,11 +395,9 @@ def _opf_has_media_overlays(opf_bytes: bytes) -> bool:
     (a spine document already wired to a SMIL) or a publication-level
     ``<meta property="media:duration">`` with no ``refines`` (the one global
     duration EPUB 3 permits -- https://www.w3.org/TR/epub-33/#sec-duration).
-    Used by the Defect 2 fix (independent review): ``_rewrite_opf`` always
-    appends its own new global ``media:duration``, so building from a source
-    that already carries one would leave two, which the spec disallows. The
-    practical case is a Storyteller-produced read-along fed back into this
-    builder. Returns ``False`` (not refused) if the OPF fails to parse here
+    ``_rewrite_opf`` appends its own global ``media:duration``, so a source
+    that already carries one is refused. Returns ``False`` if the OPF fails
+    to parse here
     -- the existing, later parse in the caller is what actually surfaces a
     parse failure.
     """
@@ -455,14 +450,9 @@ def _encode_href_path(path: str) -> str:
     """Percent-encode a decoded, filesystem-style relative path into a valid
     URI reference for use as an OPF/SMIL ``href``/``src`` attribute value.
 
-    Finding 4 (independent review): this module computes every generated
-    reference (SMIL ``<text src>``/``<audio src>``, the new manifest
-    ``<item href>`` for the SMIL and embedded audio files) with
-    ``posixpath.relpath`` against real, decoded filenames/directory names --
-    if any path segment contains a character a URI reference must escape
-    (a space, ``#``, ``?``, non-ASCII, ...), the generated XML would embed an
-    invalid or wrongly-interpreted reference. ``/`` is left unescaped since it
-    is the path separator, not itself part of any segment's name.
+    Generated references are built from decoded archive paths, so each path
+    segment is percent-encoded before it is written into XML. ``/`` remains
+    the path separator.
     """
     return quote(path, safe="/")
 
@@ -729,7 +719,9 @@ def _compute_audio_file_boundaries(
             if not moved:
                 break
         candidate = min(candidate, audio_duration_seconds)
-        if candidate <= prev_cut:
+        # The final interval already closes at audio_duration_seconds, so a
+        # cut nudged to that same endpoint would create an empty file.
+        if candidate <= prev_cut or candidate >= audio_duration_seconds:
             continue
         cuts.append(candidate)
         prev_cut = candidate
@@ -987,21 +979,16 @@ _EXISTING_ID_RE = re.compile(r'\bid\s*=\s*(["\'])(.*?)\1')
 
 
 def _existing_ids_in_markup(content: Union[str, bytes]) -> set:
-    """Every ``id="..."`` value already present anywhere in ``content``.
+    """Every ``id="..."`` value already present anywhere in ``content``,
+    resolved to what an XML/HTML parser will actually see.
 
-    Finding 6 (independent review): marker ids were allocated as
-    ``c<spine>-s<n>`` without checking whether that id already belongs to
-    some other element in the source document -- a source that happens to
-    contain e.g. ``<p id="c1-s0">`` would end up with two elements sharing
-    that id, making any SMIL fragment reference to it ambiguous (a real
-    reproduction: the source's own paragraph AND the injected marker span
-    both carrying ``id="c1-s0"``). This scans the whole spine item's markup
-    up front so :func:`_allocate_marker_id` can pick a guaranteed-unique
-    value.
+    Existing ids may contain character references in the raw markup. Decode
+    those values before allocating marker ids so generated fragments remain
+    unique after the XHTML parser resolves the attributes.
     """
     if isinstance(content, bytes):
         content = content.decode("utf-8", "replace")
-    return {match.group(2) for match in _EXISTING_ID_RE.finditer(content)}
+    return {html.unescape(match.group(2)) for match in _EXISTING_ID_RE.finditer(content)}
 
 
 def _allocate_marker_id(desired_id: str, existing_ids: set) -> str:
@@ -1557,12 +1544,27 @@ def _verify_marker_injection(original: bytes, modified: bytes, spine_index: int,
             if span.get("id") is not None:
                 span.unwrap()
         soup.smooth()
+
+        # Preserve preformatted text verbatim while normalizing collapsible
+        # whitespace in ordinary prose below.
+        protected_pre: List[str] = []
+        for pre in soup.find_all(
+            lambda tag: getattr(tag, "name", "").rsplit(":", 1)[-1].lower() == "pre"
+        ):
+            protected_pre.append(pre.get_text())
+            placeholder = f"\x00PRE{len(protected_pre) - 1}\x00"
+            pre.clear()
+            pre.append(placeholder)
+
         text = soup.get_text(separator=" ", strip=True)
         # Collapse ASCII-whitespace runs uniformly on BOTH sides -- see this
         # function's docstring. Cannot hide a real content change: a dropped
         # word, an altered character or reordered text is never a pure
         # whitespace-run-length difference.
-        return _ASCII_WHITESPACE_RUN_RE.sub(" ", text)
+        text = _ASCII_WHITESPACE_RUN_RE.sub(" ", text)
+        for index, original in enumerate(protected_pre):
+            text = text.replace(f"\x00PRE{index}\x00", original)
+        return text
 
     original_text = canonical_text(original)
     modified_text = canonical_text(modified)
@@ -2426,6 +2428,7 @@ def _build_readalong_epub_impl(
         except ValueError as e:
             logger.warning(
                 "🚫 Refusing to build read-along EPUB for '%s': %s", abs_id, e,
+                exc_info=True,
             )
             return None
         modified_files[opf_path] = modified_opf

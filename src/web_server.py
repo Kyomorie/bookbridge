@@ -52,7 +52,7 @@ from src.api.hardcover_routes import hardcover_bp, init_hardcover_routes
 from src.api.storygraph_routes import storygraph_bp, init_storygraph_routes
 from src.api.bookfusion_upload_client import extract_epub_metadata, _S3_TIMEOUT_LARGE
 from src.version import APP_VERSION, get_update_status
-from src.db.models import State, JOB_KIND_READALONG
+from src.db.models import State, JOB_KIND_ALIGNMENT, JOB_KIND_READALONG
 from src.sync_clients.sync_client_interface import LocatorResult, UpdateProgressRequest
 from src.services.audio_source_adapters import AudioResult, ABSAudioSourceAdapter, BookLoreAudioSourceAdapter, BookOrbitAudioSourceAdapter
 from src.utils.storyteller_transcript import StorytellerTranscript
@@ -103,6 +103,23 @@ SUGGESTIONS_CACHE_LOCK = threading.Lock()
 # unbounded, survives container rebuilds, and is shared across the admin's tabs.
 MATCH_QUEUE_FILE_NAME = "match_queue.json"
 MATCH_QUEUE_LOCK = threading.RLock()
+_READALONG_GENERATION_LOCK = threading.Lock()
+_ACTIVE_READALONG_GENERATIONS = set()
+
+
+def _claim_readalong_generation(abs_id: str) -> bool:
+    """Reserve one in-process read-along generation for ``abs_id``."""
+    with _READALONG_GENERATION_LOCK:
+        if abs_id in _ACTIVE_READALONG_GENERATIONS:
+            return False
+        _ACTIVE_READALONG_GENERATIONS.add(abs_id)
+        return True
+
+
+def _release_readalong_generation(abs_id: str) -> None:
+    """Release the in-process read-along generation reservation."""
+    with _READALONG_GENERATION_LOCK:
+        _ACTIVE_READALONG_GENERATIONS.discard(abs_id)
 STATS_CACHE = {}
 STATS_CACHE_LOCK = threading.Lock()
 STATS_CACHE_TTL_SECONDS = 60
@@ -359,6 +376,14 @@ def setup_dependencies(app, test_container=None):
 
     # Initialize manager and services
     manager = container.sync_manager()
+
+    # Forge workers run in their own module and thread. Inject the live
+    # read-along worker/admission hooks so the production ``__main__`` entry
+    # point never imports a second, uninitialized ``src.web_server`` module.
+    forge = container.forge_service()
+    forge.readalong_epub_worker = _readalong_epub_worker
+    forge.readalong_generation_admitter = _claim_readalong_generation
+    forge.readalong_generation_releaser = _release_readalong_generation
 
     # Wire the SuggestionsService factory into the shelf-watch singleton.
     # web_server.py is the `__main__` entry point; if shelf_watch_service tried
@@ -5247,7 +5272,7 @@ def _build_dashboard_mapping(
     }
 
     if book.status in ("processing", "forging"):
-        job = database_service.get_latest_job(book.abs_id)
+        job = database_service.get_latest_job(book.abs_id, kind=JOB_KIND_ALIGNMENT)
         if job:
             mapping["job_progress"] = round((job.progress or 0.0) * 100, 1)
             mapping["job_last_error"] = job.last_error
@@ -9257,7 +9282,7 @@ def _readalong_stage_label(stage: Optional[str]) -> str:
     return _READALONG_STAGE_LABELS.get(stage, stage)
 
 
-def _readalong_epub_worker(abs_id: str) -> None:
+def _readalong_epub_worker(abs_id: str, job_id: Optional[int] = None) -> None:
     """Background worker: generate (Phases 1-4) and deliver (Phase 5) a
     read-along EPUB for one book.
 
@@ -9285,34 +9310,41 @@ def _readalong_epub_worker(abs_id: str) -> None:
     again, defensively, inside the callback chain itself via
     `readalong_builder._safe_progress`) -- it must never be the reason a
     book fails to generate.
+
+    ``job_id`` binds every status write to this worker's own row. It is
+    optional because Forge records the row on a best-effort basis; when row
+    creation fails, status writes are skipped rather than guessed by recency.
     """
-    def _report_progress(stage: str, fraction: float) -> None:
+    def _update_job(**kwargs) -> None:
+        if job_id is None:
+            return
         try:
-            database_service.update_latest_job(
-                abs_id, kind=JOB_KIND_READALONG, progress=fraction, stage=stage,
-            )
+            database_service.update_job_by_id(job_id, **kwargs)
         except Exception as e:
             logger.warning(
-                "Could not record read-along progress for '%s' (stage=%s, progress=%.2f): %s",
-                sanitize_log_data(abs_id), stage, fraction, e, exc_info=True,
+                "Could not record read-along job state for '%s' (job_id=%s, %s): %s",
+                sanitize_log_data(abs_id), job_id, kwargs, e, exc_info=True,
             )
+
+    def _report_progress(stage: str, fraction: float) -> None:
+        _update_job(progress=fraction, stage=stage)
 
     try:
         book = database_service.get_book(abs_id)
         if not book:
-            database_service.update_latest_job(abs_id, kind=JOB_KIND_READALONG, last_error="Book no longer exists")
+            _update_job(last_error="Book no longer exists")
             return
 
         alignment_service = getattr(manager, "alignment_service", None) if manager else None
         if alignment_service is None:
-            database_service.update_latest_job(abs_id, kind=JOB_KIND_READALONG, last_error="Alignment service unavailable")
+            _update_job(last_error="Alignment service unavailable")
             return
 
         clients = uc()
         ebook_sync_client = clients.sync_clients.get("BookOrbit")
         audio_sync_client = clients.sync_clients.get("BookOrbitAudio")
         if audio_sync_client is None:
-            database_service.update_latest_job(abs_id, kind=JOB_KIND_READALONG, last_error="BookOrbit audio sync is not available")
+            _update_job(last_error="BookOrbit audio sync is not available")
             return
 
         result = deliver_readalong_epub(
@@ -9325,17 +9357,13 @@ def _readalong_epub_worker(abs_id: str) -> None:
             progress_callback=_report_progress,
         )
         if result is None:
-            database_service.update_latest_job(
-                abs_id,
-                kind=JOB_KIND_READALONG,
+            _update_job(
                 last_error="Read-along generation was refused -- see server logs for the exact reason.",
             )
             return
 
         if not result.confirmed:
-            database_service.update_latest_job(
-                abs_id,
-                kind=JOB_KIND_READALONG,
+            _update_job(
                 progress=1.0,
                 last_error=(
                     "Generated and delivered, but BookOrbit has not confirmed it "
@@ -9348,7 +9376,7 @@ def _readalong_epub_worker(abs_id: str) -> None:
             )
             return
 
-        database_service.update_latest_job(abs_id, kind=JOB_KIND_READALONG, progress=1.0, last_error=None)
+        _update_job(progress=1.0, last_error=None)
         logger.info(
             "📖 Read-along EPUB ready for %s", sanitize_log_data(book.abs_title or abs_id)
         )
@@ -9356,13 +9384,11 @@ def _readalong_epub_worker(abs_id: str) -> None:
         logger.error(
             "❌ Read-along generation failed for '%s': %s", sanitize_log_data(abs_id), e, exc_info=True,
         )
-        try:
-            database_service.update_latest_job(abs_id, kind=JOB_KIND_READALONG, last_error=f"Unexpected error: {e}")
-        except Exception as inner_e:
-            logger.error(
-                "❌ Could not record read-along failure for '%s': %s",
-                sanitize_log_data(abs_id), inner_e, exc_info=True,
-            )
+        _update_job(last_error=f"Unexpected error: {e}")
+    finally:
+        # Manual and post-forge requests share this process-wide reservation.
+        # The post-forge wrapper releases only when it cannot hand work here.
+        _release_readalong_generation(abs_id)
 
 
 def generate_readalong_epub(abs_id: str):
@@ -9403,14 +9429,42 @@ def generate_readalong_epub(abs_id: str):
             "error": "This book has no CTC or lexical alignment map yet.",
         }), 400
 
+    # Admission is process-wide so manual requests and post-forge hooks cannot
+    # start two workers for the same book. Persisted incomplete rows are only a
+    # status record: after a restart there is no live worker behind one, so it
+    # must not block a retry.
+    if not _claim_readalong_generation(abs_id):
+        return jsonify({
+            "success": False,
+            "error": "Read-along generation is already in progress for this book.",
+        }), 409
+
     from src.db.models import Job
-    database_service.save_job(
-        Job(
-            abs_id=abs_id, last_attempt=time.time(), retry_count=0, progress=0.0, last_error=None,
-            kind=JOB_KIND_READALONG, stage="queued",
+    job = None
+    try:
+        job = database_service.save_job(
+            Job(
+                abs_id=abs_id, last_attempt=time.time(), retry_count=0, progress=0.0, last_error=None,
+                kind=JOB_KIND_READALONG, stage="queued",
+            )
         )
-    )
-    _spawn_user_background(_readalong_epub_worker, abs_id, label=f"readalong-epub-{abs_id}")
+        _spawn_user_background(
+            _readalong_epub_worker, abs_id, job.id, label=f"readalong-epub-{abs_id}",
+        )
+    except Exception as e:
+        if job is not None and getattr(job, "id", None) is not None:
+            try:
+                database_service.update_job_by_id(
+                    job.id, last_error=f"Read-along generation failed to start: {e}",
+                )
+            except Exception as update_error:
+                logger.debug("Read-along: could not record start failure for '%s': %s", abs_id, update_error)
+        _release_readalong_generation(abs_id)
+        logger.error(
+            "❌ Could not queue read-along generation for '%s': %s",
+            sanitize_log_data(abs_id), e, exc_info=True,
+        )
+        return jsonify({"success": False, "error": "Could not queue read-along generation."}), 500
 
     logger.info(
         "📖 Read-along EPUB generation queued for %s", sanitize_log_data(book.abs_title or abs_id)

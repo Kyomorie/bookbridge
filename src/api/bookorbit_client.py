@@ -694,7 +694,7 @@ class BookOrbitClient:
         data = self._parse_json(resp)
         return data if isinstance(data, list) else []
 
-    def scan_library(self, library_id) -> bool:
+    def scan_library(self, library_id: Optional[int]) -> bool:
         """Trigger a BookOrbit library scan so newly-written files get indexed.
 
         Fire-and-forget: BookOrbit runs the scan asynchronously and returns
@@ -717,7 +717,7 @@ class BookOrbitClient:
             return False
         return True
 
-    def delete_book_file(self, file_id) -> bool:
+    def delete_book_file(self, file_id: Optional[int]) -> bool:
         """Remove a single file from a BookOrbit book entry (not the whole entry).
 
         Used to clean up a read-along EPUB this bridge generated without

@@ -1997,6 +1997,20 @@ class DatabaseService:
                 return job
             return None
 
+    def update_job_by_id(self, job_id: int, **kwargs) -> Optional[Job]:
+        """Update exactly one job row by primary key."""
+        with self.get_session() as session:
+            job = session.query(Job).filter(Job.id == job_id).first()
+            if job:
+                for key, value in kwargs.items():
+                    if hasattr(job, key):
+                        setattr(job, key, value)
+                session.flush()
+                session.refresh(job)
+                session.expunge(job)
+                return job
+            return None
+
     def delete_jobs_for_book(self, abs_id: str) -> int:
         """Delete all jobs for a book."""
         with self.get_session() as session:

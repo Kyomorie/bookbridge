@@ -10,6 +10,7 @@ properties detection, nav href collision, NCX missing/empty), adapted to
 this module's function-level (not whole-file-epubcheck) test shape since
 this repository has no epubcheck binary available.
 """
+import hashlib
 import tempfile
 import zipfile
 from pathlib import Path
@@ -107,6 +108,19 @@ class TestUpgradeIdentifiers:
         upgrade_identifiers(pkg)
         ident = _metadata(pkg).find("{*}identifier")
         assert ident.text == "http://example.com/book"
+
+    def test_publication_identifier_text_is_preserved(self):
+        pkg = _pkg(metadata_xml='<dc:identifier id="id">urn:uuid:publication</dc:identifier>')
+        upgrade_identifiers(pkg)
+        ident = _metadata(pkg).find("{*}identifier")
+        assert ident.text == "urn:uuid:publication"
+
+    def test_anonymous_identifier_still_normalizes(self):
+        pkg = _pkg(metadata_xml='<dc:identifier opf:scheme="ISBN">1234567890</dc:identifier>')
+        pkg.attrib.pop("unique-identifier")
+        upgrade_identifiers(pkg)
+        ident = _metadata(pkg).find("{*}identifier")
+        assert ident.text == "ISBN:1234567890"
 
 
 # ---------------------------------------------------------------------------
@@ -744,6 +758,53 @@ class TestUpgradeEpub2ToEpub3:
         upgrade_epub2_to_epub3(src, out)
         with zipfile.ZipFile(out) as zf:
             assert zf.read("OEBPS/ch1.xhtml") == spine_bytes
+
+    def test_obfuscated_font_still_decodes_with_preserved_identifier(self, tmp_path):
+        unique_identifier = "urn:uuid:font-publication"
+        font_plain = bytes(range(256)) * 5
+        key = hashlib.sha1(unique_identifier.encode("utf-8")).digest()
+        font_obfuscated = bytes(
+            value ^ key[index % len(key)] if index < 1040 else value
+            for index, value in enumerate(font_plain)
+        )
+        encryption_xml = (
+            b'<encryption xmlns="http://www.w3.org/2001/04/xmlenc#">'
+            b"<EncryptedData>"
+            b'<EncryptionMethod Algorithm="http://www.idpf.org/2008/embedding"/>'
+            b"<CipherData><CipherReference URI=\"OEBPS/fonts/font.ttf\"/>"
+            b"</CipherData></EncryptedData></encryption>"
+        )
+        opf = (
+            f'<?xml version="1.0"?><package xmlns="{_OPF_NS}" version="2.0" '
+            f'unique-identifier="id"><metadata xmlns:dc="{_DC_NS}">'
+            "<dc:title>Font</dc:title>"
+            f'<dc:identifier id="id">{unique_identifier}</dc:identifier></metadata>'
+            '<manifest><item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>'
+            '<item id="font" href="fonts/font.ttf" media-type="application/x-font-ttf"/></manifest>'
+            '<spine><itemref idref="ch1"/></spine></package>'
+        )
+        src = tmp_path / "book.epub"
+        with zipfile.ZipFile(src, "w") as z:
+            z.writestr("mimetype", "application/epub+zip")
+            z.writestr("META-INF/container.xml", _CONTAINER_XML)
+            z.writestr("META-INF/encryption.xml", encryption_xml)
+            z.writestr("OEBPS/content.opf", opf)
+            z.writestr("OEBPS/ch1.xhtml", b"<html><body><p>Font.</p></body></html>")
+            z.writestr("OEBPS/fonts/font.ttf", font_obfuscated)
+
+        out = tmp_path / "out.epub"
+        assert upgrade_epub2_to_epub3(src, out) is not None
+        with zipfile.ZipFile(out) as z:
+            output_pkg = etree.fromstring(z.read("OEBPS/content.opf"))
+            output_identifier = output_pkg.find("{*}metadata/{*}identifier").text
+            assert output_identifier == unique_identifier
+            assert z.read("META-INF/encryption.xml") == encryption_xml
+            output_key = hashlib.sha1(output_identifier.encode("utf-8")).digest()
+            decoded = bytes(
+                value ^ output_key[index % len(output_key)] if index < 1040 else value
+                for index, value in enumerate(z.read("OEBPS/fonts/font.ttf"))
+            )
+            assert decoded == font_plain
 
     def test_missing_manifest_refuses(self, tmp_path):
         broken_opf = (

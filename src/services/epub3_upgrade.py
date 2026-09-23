@@ -292,6 +292,11 @@ def _clear_children(el: etree._Element) -> None:
 def upgrade_identifiers(pkg: etree._Element) -> None:
     """Normalize ``dc:identifier`` values and strip everything but ``id``.
 
+    The identifier named by ``package@unique-identifier`` is preserved
+    verbatim after text extraction.  EPUB font obfuscation derives its key
+    from that publication identifier, and the archive's encrypted font bytes
+    are copied unchanged during conversion.
+
     A ``urn:<scheme>:<value>`` identifier has its scheme extracted (unless
     the scheme itself starts with "uri", which already reads naturally); a
     non-``urn`` identifier carrying an ``opf:scheme`` (or bare ``scheme``,
@@ -302,8 +307,14 @@ def upgrade_identifiers(pkg: etree._Element) -> None:
     metadata = _get_metadata(pkg)
     if metadata is None:
         return
+    unique_identifier_id = pkg.get("unique-identifier")
     for ident in metadata.findall("{*}identifier"):
         val = _text_content(ident)
+        if unique_identifier_id and ident.get("id") == unique_identifier_id:
+            _strip_attrs_keep_id(ident)
+            _clear_children(ident)
+            ident.text = val
+            continue
         scheme = _get_attr_local(ident, "scheme")
 
         if val.lower().startswith("urn:"):
@@ -785,7 +796,7 @@ def extract_ncx_toc(pkg: etree._Element, opf_dir: str, zf: zipfile.ZipFile) -> L
     except KeyError:
         logger.warning(
             "EPUB3 upgrade: NCX manifest item '%s' is not present in the archive",
-            ncx_archive_path,
+            ncx_archive_path, exc_info=True,
         )
         return []
     try:
