@@ -1,4 +1,4 @@
-"""CTC chapter search as the chunking prior (docs/PLAN_CTC_CHAPTER_SEARCH.md, Phase 2-3).
+"""CTC chapter search as the chunking prior.
 
 A long book with no usable prior used to refuse CTC ("no chunking prior") and wait
 for a Whisper transcript. With CTC_CHAPTER_SEARCH on, `align_forced_and_store`

@@ -199,9 +199,9 @@ class Book(Base):
     abs_ebook_item_id = Column(String(255), nullable=True)  # Tracks the ebook item separately.
     series_name = Column(String(500), nullable=True, index=True)
     series_sequence = Column(Float, nullable=True)
-    # Read-along EPUB generation intent (PLAN_READALONG_EPUB3_GENERATION.md Phase
-    # 6b): set when a NEW match is queued with the "generate read-along" option
-    # checked, since generation needs a finished alignment map that does not
+    # Read-along EPUB generation intent: set when a NEW match is queued with
+    # the "generate read-along" option checked, since generation needs a
+    # finished alignment map that does not
     # exist until forging completes. Consumed (cleared) by the post-forge hook
     # the first time it fires for this book, regardless of outcome, so a later
     # re-forge never regenerates from a stale flag. Written only through
@@ -429,10 +429,9 @@ class Job(Base):
     progress = Column(Float, default=0.0)
     kind = Column(String(50), nullable=False, default=JOB_KIND_ALIGNMENT, server_default=JOB_KIND_ALIGNMENT)
     # Free-text label for the current stage of a long-running job (e.g.
-    # 'transcoding_audio' for read-along generation) -- see
-    # docs/PLAN_READALONG_EPUB3_GENERATION.md's Phase 6 progress-reporting
-    # addendum. Nullable and additive: a job that never reports a stage (every
-    # kind but 'readalong' today) simply leaves it NULL, and callers treat
+    # 'transcoding_audio' for read-along generation). Nullable and additive: a
+    # job that never reports a stage (every kind but 'readalong' today) simply
+    # leaves it NULL, and callers treat
     # None the same as "no stage recorded" rather than an error.
     stage = Column(String(50), nullable=True)
 

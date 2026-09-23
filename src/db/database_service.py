@@ -700,9 +700,9 @@ class DatabaseService:
         'llm_anchor', 'storyteller'/'storyteller_linear', legacy NULL) are
         excluded even though `build_readalong_epub` would not itself refuse
         them -- their timing is not fine enough to be worth surfacing as an
-        eligible book in the UI (see docs/PLAN_READALONG_EPUB3_GENERATION.md
-        Sec. 0). 'lexical_timed' (measured word timings) belongs alongside
-        'ctc'/'lexical' here, matching the route's own eligibility guard in
+        eligible book in the UI. 'lexical_timed' (measured word timings)
+        belongs alongside 'ctc'/'lexical' here, matching the route's own
+        eligibility guard in
         `web_server.generate_readalong_epub` and the post-forge hook in
         `forge_service.py`.
         """

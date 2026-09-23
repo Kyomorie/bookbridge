@@ -264,7 +264,7 @@ class ForgeService:
     def _maybe_generate_readalong_epub(self, book) -> None:
         """Fire read-along EPUB generation if `book` was queued with that intent.
 
-        Phase 6b (docs/PLAN_READALONG_EPUB3_GENERATION.md): generation needs a
+        Generation needs a
         finished alignment map, which does not exist at match time, so a new match
         only records an intent (``Book.readalong_epub_requested``) and this
         post-forge hook is where it actually fires. The intent lives in a DB

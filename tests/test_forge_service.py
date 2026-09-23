@@ -1377,7 +1377,7 @@ class TestForgeAutomatchProgressTrackers(unittest.TestCase):
 
 
 class TestMaybeGenerateReadalongEpub(unittest.TestCase):
-    """Phase 6b (docs/PLAN_READALONG_EPUB3_GENERATION.md): the post-forge hook
+    """The post-forge hook
     that fires read-along generation when a new match was queued with that
     intent. `_maybe_generate_readalong_epub` is the decision layer (consume the
     once-only intent, check cheap eligibility, hand off); the actual work is

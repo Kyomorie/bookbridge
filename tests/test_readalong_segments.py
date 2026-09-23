@@ -1,5 +1,5 @@
 """Unit tests for sentence segmentation and clip-time interpolation (read-along
-EPUB 3 generation, Phase 2: docs/PLAN_READALONG_EPUB3_GENERATION.md).
+EPUB 3 generation).
 
 Builds small inline EPUB fixtures with zipfile (same pattern as
 test_ebook_dom_map.py / test_ebook_utils_spine_manifest_gap.py). Alignment maps

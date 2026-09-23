@@ -1,4 +1,4 @@
-"""Tests for `src/services/ctc_search.py` (docs/PLAN_CTC_CHAPTER_SEARCH.md, Phase 1).
+"""Tests for `src/services/ctc_search.py`.
 
 No audio and no torch: a synthetic "decoded document" stands in for a greedy
 CTC decoding. `_build_synthetic_document` lays out known chapter texts (run

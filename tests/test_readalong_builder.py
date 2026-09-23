@@ -1,5 +1,4 @@
-"""Unit tests for EPUB 3 read-along assembly (Phase 3:
-docs/PLAN_READALONG_EPUB3_GENERATION.md) -- marker injection, SMIL emission,
+"""Unit tests for EPUB 3 read-along assembly: marker injection, SMIL emission,
 OPF rewriting, and zip packaging. Phase 4 adds: clip contiguity
 (_extend_clips_to_contiguous), the READALONG_AUDIO_BITRATE setting, and real
 ffmpeg audio transcoding/concatenation.
@@ -559,7 +558,7 @@ def test_marker_injection_does_not_change_extracted_text():
 def test_smil_every_par_has_both_clocks():
     """Every <par> in the generated SMIL carries a parseable clipBegin AND
     clipEnd -- BookOrbit's inspector collapses total duration to null if any
-    par lacks one (plan's Phase 3 exit criteria)."""
+    par lacks one."""
     with tempfile.TemporaryDirectory() as tmp_str:
         tmp = Path(tmp_str)
         parser = _parser(tmp)
@@ -1161,8 +1160,8 @@ def test_refuses_when_alignment_map_does_not_fit_epub():
 
 def test_epub2_source_is_converted_to_epub3_not_refused():
     """Finding 2 (independent review) originally refused EPUB 2 input
-    outright; ``docs/PLAN_READALONG_EPUB3_GENERATION.md``'s follow-up work
-    replaces that refusal with an actual EPUB 2 -> EPUB 3 conversion
+    outright; follow-up work replaces that refusal with an actual EPUB 2 ->
+    EPUB 3 conversion
     (``src/services/epub3_upgrade.py``), applied to a private temporary copy
     before assembly (:func:`~src.services.readalong_builder._resolve_epub3_source`).
     The final generated read-along package must itself be a conformant
@@ -1247,7 +1246,7 @@ def test_defect1_refuses_output_path_aliasing_an_epub2_source():
 
 
 def test_refuses_epub2_source_when_conversion_cannot_produce_valid_epub3():
-    """Keeps refusal as the fallback (per the plan): when
+    """Keeps refusal as the fallback: when
     ``upgrade_epub2_to_epub3`` itself cannot convert the source (here: the
     OPF has no ``<manifest>`` at all, so there is nothing to register a nav
     document in), the whole build is refused rather than emitting a package
@@ -1456,7 +1455,7 @@ def test_no_gap_between_consecutive_pars_within_one_spine_item():
 def test_no_gap_across_spine_item_boundary():
     """The last sentence of chapter 1 and the first sentence of chapter 2 are
     also contiguous -- the fix applies across spine items, not just within
-    one, per the plan's explicit instruction."""
+    one."""
     with tempfile.TemporaryDirectory() as tmp_str:
         tmp = Path(tmp_str)
         parser = _parser(tmp)
@@ -2007,7 +2006,7 @@ def test_audio_split_into_multiple_files_for_a_long_book(monkeypatch):
         # its own reported duration up by close to a full frame -- a large
         # fraction of this test's ~1s-per-file scale, but negligible at real
         # audiobook scale (minutes per file); the tight, production-scale
-        # ratio is what the plan's own live-book verification measures.
+        # ratio is what live-book verification measures.
         total_real = sum(real_durations.values())
         assert result.total_duration_seconds == pytest.approx(total_real, abs=1.0)
 

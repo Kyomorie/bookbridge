@@ -1,5 +1,5 @@
 """Sentence segmentation and clip-time interpolation for read-along EPUB 3
-generation (Phase 2 of ``docs/PLAN_READALONG_EPUB3_GENERATION.md``).
+generation.
 
 Builds on Phase 1 (``src/utils/ebook_dom_map.py``): that module recovers DOM
 provenance for every character offset in ``EbookParser.extract_text_and_map``'s
@@ -27,7 +27,7 @@ ported from Storyteller. Storyteller's ``getSentenceRanges.ts`` solves a
 harder problem this module doesn't have: error-aligning a noisy ASR
 transcript against reference text via edit-distance search. BookBridge's own
 alignment maps make that unnecessary -- they are already 5-10x finer than
-what Storyteller itself writes into SMIL (measured in the plan's Sec. 0), so a
+what Storyteller itself writes into SMIL, so a
 plain interpolation over an existing char/timestamp map is enough. Sentence
 splitting here is a dependency-free regex scan (see ``requirements.txt`` --
 Storyteller instead pulls in ``@echogarden/text-segmentation``, an npm
@@ -307,9 +307,9 @@ def _map_fits_epub(alignment_service: "AlignmentService", abs_id: str, combined_
        anchor's char) -- the fallback ``SyncManager._get_alignment_epub_filename``
        uses, and the only signal available for a map predating the
        ``total_chars`` column (NULL) or stored with it as 0 (334 of 378 maps
-       on the reference install, per the plan doc's Phase 2 section).
+       on the reference install).
 
-    These two disagree more often than the plan anticipated: measured live
+    These two disagree more often than expected: measured live
     against this install, several CTC maps have a correctly-recorded
     ``total_chars`` exactly matching their current EPUB's length while their
     *last anchor* falls short of it by anywhere from a few hundred to

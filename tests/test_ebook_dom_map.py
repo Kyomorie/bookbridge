@@ -1,5 +1,5 @@
-"""Unit tests for the DOM-anchored text extractor (read-along EPUB 3 generation,
-Phase 1: docs/PLAN_READALONG_EPUB3_GENERATION.md).
+"""Unit tests for the DOM-anchored text extractor (read-along EPUB 3
+generation).
 
 Builds small inline EPUB fixtures with zipfile (same pattern as
 test_ebook_utils_spine_manifest_gap.py) and checks src.utils.ebook_dom_map against

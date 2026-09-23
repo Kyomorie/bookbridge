@@ -1,4 +1,4 @@
-"""Phase 6b (docs/PLAN_READALONG_EPUB3_GENERATION.md): the
+"""The
 `books.readalong_epub_requested` migration applies base -> head on a fresh
 temp SQLite, additively.
 

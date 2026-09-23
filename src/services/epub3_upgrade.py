@@ -1,15 +1,13 @@
 """EPUB 2 -> EPUB 3 upgrade: package metadata, navigation document, and
 manifest properties, so read-along generation (``readalong_builder.py``) is
 no longer limited to the minority of library books already packaged as
-EPUB 3 (302 of 365 books with an alignment map in this install are EPUB 2 --
-see ``docs/PLAN_READALONG_EPUB3_GENERATION.md``).
+EPUB 3 (302 of 365 books with an alignment map in this install are EPUB 2).
 
 **This is a substantial port of Storyteller's own EPUB 2 upgrade**
 (``gitlab.com/storyteller-platform/storyteller``, ``libraries/epub/upgrade.ts``
 and the ``Epub.upgrade``/``getNcxTableOfContents``/``parseNavPoints`` orchestration
 in ``libraries/epub/index.ts``), which is MIT licensed under the same licence as
-BookBridge. Per the plan's Sec. 0a, the notice and copyright line travel with
-this port:
+BookBridge. The notice and copyright line travel with this port:
 
     MIT License
 
@@ -85,8 +83,8 @@ outright if ``output_path`` would alias ``source_path``. Callers (see
 ``readalong_builder._resolve_epub3_source``) are expected to point
 ``output_path`` at a private temporary file, never back at the library's own
 copy -- this repository has previously shipped a defect where a build wrote
-its output over its own source (docs/PLAN_READALONG_EPUB3_GENERATION.md's
-Finding 5), which is exactly the failure mode this mirrors the fix for.
+its output over its own source, which is exactly the failure mode this
+mirrors the fix for.
 
 **Refuse rather than ship a partial upgrade.** Every step in
 :func:`upgrade_epub2_to_epub3` degrades gracefully for a single missing

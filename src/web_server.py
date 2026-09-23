@@ -7523,8 +7523,8 @@ def _queue_item_from_match_form(clients) -> "dict | None":
     audio_only = (request.form.get('audio_only') or '').strip().lower() in {
         'true', '1', 'yes', 'on'
     }
-    # Phase 6b (PLAN_READALONG_EPUB3_GENERATION.md): opt-in intent, recorded per
-    # queue item. Only meaningful for a BookOrbit-audio item; honoured by both
+    # Opt-in intent, recorded per queue item. Only meaningful for a
+    # BookOrbit-audio item; honoured by both
     # Forge & Match and Match All (_record_readalong_intent_for_match) -- the
     # template only offers the control for a BookOrbit audiobook selection, but
     # the checkbox itself is a plain form
@@ -9329,16 +9329,15 @@ def _readalong_epub_worker(abs_id: str, job_id: Optional[int] = None) -> None:
 
     Never touches `book.ebook_filename` / `book.original_ebook_filename` --
     `deliver_readalong_epub` itself is the one place that would, and it does
-    not (see its own docstring and the plan's Sec. 1 placement decision).
+    not (see its own docstring).
 
     **Stage progress**: `deliver_readalong_epub`/`build_readalong_epub` call
     back into `_report_progress` below at each real stage transition
     (resolving the audio entry, converting EPUB 2 -> 3, parsing, the
     dominant ffmpeg transcode, building overlays, packaging, delivering) so
     `/status` can show real signal instead of a static "generating" message
-    for however many minutes a long book takes -- see
-    `docs/PLAN_READALONG_EPUB3_GENERATION.md`'s Phase 6 progress-reporting
-    addendum. A failed progress *write* is logged and swallowed here (and
+    for however many minutes a long book takes. A failed progress *write* is
+    logged and swallowed here (and
     again, defensively, inside the callback chain itself via
     `readalong_builder._safe_progress`) -- it must never be the reason a
     book fails to generate.
@@ -9426,7 +9425,7 @@ def _readalong_epub_worker(abs_id: str, job_id: Optional[int] = None) -> None:
 def generate_readalong_epub(abs_id: str):
     """Queue background generation + delivery of a read-along EPUB for `abs_id`.
 
-    Async: transcode + repackage takes minutes (plan Sec. "Phase 6"), so this
+    Async: transcode + repackage takes minutes, so this
     returns immediately once eligibility is confirmed and the real work runs
     on a user-scoped background thread. Eligibility mirrors what
     `deliver_readalong_epub`/`build_readalong_epub` actually require that is

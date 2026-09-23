@@ -2176,7 +2176,7 @@ class TestMatchPathsRegression(unittest.TestCase):
 
     @patch("src.web_server.get_kosync_id_for_ebook", return_value="hash-readalong-1")
     def test_forge_queue_bookorbit_readalong_intent_recorded(self, _mock_kosync):
-        """Phase 6b (docs/PLAN_READALONG_EPUB3_GENERATION.md): a BookOrbit-audio
+        """A BookOrbit-audio
         queue item queued with the read-along checkbox ticked records the
         intent on the freshly-created Book row -- after it is saved (so the
         UPDATE finds a row) and before the real forge pipeline starts. The

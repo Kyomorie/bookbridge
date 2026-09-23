@@ -79,7 +79,7 @@ def _nearest_segment_edge_ts(char: int, segments: List[Dict]) -> float:
     of that segment's own two edges. When ``char`` lands in a gap between
     segments, it is the edge of whichever neighbouring segment is closer.
     Interpolating across the boundary instead of clamping here is exactly
-    what produced "22% of the text inside 23 seconds" (see the plan doc).
+    what produced "22% of the text inside 23 seconds".
     """
     containing = _segment_for_char(segments, char)
     if containing is not None:
@@ -385,7 +385,7 @@ class AlignmentService:
             logger.info("⚙️ CTC: excluding likely unnarrated interior text for %s: %s",
                         abs_id, exclude_spans)
 
-        # Chapter search (docs/PLAN_CTC_CHAPTER_SEARCH.md): with no usable prior, run the
+        # Chapter search: with no usable prior, run the
         # model once, locate each spine chapter in its greedy decode, and use that as
         # the prior, so a long book aligns without a Whisper transcript. The emissions
         # are handed to `align` so the model runs only once.
@@ -439,8 +439,8 @@ class AlignmentService:
         )
         return True
 
-    # Chapter-search gates (docs/PLAN_CTC_CHAPTER_SEARCH.md). Provisional until the
-    # Phase 4 sweep on human-narrated books calibrates them. Measured so far: Good
+    # Chapter-search gates. Provisional until the sweep on human-narrated
+    # books calibrates them. Measured so far: Good
     # Intentions (correct pairing) 0.997 coverage; another book's text against its
     # audio 0.0.
     _SEARCH_MIN_COVERAGE = 0.5

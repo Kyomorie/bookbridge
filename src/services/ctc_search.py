@@ -18,8 +18,7 @@ CTC stream's substitution/insertion/deletion noise. ``search_chapters`` runs
 that over a whole spine in order, excluding frame ranges already claimed by
 earlier chapters so a repeated or duplicated passage cannot be double-matched.
 
-See ``docs/PLAN_CTC_CHAPTER_SEARCH.md`` (Phase 1) for the port's scope. This
-module has no dependency on torch/torchaudio and does not import them --
+This module has no dependency on torch/torchaudio and does not import them --
 ``log_probs`` is handed in as a plain ``numpy`` array by the caller.
 """
 

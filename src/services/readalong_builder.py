@@ -1,5 +1,5 @@
 """EPUB 3 read-along assembly: marker injection, SMIL emission, OPF rewriting,
-and repackaging (Phase 3 of ``docs/PLAN_READALONG_EPUB3_GENERATION.md``).
+and repackaging.
 
 Builds on Phase 1 (``src/utils/ebook_dom_map.py`` -- DOM anchor map) and Phase 2
 (``src/services/readalong_segments.py`` -- sentence/clip table) to produce a new
@@ -10,9 +10,7 @@ reference them, and the source audio embedded as-is (no transcode -- that is
 Phase 4).
 
 **Anchor strategy: wrap the sentence's own text, not an empty marker span**
-(supersedes the original Phase 3 decision -- see
-``docs/PLAN_READALONG_EPUB3_GENERATION.md``'s Phase 3 section and its phase
-log for the correction). The original design used an *empty* marker
+(supersedes an earlier design). The original design used an *empty* marker
 (``<span id="s42"/>``) at each sentence's start on the reasoning that SMIL
 ``<par>`` seeking only needs a jump target. That reasoning covered seeking but
 never highlighting: a reader resolving ``<text src="...#id"/>`` to an empty
@@ -33,8 +31,7 @@ wrapping; this module does not need that, because Phase 1's
 ``node_offset_start``/``node_offset_end``) for every character, so wrapping
 can be done **in place**, one existing text node at a time, with no file
 splitting. Measured across the local library's real EPUBs with a
-``ctc``/``lexical`` alignment map (see the plan doc's Phase 3 phase-log
-entry for the exact count and rate): a sentence crossing at least one inline
+``ctc``/``lexical`` alignment map: a sentence crossing at least one inline
 element boundary is not rare enough to treat as a corner case.
 
 The chosen behaviour, applied per sentence: locate the DOM run containing the
@@ -54,9 +51,9 @@ inline-element boundary would itself require restructuring that element's
 own children, trading a bounded, well-understood highlight gap for the same
 "easy to get subtly wrong, easy to emit invalid markup from" risk the
 original decision was trying to avoid in the first place -- just relocated
-rather than removed. This is a deliberate, now-corrected decision -- see the
-plan doc -- not something to silently revisit again without the same kind of
-on-device verification that overturned the first one.
+rather than removed. This is a deliberate, now-corrected decision, not
+something to silently revisit again without the same kind of on-device
+verification that overturned the first one.
 
 This module reuses two Phase 1 internals directly rather than re-implementing
 them: ``ebook_dom_map.locate_offset`` (turns a sentence's global char offset
@@ -1653,8 +1650,7 @@ def _build_smil(
     since a raw filename containing e.g. a space is not a valid URI
     reference. Every ``<par>`` carries both ``clipBegin`` and ``clipEnd`` --
     required so BookOrbit's own duration inspector does not collapse the
-    whole overlay to a null total (see this module's docstring and the
-    plan's Phase 3 exit criteria).
+    whole overlay to a null total (see this module's docstring).
 
     **Phase 4 Part C:** different ``<par>``s in the same document can (and
     for a long book routinely do) carry different ``audio_href`` values --
@@ -1717,7 +1713,7 @@ def _rewrite_opf(
     Everything else in the OPF is preserved exactly as parsed -- this edits
     the existing tree in place with lxml (which keeps comments, processing
     instructions, attribute order and untouched elements' formatting intact)
-    rather than rebuilding the document, per the plan's explicit instruction.
+    rather than rebuilding the document.
 
     ``audio_files`` is one ``(manifest_href, media_type, manifest_id)`` tuple
     per physical embedded audio file (Phase 4 Part C) -- ``manifest_href`` is

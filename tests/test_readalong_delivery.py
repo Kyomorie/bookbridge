@@ -1,7 +1,7 @@
-"""Tests for Phase 5 (docs/PLAN_READALONG_EPUB3_GENERATION.md): delivering a
+"""Tests for delivering a
 generated read-along EPUB into BookOrbit's audiobook entry.
 
-Covers the plan's §1 "Placement decision" hard constraints: target folder
+Covers the "Placement decision" hard constraints: target folder
 resolution from the audio entry's own real track files, refusal when the
 audio source is not BookOrbit or its tracks are not locally resolvable,
 idempotent replacement on a second run (fixed filename, no accumulation),
@@ -307,7 +307,7 @@ def test_deliver_refuses_when_audio_tracks_not_locally_resolvable(tmp_path, monk
 
 
 def test_deliver_refuses_when_resolved_folder_is_under_the_ebook_library_root(tmp_path, monkeypatch):
-    """Hard constraint from plan Sec. 1: never write into the ebook library
+    """Hard constraint: never write into the ebook library
     folder. This exercises the defensive guard directly, simulating a
     resolution bug where a track's absolute_path lands under BOOKS_DIR."""
     parser, alignment_service, book, _tracks, _ = _setup(tmp_path, monkeypatch)

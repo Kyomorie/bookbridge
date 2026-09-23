@@ -1,4 +1,4 @@
-"""Tests for Phase 6a (docs/PLAN_READALONG_EPUB3_GENERATION.md): the dashboard
+"""Tests for the dashboard
 "Create read-along EPUB" action.
 
 Covers: eligibility refusal (no CTC/lexical map, no BookOrbit audio source,
@@ -132,8 +132,8 @@ class ReadalongEpubActionTestCase(unittest.TestCase):
 
     def test_refuses_when_alignment_method_is_coarse(self):
         """'linear'/'llm_anchor'/'storyteller*' are all real alignment
-        methods build_readalong_epub would not itself refuse, but the plan
-        restricts the UI action to 'ctc'/'lexical' (Sec. 0 -- resolution)."""
+        methods build_readalong_epub would not itself refuse, but this route
+        restricts the UI action to 'ctc'/'lexical'."""
         for method in ("linear", "llm_anchor", "storyteller", "storyteller_linear", ""):
             with self.subTest(method=method):
                 self.mock_database_service.get_alignment_method.return_value = method

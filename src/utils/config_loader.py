@@ -70,7 +70,7 @@ ALL_SETTINGS = [
     'BOOKORBIT_ANNOTATION_SYNC_MINUTES', 'BOOKORBIT_KOSYNC_OWNER',
     'BOOKORBIT_READALONG_POLICY',
 
-    # Read-along EPUB 3 generation (docs/PLAN_READALONG_EPUB3_GENERATION.md)
+    # Read-along EPUB 3 generation
     'READALONG_AUDIO_BITRATE',
 
     # Kavita
@@ -223,7 +223,7 @@ DEFAULT_CONFIG = {
     'CTC_DEVICE': 'auto',
     # Build the CTC chunking prior by locating each spine chapter in the greedy-decoded
     # emissions (src/services/ctc_search.py) instead of waiting for a Whisper transcript.
-    # See docs/PLAN_CTC_CHAPTER_SEARCH.md and AlignmentService.chapter_search_enabled().
+    # See AlignmentService.chapter_search_enabled().
     'CTC_CHAPTER_SEARCH': 'false',
     # Per-chapter RANSAC segment placement (issue #426 phase 2), replacing the global
     # monotonic LIS filter only for books whose narration order genuinely differs from

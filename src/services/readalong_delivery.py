@@ -1,7 +1,7 @@
-"""Phase 5 of ``docs/PLAN_READALONG_EPUB3_GENERATION.md``: deliver a generated
+"""Deliver a generated
 read-along EPUB into BookOrbit.
 
-**Placement (plan Sec. 1, load-bearing, do not deviate without re-deciding):**
+**Placement (load-bearing, do not deviate without re-deciding):**
 the generated EPUB goes into the AUDIOBOOK's own BookOrbit entry, as a
 secondary file written into that entry's folder on the shared ``/audiobooks``
 mount, beside its real audio track(s) -- never into the ebook library folder,
@@ -110,7 +110,7 @@ class ResolvedAudioSource:
 
     ``folder`` is the single directory every track in ``track_paths`` shares
     -- the audiobook's own folder BookOrbit groups that entry's files by, and
-    the destination for the generated read-along EPUB (plan Sec. 1).
+    the destination for the generated read-along EPUB.
     """
     folder: Path
     track_paths: List[Path]
