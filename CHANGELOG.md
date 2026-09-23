@@ -8,6 +8,14 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Registering from KOReader or Readest no longer pretends to succeed (#446).**
+  Tapping "Register" against BookBridge's built-in sync server always reported
+  success without creating anything, so the device then failed every login with no
+  explanation. BookBridge sets up sync accounts in its own settings, so "Register"
+  now only succeeds for an account that already exists there, and otherwise shows a
+  message pointing you to **My Account → My Integrations** to set a KoSync username
+  and password and then use **Login**.
+
 - **EPUBs that style part of a word (e.g. "bionic reading" bold formatting)
   extract correctly.** Some EPUBs render a few letters of each word in bold to
   help reading speed. BookBridge's text extraction previously read these as
