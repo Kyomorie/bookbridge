@@ -384,6 +384,9 @@ def setup_dependencies(app, test_container=None):
     forge.readalong_epub_worker = _readalong_epub_worker
     forge.readalong_generation_admitter = _claim_readalong_generation
     forge.readalong_generation_releaser = _release_readalong_generation
+    # The background alignment job (Match All's Storyteller-free path) hands a
+    # finished book to the same read-along dispatcher the Forge path uses.
+    manager.readalong_intent_dispatcher = forge.generate_readalong_if_requested
 
     # Wire the SuggestionsService factory into the shelf-watch singleton.
     # web_server.py is the `__main__` entry point; if shelf_watch_service tried
@@ -6794,6 +6797,29 @@ def _create_audio_only_mapping_from_queue_item(item):
     return saved_book if not err_msg else None
 
 
+def _record_readalong_intent_for_match(abs_id: str) -> None:
+    """Record "Also generate a read-along EPUB" for a Match All (non-forge) book.
+
+    A book queued for alignment gets it consumed by the background job when its
+    alignment completes (``SyncManager._dispatch_readalong_intent``). A re-match
+    of a book whose alignment still applies stays 'active' and never re-runs that
+    job, so it is dispatched here instead; the dispatcher consumes the intent
+    exactly once and skips a book whose alignment is not eligible.
+    """
+    if not database_service.set_readalong_epub_requested(abs_id, True):
+        return
+    book = database_service.get_book(abs_id)
+    if book is None or getattr(book, "status", None) != 'active':
+        return
+    try:
+        container.forge_service().generate_readalong_if_requested(book)
+    except Exception as e:
+        logger.warning(
+            "Read-along EPUB: could not dispatch generation for re-matched '%s': %s",
+            abs_id, e, exc_info=True,
+        )
+
+
 def _record_forge_match_job(abs_id: str, progress: float = 0.0, last_error: str = None):
     """Persist Forge & Match wait state so it survives refreshes and restarts."""
     if not abs_id:
@@ -6993,6 +7019,8 @@ def _process_batch_queue(queue_items):
             elif saved_book:
                 _claim_book_for_user_id(get_current_user_id(), saved_book.abs_id)
                 _complete_shelf_watch_approval(shelf_watch_meta, remove_only=True)
+                if audio_source == 'BookOrbit' and item.get('readalong_epub_requested'):
+                    _record_readalong_intent_for_match(saved_book.abs_id)
             continue
 
         ebook_filename = item['ebook_filename']
@@ -7493,9 +7521,10 @@ def _queue_item_from_match_form(clients) -> "dict | None":
         'true', '1', 'yes', 'on'
     }
     # Phase 6b (PLAN_READALONG_EPUB3_GENERATION.md): opt-in intent, recorded per
-    # queue item. Only meaningful for a BookOrbit-audio item that actually goes
-    # through the forge pipeline -- the template only offers the control for a
-    # BookOrbit audiobook selection, but the checkbox itself is a plain form
+    # queue item. Only meaningful for a BookOrbit-audio item; honoured by both
+    # Forge & Match and Match All (_record_readalong_intent_for_match) -- the
+    # template only offers the control for a BookOrbit audiobook selection, but
+    # the checkbox itself is a plain form
     # field, so re-check the value tolerantly (both a bare "on" and "true").
     readalong_epub_requested = (
         request.form.get('readalong_epub_requested') or ''

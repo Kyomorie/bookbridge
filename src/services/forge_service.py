@@ -250,6 +250,17 @@ class ForgeService:
             except Exception as e:
                 logger.warning(f"Auto-Forge: StoryGraph automatch failed for '{book.abs_id}': {e}", exc_info=True)
 
+    def generate_readalong_if_requested(self, book) -> None:
+        """Start read-along generation for ``book`` if it was matched with that
+        request, and consume the request.
+
+        The single dispatcher for both ways a book finishes aligning: this
+        service's own forge completion, and ``SyncManager``'s background
+        alignment job, which is the Storyteller-free Match All path. See
+        ``_maybe_generate_readalong_epub``.
+        """
+        self._maybe_generate_readalong_epub(book)
+
     def _maybe_generate_readalong_epub(self, book) -> None:
         """Fire read-along EPUB generation if `book` was queued with that intent.
 

@@ -219,7 +219,10 @@ class SyncManager:
             [shelf_watch_service] if shelf_watch_service else []
         )
         self.audio_source_adapters = audio_source_adapters or {}
-        
+        # Injected by web_server.create_app (ForgeService.generate_readalong_if_requested),
+        # like the Forge read-along callbacks, so this module never imports web_server.
+        self.readalong_intent_dispatcher = None
+
         self.data_dir = data_dir
         self.books_dir = books_dir
 
@@ -881,6 +884,26 @@ class SyncManager:
         if files and len(paths) == len(files):
             return paths
         return None
+
+    def _dispatch_readalong_intent(self, book) -> None:
+        """Hand a freshly aligned book to read-along generation.
+
+        The Storyteller-free Match All path records "Also generate a read-along
+        EPUB" as an intent on the book; this background job is where its alignment
+        completes, so this is where the intent is consumed. The dispatcher consumes
+        it exactly once and does nothing for a book without one. A failure here
+        must never mark the alignment job itself as failed.
+        """
+        dispatcher = getattr(self, "readalong_intent_dispatcher", None)
+        if dispatcher is None:
+            return
+        try:
+            dispatcher(book)
+        except Exception as e:
+            logger.warning(
+                "Read-along EPUB: post-alignment dispatch failed for '%s': %s",
+                getattr(book, "abs_id", None), e, exc_info=True,
+            )
 
     def _try_ctc_alignment(self, abs_id: str, audio_paths: list, book_text: str,
                            spine_chapters: Optional[list], abs_title: str,
@@ -3365,6 +3388,7 @@ class SyncManager:
 
 
             logger.info(f"✅ Completed: {sanitize_log_data(abs_title)}")
+            self._dispatch_readalong_intent(book)
 
         except TranscriptionCancelled:
             # Mapping deleted mid-transcription. The worker stopped cleanly; do not
