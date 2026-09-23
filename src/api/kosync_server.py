@@ -1262,15 +1262,31 @@ def kosync_users_auth():
 @kosync_sync_bp.route('/users/create', methods=['POST'])
 @kosync_sync_bp.route('/koreader/users/create', methods=['POST'])
 def kosync_users_create():
-    """Stub for KOReader user registration.
+    """KOReader user registration check.
 
     BookBridge manages accounts in its web UI, not via KOReader registration, so
-    this only acknowledges the request. It echoes back the *requested* username
-    (never the server's configured KOSYNC_USER) to avoid disclosing credentials
-    to an unauthenticated caller.
+    nothing is created here. It succeeds only when the username/password already
+    match configured KoSync credentials (global or per-user), exactly like
+    /users/login. Acknowledging any other name would tell the client the account
+    exists and every following /users/auth would fail (#446). It echoes back the
+    *requested* username (never the server's configured KOSYNC_USER) to avoid
+    disclosing credentials to an unauthenticated caller.
     """
     data = request.get_json(silent=True) or {}
     requested = data.get("username") or request.form.get("username") or ""
+    password = data.get("password") or request.form.get("password") or ""
+
+    authenticated, _ = authenticate_kosync(requested, password)
+    if not authenticated:
+        logger.warning(
+            f"⚠️ KOSync Create: Registration refused for unconfigured user '{requested}' from "
+            f"'{request.remote_addr}' — accounts are set up in BookBridge Settings, then use Login"
+        )
+        return jsonify({
+            "message": "BookBridge does not create accounts from the reader. Set your KoSync "
+                       "username and password in BookBridge Settings, then use Login."
+        }), 401
+
     return jsonify({"username": requested}), 201
 
 
