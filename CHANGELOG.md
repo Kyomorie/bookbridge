@@ -8,6 +8,13 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Fixed
 
+- **Synced ebook positions land in the right place.** When progress from an
+  audiobook was sent to an ebook reader, the position could land in the previous
+  paragraph (KOReader and CFI-based readers alike), and a position that fell on a
+  "* * *" scene break jumped back to the start of the chapter, which could be tens
+  of thousands of words. A line repeated elsewhere in a chapter could also resolve
+  to its first copy. Positions now resolve to the right paragraph.
+
 - **Read-along narration no longer doubles in BookOrbit's web reader.** On longer
   books, the web reader could start the next audio file twice at each file change,
   so two copies of the narration played over each other and got worse as the book

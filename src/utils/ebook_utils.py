@@ -24,6 +24,7 @@ from pathlib import Path
 from collections import OrderedDict
 from src.sync_clients.sync_client_interface import LocatorResult
 from src.utils.cache_paths import safe_cache_path, is_plain_basename
+from src.utils.ebook_dom_map import content_string_nodes
 from src.utils.logging_utils import get_persistent_condition_logger
 
 logger = logging.getLogger(__name__)
@@ -840,7 +841,10 @@ class EbookParser:
         current_char_count = 0
         target_tag = None
 
-        elements = soup.find_all(string=True)
+        # Only the strings extract_text_and_map counts: soup.find_all(string=True)
+        # also returns the <?xml?> declaration and doctype (~40 chars), which
+        # shifted every CFI to an earlier element.
+        elements = content_string_nodes(soup)
         for string in elements:
             text_len = len(string.strip())
             if text_len == 0: continue
@@ -1594,7 +1598,10 @@ class EbookParser:
             first_non_empty_string = None
             last_non_empty_string = None
 
-            elements = soup.find_all(string=True)
+            # Only the strings extract_text_and_map counts: soup.find_all(string=True)
+            # also returns the <?xml?> declaration and doctype (~40 chars), which
+            # put positions near a paragraph start in the previous paragraph.
+            elements = content_string_nodes(soup)
             for string in elements:
                 # Count lengths exactly like extract_text_and_map's get_text(strip=True)
                 clean_text = string.strip()
@@ -2425,6 +2432,45 @@ class EbookParser:
             logger.error(f"❌ Error using epubcfi library for '{cfi}': {e}", exc_info=True)
             return None
 
+    _CANONICAL_EXCLUDED_TAGS = frozenset({"script", "style", "template", "head"})
+
+    def _canonical_offset_of_element(self, root, target) -> Optional[int]:
+        """Local offset in a spine item's canonical text where ``target``'s
+        text begins, or ``None`` if ``target`` is not under ``root``.
+
+        Walks the lxml tree in document order with ``extract_text_and_map``'s
+        rules: each text node stripped and dropped if empty, one space between
+        survivors, and no text from comments, processing instructions or
+        ``<script>``/``<style>``/``<template>``/``<head>`` (the same exclusions
+        ``ebook_dom_map.content_string_nodes`` applies).
+        """
+        count = 0
+        seen_text = False
+
+        def add(value: Optional[str]) -> None:
+            nonlocal count, seen_text
+            stripped = (value or "").strip()
+            if stripped:
+                if seen_text:
+                    count += 1
+                count += len(stripped)
+                seen_text = True
+
+        def walk(element) -> bool:
+            if element is target:
+                return True
+            if isinstance(element.tag, str) and self._local_tag_name(element) not in self._CANONICAL_EXCLUDED_TAGS:
+                add(element.text)
+                for child in element:
+                    if walk(child):
+                        return True
+                    add(child.tail)
+            return False
+
+        if not walk(root):
+            return None
+        return count + 1 if seen_text else 0
+
     def resolve_cfi_to_index(self, filename, cfi) -> Optional[int]:
         """
         Resolve CFI to canonical global character offset using the same parsing
@@ -2493,15 +2539,22 @@ class EbookParser:
                 soup = BeautifulSoup(item['content'], 'html.parser')
                 chapter_text = soup.get_text(separator=' ', strip=True)
                 element_text = current_element.text_content() if hasattr(current_element, 'text_content') else ""
+                anchor = element_text.strip()[:50] if element_text else ""
 
-                if element_text and len(element_text.strip()) > 5:
-                    element_start = chapter_text.find(element_text.strip()[:50])
-                    if element_start != -1:
+                if len(element_text.strip()) > 5 and chapter_text.count(anchor) == 1:
+                    local_offset = chapter_text.find(anchor) + char_offset
+                else:
+                    # Text too short to anchor (a Calibre "* * *" scene break
+                    # sent readers to the chapter start) or repeated in the
+                    # chapter (the first copy would win): place the element by
+                    # its position in document order instead.
+                    element_start = self._canonical_offset_of_element(tree, current_element)
+                    if element_start is not None:
                         local_offset = element_start + char_offset
+                    elif anchor and len(element_text.strip()) > 5 and anchor in chapter_text:
+                        local_offset = chapter_text.find(anchor) + char_offset
                     else:
                         local_offset = text_count + char_offset
-                else:
-                    local_offset = text_count + char_offset
             else:
                 local_offset = text_count + char_offset
 
