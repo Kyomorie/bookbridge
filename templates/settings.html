@@ -2927,26 +2927,26 @@
                             0. Raise it only if mismatches are slipping through.</div>
                     </div>
 
-                    <!-- CTC forced alignment: experimental/advanced, hidden behind a disclosure.
-                         QuartzNet runs on CPU in every image; MMS needs a local INSTALL_CTC=true
-                         build and effectively a GPU — see the notes below. -->
-                    <details class="advanced-sub full-width" {% if get_bool('CTC_ENABLED') %}open{% endif %}>
-                        <summary>Advanced · Experimental — CTC forced alignment</summary>
+                    <!-- Forced (CTC) alignment: the recommended alignment method. QuartzNet runs on
+                         the CPU in every image; MMS needs a local INSTALL_CTC=true build. -->
                     <div class="form-group full-width">
                         <label class="toggle-label">
                             <input type="checkbox" name="CTC_ENABLED"
-                                onchange="toggleSection('ctc_body', this.checked)"
                                 {% if get_bool('CTC_ENABLED') %}checked{% endif %}>
-                            Use CTC forced alignment
+                            Use forced alignment (recommended)
                         </label>
-                        <div class="help-text"><strong>Experimental &amp; advanced — leave off unless you
-                            know you want it.</strong> Aligns the audiobook directly against the known ebook
-                            text (per-word) instead of transcribing and matching back — more accurate for
-                            char-precise readers (BookOrbit, ABS ebook, Grimmory). The default QuartzNet model
-                            runs on the CPU in every image (a few minutes per 10 hours of audio on a modern CPU).
-                            Leave off to keep the Whisper/lexical pipeline (the default).</div>
+                        <div class="help-text">Aligns each audiobook directly against its ebook's text, word by
+                            word, instead of transcribing it and matching the transcript back. It is more accurate,
+                            especially for readers that track exact positions (BookOrbit, KOReader, the ABS ebook
+                            reader, Grimmory), and it finds each chapter in the audio itself, so long books need no
+                            Whisper transcript. Runs on the CPU in every image: a few minutes per 10 hours of audio
+                            on a modern CPU. English books only; books in other languages, and books whose audio
+                            does not follow the text closely enough, use transcription automatically. Turn off to
+                            always use transcription.</div>
                     </div>
-                    <div id="ctc_body" class="dynamic-group full-width section-body {% if not get_bool('CTC_ENABLED') %}collapsed{% endif %}" style="display:contents;">
+                    <details class="advanced-sub full-width">
+                        <summary>Advanced — forced alignment model</summary>
+                    <div class="dynamic-group full-width" style="display:contents;">
                         <div class="form-group">
                             <label>CTC Model</label>
                             <select name="CTC_MODEL">
@@ -2968,7 +2968,7 @@
                             <div class="help-text">Optional. A local <code>model.onnx</code> (or the folder holding
                                 it), for example a copy from Storyteller's
                                 <code>ghost-story/models/quartznet15x5-en</code>. Leave empty to download it
-                                from Storyteller's package registry on first use.</div>
+                                from Storyteller's package registry on first use; set it if that download fails.</div>
                         </div>
                         <div class="form-group">
                             <label>CTC Device</label>
@@ -2981,18 +2981,6 @@
                             </select>
                             <div class="help-text">MMS only (QuartzNet always runs on the CPU). Auto uses an NVIDIA
                                 GPU when available, otherwise CPU; MMS on CPU is slow for long audiobooks.</div>
-                        </div>
-                        <div class="form-group full-width">
-                            <label class="toggle-label">
-                                <input type="checkbox" name="CTC_CHAPTER_SEARCH"
-                                    {% if get_bool('CTC_CHAPTER_SEARCH') %}checked{% endif %}>
-                                Find chapters in the audio (skip Whisper for long books)
-                            </label>
-                            <div class="help-text"><strong>Experimental.</strong> A long book normally needs a
-                                Whisper transcript before CTC can align it, which is most of the processing time.
-                                When on, CTC locates each chapter in the audio itself and aligns without Whisper.
-                                A book whose text is not found in the audio, or whose chapters are narrated out of
-                                order, still falls back to Whisper.</div>
                         </div>
                     </div>
                     </details>

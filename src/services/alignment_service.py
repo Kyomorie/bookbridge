@@ -295,13 +295,6 @@ class AlignmentService:
         return env_truthy("ALIGNMENT_SEGMENTED_MAPS", "false")
 
     @staticmethod
-    def chapter_search_enabled() -> bool:
-        """Whether a CTC pass with no usable prior builds one by locating each spine
-        chapter in the greedy-decoded emissions (`src/services/ctc_search.py`)
-        instead of refusing and waiting for a Whisper transcript. Read per call."""
-        return env_truthy("CTC_CHAPTER_SEARCH", "false")
-
-    @staticmethod
     def ctc_model() -> str:
         """The CTC model to align with, read per call: ``quartznet`` (QuartzNet15x5 on
         onnxruntime, CPU, the standard image) or ``mms_fa`` (Meta MMS on torch, the
@@ -438,12 +431,13 @@ class AlignmentService:
             logger.info("⚙️ CTC: excluding likely unnarrated interior text for %s: %s",
                         abs_id, exclude_spans)
 
-        # Chapter search: with no usable prior, run the
+        # Chapter search (src/services/ctc_search.py): with no usable prior, run the
         # model once, locate each spine chapter in its greedy decode, and use that as
         # the prior, so a long book aligns without a Whisper transcript. The emissions
-        # are handed to `align` so the model runs only once.
+        # are handed to `align` so the model runs only once. A book the search cannot
+        # vouch for falls back to the transcription pipeline (see `_search_prior`).
         precomputed = None
-        if (boundaries is None and spine_chapters and self.chapter_search_enabled()
+        if (boundaries is None and spine_chapters
                 and not (audio_duration and audio_duration > 0
                          and self._forced_aligner.can_single_pass(
                              audio_duration, ebook_text, text_range=text_range,

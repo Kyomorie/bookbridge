@@ -104,27 +104,25 @@ All notable changes to BookBridge will be documented in this file.
 
 ### Added
 
-- **CTC alignment runs on the CPU in the standard image.** It used to need the
-  multi-gigabyte `-ctc` image and, in practice, an NVIDIA GPU. The new default
-  model, QuartzNet (the one Storyteller uses), runs on any CPU through a component
-  the standard image already includes, and aligns more accurately than the old
-  default: on three test books (2.5 to 22 hours) it put more words within half a
-  second of the narration every time. It is downloaded once on first use (77 MB),
-  or you can point **QuartzNet model file** at a copy you already have, such as your
-  Storyteller install's, which also covers a download that fails. A 22-hour
-  audiobook aligns in about 7 minutes on a modern CPU. QuartzNet only understands
-  English, so books in other languages go to transcription automatically (or choose
-  **MMS** under **CTC Model**, which needs the `-ctc` image).
-
-- **Long audiobooks can get CTC alignment without waiting for Whisper.** A book too
-  long to align in one pass used to need a full Whisper transcript first, which takes
-  a long time on a long audiobook. With **CTC chapter search** switched on (Settings,
-  CTC alignment section), BookBridge finds each chapter directly in the audio and
-  aligns against that: a 39-hour audiobook took about 8 minutes. Tested against 15
-  existing books, the result matched the old one on 12, fixed a book whose old
-  alignment was up to 2 hours off, and handed the rest to the usual Whisper route
-  because their chapters are narrated out of order or the audiobook retells the text
-  instead of reading it. **Off by default** for now.
+- **Forced alignment is now a regular, recommended option, and runs on any CPU.**
+  Settings now offers a plain choice: **Use forced alignment (recommended)**, which
+  aligns each audiobook directly against its ebook's text word by word, or leave it
+  off to always use transcription. It used to be an experimental option that needed
+  the multi-gigabyte `-ctc` image and, in practice, an NVIDIA GPU. The new model,
+  QuartzNet (the one Storyteller uses), runs on the CPU through a component every
+  image already includes, and it finds each chapter in the audio itself, so long
+  books no longer wait for a Whisper transcript: a 22-hour audiobook aligns in about
+  7 minutes, a 39-hour one in about 15. Tested against 15 existing books, it matched
+  the previous alignment on 11 (98-99% of words within half a second), fixed one
+  whose old alignment was up to 2 hours off, and sent the two it could not follow to
+  transcription on its own: one narrated out of chapter order, one whose audiobook
+  retells the text instead of reading it. QuartzNet only understands English, so
+  books in other languages use transcription automatically. The model is downloaded
+  once on first use (77 MB); if that download fails, point **QuartzNet model file**
+  (under **Advanced — forced alignment model**) at a copy you already have, such as
+  your Storyteller install's. It is on by default for new installs; existing installs
+  keep their current choice. The older **MMS** model stays available under **CTC
+  Model** for books that are not in English, and still needs the `-ctc` image.
 
 - **The dashboard shows which books have a read-along.** A blue headphones pill
   appears under the ratings on books with a finished read-along EPUB, next to the CTC

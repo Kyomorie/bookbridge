@@ -4103,7 +4103,6 @@ def settings():
             'DIAGNOSTICS_OPT_IN',
             'WHISPER_CPP_SEND_ORIGINAL',
             'CTC_ENABLED',
-            'CTC_CHAPTER_SEARCH',
             'ALIGNMENT_SEGMENTED_MAPS',
             'CONTENT_MATCH_GUARD',
             'SHARE_ALL_BOOKS_WITH_ALL_USERS',

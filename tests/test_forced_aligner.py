@@ -498,9 +498,13 @@ def test_remap_uses_narrated_chapters_without_bonus_excerpt(service, coverage, r
     chapters = [{"start": 0, "end": 9}, {"start": 10, "end": 50}, {"start": 51, "end": 1000}]
     # Dense enough to clear the acceptance gate; still spans chars 10..50 at ts 2..98.
     fake_map = [{"char": c, "ts": 2.0 + (c - 10) * 2.4} for c in range(10, 51, 8)]
+    # A short book that fits one pass, so a mismatched prior goes straight to align
+    # rather than through the chapter search.
     with patch.object(ForcedAligner, "is_available", return_value=True), \
+         patch.object(ForcedAligner, "can_single_pass", return_value=True), \
          patch.object(ForcedAligner, "align", return_value=fake_map) as align:
-        assert service.align_forced_and_store("bonus-book", ["/a.m4b"], text, chapters)
+        assert service.align_forced_and_store("bonus-book", ["/a.m4b"], text, chapters,
+                                              audio_duration=100.0)
     align.assert_called_once()
     call_args, call_kwargs = align.call_args
     assert call_args == (["/a.m4b"], text)

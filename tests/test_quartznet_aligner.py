@@ -375,7 +375,6 @@ def test_quartznet_only_aligns_english_books(real_service, monkeypatch, caplog, 
     """QuartzNet knows only English: a book that does not read as English goes to
     the transcription pipeline before the model is loaded. MMS is multilingual."""
     monkeypatch.setenv("CTC_MODEL", model)
-    monkeypatch.delenv("CTC_CHAPTER_SEARCH", raising=False)
     fake_map = [{"char": 0, "ts": 0.0}, {"char": len(text), "ts": 60.0}]
     with patch.object(QuartzNetAligner, "is_available", return_value=True), \
          patch.object(ForcedAligner, "is_available", return_value=True), \

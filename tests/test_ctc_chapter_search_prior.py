@@ -1,14 +1,13 @@
 """CTC chapter search as the chunking prior.
 
 A long book with no usable prior used to refuse CTC ("no chunking prior") and wait
-for a Whisper transcript. With CTC_CHAPTER_SEARCH on, `align_forced_and_store`
-runs the model once, locates each spine chapter in the greedy decode, and hands
-`align` the resulting (boundaries, text_range, exclude_spans) plus the emissions.
+for a Whisper transcript. Now `align_forced_and_store` runs the model once, locates
+each spine chapter in the greedy decode, and hands `align` the resulting
+(boundaries, text_range, exclude_spans) plus the emissions.
 
 Only the model is faked: the emission is a one-hot log-prob tensor spelling the
 narrated chapters, so the real greedy decode, chapter search, gates and wiring run.
 """
-import os
 import random
 from typing import Dict, List, Optional, Tuple
 from unittest.mock import patch
@@ -73,19 +72,6 @@ def service(tmp_path):
         db.db_manager.close()
 
 
-@pytest.fixture
-def search_on():
-    old = os.environ.get("CTC_CHAPTER_SEARCH")
-    os.environ["CTC_CHAPTER_SEARCH"] = "true"
-    try:
-        yield
-    finally:
-        if old is None:
-            os.environ.pop("CTC_CHAPTER_SEARCH", None)
-        else:
-            os.environ["CTC_CHAPTER_SEARCH"] = old
-
-
 def _run(service, full, chapters, emission, *, single_pass=False, audio_duration=10_000.0):
     """align_forced_and_store with only the model faked; returns (ok, align kwargs, emissions_for mock)."""
     calls: Dict = {}
@@ -104,7 +90,7 @@ def _run(service, full, chapters, emission, *, single_pass=False, audio_duration
     return ok, calls, emit
 
 
-def test_in_order_book_aligns_against_a_search_prior(service, search_on):
+def test_in_order_book_aligns_against_a_search_prior(service):
     full, chapters = _book([3000, 3500, 2800])
     emission, first_frame = _emission(full, chapters, [0, 1, 2])
 
@@ -127,36 +113,20 @@ def test_in_order_book_aligns_against_a_search_prior(service, search_on):
     assert service.database_service.get_alignment_method("book-1") == "ctc"
 
 
-@pytest.mark.parametrize("value", ["true", "on"])
-def test_setting_spellings_enable_the_search(service, value):
-    old = os.environ.get("CTC_CHAPTER_SEARCH")
-    os.environ["CTC_CHAPTER_SEARCH"] = value
-    try:
-        full, chapters = _book([3000, 3000])
-        emission, _ = _emission(full, chapters, [0, 1])
-        ok, _calls, emit = _run(service, full, chapters, emission)
-    finally:
-        if old is None:
-            os.environ.pop("CTC_CHAPTER_SEARCH", None)
-        else:
-            os.environ["CTC_CHAPTER_SEARCH"] = old
-    assert ok is True
-    emit.assert_called_once()
-
-
-def test_setting_off_keeps_the_no_prior_refusal(service):
-    os.environ.pop("CTC_CHAPTER_SEARCH", None)
+def test_a_book_without_chapters_keeps_the_no_prior_refusal(service):
+    """With no spine chapters there is nothing to search for, so a book too long
+    for one pass still waits for a transcript-derived prior."""
     full, chapters = _book([3000, 3000])
     emission, _ = _emission(full, chapters, [0, 1])
 
-    ok, calls, emit = _run(service, full, chapters, emission)
+    ok, calls, emit = _run(service, full, None, emission)
 
     assert ok is False
     emit.assert_not_called()
     assert calls == {}
 
 
-def test_a_book_that_fits_one_pass_does_not_search(service, search_on):
+def test_a_book_that_fits_one_pass_does_not_search(service):
     full, chapters = _book([3000, 3000])
     emission, _ = _emission(full, chapters, [0, 1])
 
@@ -166,7 +136,7 @@ def test_a_book_that_fits_one_pass_does_not_search(service, search_on):
     assert calls["boundaries"] is None
 
 
-def test_audio_of_another_book_falls_back_to_the_transcript_path(service, search_on, caplog):
+def test_audio_of_another_book_falls_back_to_the_transcript_path(service, caplog):
     full, chapters = _book([3000, 3000, 3000], seed=7)
     other, other_chapters = _book([3000, 3000, 3000], seed=99)
     emission, _ = _emission(other, other_chapters, [0, 1, 2])
@@ -178,7 +148,7 @@ def test_audio_of_another_book_falls_back_to_the_transcript_path(service, search
     assert "may not be this book" in caplog.text
 
 
-def test_substantial_chapters_out_of_spine_order_fall_back(service, search_on, caplog):
+def test_substantial_chapters_out_of_spine_order_fall_back(service, caplog):
     full, chapters = _book([3000, 3000, 3000])
     emission, _ = _emission(full, chapters, [2, 0, 1])
 
@@ -202,7 +172,7 @@ def _anchors(full, chars, first_frame, frames_per_char=4):
     return [(c, first_frame + frames_per_char * len(build_query(full, chars[0], c)[0])) for c in chars]
 
 
-def test_a_short_chapter_found_out_of_order_is_dropped_not_trusted(service, search_on, caplog):
+def test_a_short_chapter_found_out_of_order_is_dropped_not_trusted(service, caplog):
     """Measured on a real book: an 80-char chapter whose text recurs later was
     placed an hour late. It must not send an in-order book to Whisper, and it
     must not be anchored where it was wrongly found."""
@@ -225,7 +195,7 @@ def test_a_short_chapter_found_out_of_order_is_dropped_not_trusted(service, sear
     assert calls["exclude_spans"] == [(s["start"], s["end"])]
 
 
-def test_an_anchor_with_impossible_speech_rates_on_both_sides_is_dropped(service, search_on, caplog):
+def test_an_anchor_with_impossible_speech_rates_on_both_sides_is_dropped(service, caplog):
     """Measured on Push: its audiobook retells a passage in the third person, and
     a coincidental unique n-gram there became an anchor implying 397 chars in
     181s and then 3,830 chars in 74s. Only that anchor goes; consistent ones stay."""
@@ -250,7 +220,7 @@ def test_an_anchor_with_impossible_speech_rates_on_both_sides_is_dropped(service
     assert [bd["char"] for bd in calls["boundaries"]] == [c0, c2, c3, b["start"] + 100]
 
 
-def test_narration_that_departs_from_the_text_falls_back(service, search_on, caplog):
+def test_narration_that_departs_from_the_text_falls_back(service, caplog):
     """Measured on Push: its audiobook retells passages instead of reading them, so
     10.8% of its narrated text sat in anchor gaps over 1,500 chars (13 faithful
     narrations: at most 0.8%), and its search map scored below the transcript
