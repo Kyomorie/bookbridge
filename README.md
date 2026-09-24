@@ -28,14 +28,15 @@
 - **Flexible Setup**: You can intentionally turn Audiobookshelf off for ebook-only or maintenance-focused setups.
 - **Dashboard Session Details**: See recent reading or listening session summaries right on the dashboard cards.
 - **Deliberate Rewinds That Stick**: Go back in one app and continue from there without the furthest-ahead app immediately pulling you forward again.
-- **Safer, More Visible Alignment**: Uses Storyteller transcripts when available, then SMIL or Whisper; catches wrong pairings, scores maps, and lets you remap or restore them.
+- **Safer, More Visible Alignment**: Uses Storyteller transcripts when available, then SMIL or Whisper; catches wrong pairings, scores maps, and lets you remap or restore them. Experimental CTC chapter search can skip Whisper transcription on long audiobooks.
+- **Read-Along EPUBs for BookOrbit**: Generate a read-along EPUB directly from a book's own audiobook, ebook, and alignment — no Storyteller server required.
 - **Richer Dashboard Controls**: Filter by author, series, or format; sort by author, series, progress, status, last sync, date added, or rating.
 - **Web UI**: Management dashboard for tracking syncs and matching books.
 - **Library Suggestions Page**: Scan your library for likely audiobook + ebook pairs, review them, and queue matches in bulk.
 - **Same-Folder Matching**: Treat sibling audiobook and ebook files in the same
   title folder as high-confidence matches.
 - **Guided Settings Workflow**: Check your service settings from the UI and save everything in one place.
-- **Bridge Sync Plugin Companion**: If you install the Bridge Sync KOReader plugin, it can manage bridge-provided books, sync reading stats, sync highlights/notes, and use Grimmory shelves to shape KOReader collections.
+- **Bridge Sync Plugin Companion**: If you install the Bridge Sync KOReader plugin, it can manage bridge-provided books, sync reading stats, sync highlights/notes, share reading status and recently-read History between your devices, and use Grimmory shelves to shape KOReader collections.
 - **Split-Port Security**: Expose only the sync API to the internet while keeping the dashboard on your LAN.
 - **Self-Hosted**: Runs entirely in Docker on your own server.
 
