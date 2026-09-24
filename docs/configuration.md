@@ -126,13 +126,26 @@ The bridge **is** a KoSync server — KOReader devices sync directly with it. De
 | PUT Debounce | `KOSYNC_PUT_DEBOUNCE_SECONDS` | `300` | Wait this long after KOReader stops pushing before running the sync cycle. |
 | Use Percentage from Server | `KOSYNC_USE_PERCENTAGE_FROM_SERVER` | `false` | Uses raw percentage instead of text matching. |
 | Highlight Sync | `KOREADER_ANNOTATION_SYNC` | `true` | Enables bridge-side annotation exchange for the Bridge Sync KOReader plugin. Requires the current Bridge Sync plugin on each device. |
+| Sync Reading Status Between Devices | `KOREADER_STATUS_SYNC_ENABLED` | `true` | Shares each book's KOReader status (reading / finished / abandoned) across your devices — including filling it in from your reading position, marking a book finished when the bridge decides it is complete, and clearing it when you clear progress. Requires the **BridgeSync 0.9.6** plugin (or newer) on each device. |
+| Share Recently-Read Books Between Devices | `KOREADER_SYNC_READ_HISTORY` | `false` | Adds a book you read on one device into KOReader's History on your others, so views built from History (like a "Recent" shelf) look the same everywhere. Bounded per sync: only books whose file is already on the device, nothing read more than 30 days ago, and at most 25 books. Requires the **BridgeSync 0.9.6** plugin (or newer) on each device. |
 | Target KOSync URL | `KOSYNC_SERVER` | empty | Under **Advanced** on the card. Leave on the built-in server; only set this to relay through a separate external KoSync instance. |
 | Split-Port Listener | `KOSYNC_PORT` | empty | Optional dedicated KOSync port for internet-safe exposure. |
+| When Two KOReader Devices Disagree | `KOSYNC_ACTIVE_DEVICE_WINS` | `shadow` | Under **Advanced — cross-device progress**. `shadow` (**Watch and log only**) records the choice the arbiter would make without changing anything readers receive; `on` (**Let the device you are reading on win**) lets the device you are actively reading — proven by several forward page turns in a row — outrank a stale device sitting at the furthest position; `off` (**Always use the furthest position**) keeps the original behavior. |
 
 KOSync notes:
 
 - Each reader's KoSync **username and password** are per-reader — set them under **Account -> My Integrations -> KOReader / KoSync** (with a **Test** button), or as an admin under **Settings -> Users -> Integrations**.
-- Plain KOReader/KOSync progress sync does not need the Bridge Sync plugin. Highlight and note sync does.
+- Plain KOReader/KOSync progress sync does not need the Bridge Sync plugin. Highlight and note sync, status sync, and History sharing all do.
+- Tapping **Register** against the bridge's KoSync server only succeeds for an account that
+  already exists in **My Account -> My Integrations**; it does not create one. Use **Login**
+  once the username and password are saved there.
+- **Sync Reading Status** and **Share Recently-Read Books** never touch your reading
+  *position* — only KOReader's own status field and History list. When two devices disagree
+  on status, the one whose status changed most recently wins, and "finished" breaks a
+  same-day tie so simply reopening a finished book cannot quietly un-finish it.
+- **When Two KOReader Devices Disagree** only matters once a book is linked to more than one
+  reader file. It ships on `shadow` deliberately, so you can check its logged decisions
+  against your own devices before switching it to `on`.
 
 #### BookFusion
 
@@ -296,6 +309,8 @@ BookOrbit is a supported ebook and audiobook source. You can use it for ebook sy
 | BookOrbit Audiobook Poll Mode | `BOOKORBIT_AUDIO_POLL_MODE` | `global` | Listening progress is read separately from ebook progress and has its own poll. `custom` polls BookOrbit audiobooks on their own interval. |
 | BookOrbit Audiobook Poll Interval (seconds) | `BOOKORBIT_AUDIO_POLL_SECONDS` | `300` | Used when the audiobook poll mode is `custom`. |
 | Wait for Position to Settle (audiobooks) | `BOOKORBIT_AUDIO_POLL_WAIT_FOR_SETTLE` | `false` | Recommended while listening: holds the sync until playback pauses or stops, instead of writing on every poll. |
+| When BookOrbit Syncs Read-Along Books Itself | `BOOKORBIT_READALONG_POLICY` | `defer` | `defer` (**Let BookOrbit handle it**) writes only the ebook side and lets BookOrbit's own 3.0+ read-along sync move the audio position on a book where BookBridge maps both formats onto the same BookOrbit entry; `takeover` (**Turn BookOrbit's off and drive both sides**) switches that entry's own sync off so BookBridge owns both; `ignore` lets both write, which can conflict. Only matters when a book's audio and text are the same BookOrbit entry — the usual separate-entry setup is unaffected either way. See [troubleshooting](troubleshooting.md#a-read-along-book-keeps-shifting-position-or-bookorbit-and-bookbridge-disagree). |
+| Read-Along Audio Bitrate | `READALONG_AUDIO_BITRATE` | `32k` | Bitrate ffmpeg encodes into a generated read-along EPUB's embedded audio (mono AAC), e.g. `32k`, `48k`. Lower saves storage and download size (roughly 14MB per hour of audio at the default); higher improves quality at the cost of both. An invalid value falls back to the default. Applies only to read-alongs generated after the change — existing ones are not re-encoded. |
 
 Optional "Up Next" collection watch — drop a book onto a collection in BookOrbit and the bridge auto-matches it on the next poll:
 
@@ -316,6 +331,11 @@ BookOrbit notes:
     ```bash
     docker exec abs_kosync python -m scripts.migrate_grimmory_to_bookorbit --apply
     ```
+
+- **Generating a read-along EPUB** for BookOrbit needs a mapping whose audio source is
+  BookOrbit and that already has an alignment map (CTC or the standard Whisper/lexical one).
+  See [Read-Along EPUBs for BookOrbit](user-guide.md#read-along-epubs-for-bookorbit) in the
+  User Guide.
 
 #### Kavita
 
@@ -537,6 +557,7 @@ audio ↔ text alignment; it runs locally by default and needs no external servi
 | Use CTC Forced Alignment | `CTC_ENABLED` | `false` | Experimental and available only in a self-built image with `INSTALL_CTC=true`; leave off for the standard Whisper/lexical pipeline. |
 | CTC Model | `CTC_MODEL` | `mms_fa` | The only supported forced-alignment model bundle. Visible after enabling CTC. |
 | CTC Device | `CTC_DEVICE` | `auto` | Uses an NVIDIA GPU when available; CPU is practical only for short books. Visible after enabling CTC. |
+| CTC Chapter Search | `CTC_CHAPTER_SEARCH` | `false` | Experimental. Visible after enabling CTC. Locates each chapter directly in the audio and aligns without a Whisper transcript first, so a long audiobook does not need a full transcription pass before CTC can run. Falls back to the normal Whisper route for a book whose chapters are narrated out of order, or whose narration departs too far from the text. |
 
 Transcription notes:
 
@@ -547,6 +568,7 @@ Transcription notes:
 - **Content-Match Guard** is the safe default. It prevents a wrong, abridged, or otherwise incompatible ebook/audio pairing from replacing a usable map when semantic matching is unavailable. Check the selected editions before lowering its threshold.
 - **Segmented Alignment Maps** is an opt-in fix for an unusual edition where the EPUB's chapter order does not match narration order. It does nothing for normally ordered books. Enable it, then use **Remap alignment** for the affected book.
 - **CTC forced alignment** is a separate experimental backend, not an upgrade to the standard or `-cuda` image. It is disabled by default and requires the custom build described below.
+- **CTC Chapter Search** is an experimental option inside CTC, off by default, so it only appears once **Use CTC Forced Alignment** is on. On a 39-hour test audiobook it cut alignment time to about 8 minutes by skipping the Whisper transcript entirely; a book whose chapters are narrated out of order, or whose audio departs from the text, still falls back to the normal route automatically.
 
 ### Sync Tuning
 
