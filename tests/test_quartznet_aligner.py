@@ -342,6 +342,88 @@ def test_a_segment_too_big_for_one_pass_is_left_to_interpolation(caplog):
     assert "interpolated between the anchors" in caplog.text
 
 
+_ENGLISH = ("It was the best of times and it was the worst of times, and she had never seen "
+            "a winter like it in all the years that she had lived by the sea. ") * 40
+_FRENCH = ("Il était une fois, dans un petit village au bord de la mer, une jeune femme qui "
+           "rêvait de partir loin. Elle regardait les bateaux chaque matin. ") * 40
+
+
+def test_english_share_separates_english_from_other_languages():
+    assert AlignmentService._english_share(_ENGLISH) > 0.3
+    assert AlignmentService._english_share(_FRENCH) < 0.05
+    assert AlignmentService._english_share("") == 0.0
+
+
+@pytest.fixture
+def real_service(tmp_path):
+    from src.db.database_service import DatabaseService
+    from src.utils.polisher import Polisher
+
+    db = DatabaseService(str(tmp_path / "lang.db"))
+    try:
+        yield AlignmentService(db, Polisher())
+    finally:
+        db.db_manager.close()
+
+
+@pytest.mark.parametrize("model, text, reaches_aligner", [
+    ("quartznet", _FRENCH, False),
+    ("quartznet", _ENGLISH, True),
+    ("mms_fa", _FRENCH, True),
+])
+def test_quartznet_only_aligns_english_books(real_service, monkeypatch, caplog, model, text, reaches_aligner):
+    """QuartzNet knows only English: a book that does not read as English goes to
+    the transcription pipeline before the model is loaded. MMS is multilingual."""
+    monkeypatch.setenv("CTC_MODEL", model)
+    monkeypatch.delenv("CTC_CHAPTER_SEARCH", raising=False)
+    fake_map = [{"char": 0, "ts": 0.0}, {"char": len(text), "ts": 60.0}]
+    with patch.object(QuartzNetAligner, "is_available", return_value=True), \
+         patch.object(ForcedAligner, "is_available", return_value=True), \
+         patch.object(ForcedAligner, "can_single_pass", return_value=True), \
+         patch.object(ForcedAligner, "align", autospec=True, return_value=fake_map) as align:
+        real_service.align_forced_and_store("book-1", ["/a.m4b"], text, audio_duration=60.0)
+
+    assert align.called is reaches_aligner
+    assert ("does not read as English" in caplog.text) is (not reaches_aligner)
+
+
+def _sine(tmp_path, name, seconds, frequency):
+    import subprocess
+
+    path = tmp_path / name
+    subprocess.run(["ffmpeg", "-y", "-nostdin", "-loglevel", "error", "-f", "lavfi",
+                    "-i", f"sine=frequency={frequency}:sample_rate=16000:duration={seconds}",
+                    "-c:a", "pcm_s16le", str(path)], check=True)
+    return path
+
+
+def test_audio_streams_window_by_window_with_no_temp_file(tmp_path):
+    """Two parts decode to exactly the samples the whole-book temp-file decode gives,
+    in 38 s windows across the part boundary, and no temp file is written."""
+    parts = [_sine(tmp_path, "a.wav", 25, 440), _sine(tmp_path, "b.wav", 25, 660)]
+    whole = np.array(QuartzNetAligner()._decode_to_memmap(parts))
+
+    windows = list(QuartzNetAligner._pcm_windows(parts))
+
+    assert [w.shape[0] for w in windows] == [qn._WINDOW_SAMPLES, whole.shape[0] - qn._WINDOW_SAMPLES]
+    np.testing.assert_array_equal(np.concatenate(windows), whole)
+
+    aligner = _aligner_with_fake_session()
+    with patch.object(QuartzNetAligner, "is_available", return_value=True), \
+         patch.object(QuartzNetAligner, "_decode_to_memmap", side_effect=AssertionError("temp file")):
+        emission, spf = aligner.emissions_for(parts)
+    np.testing.assert_array_equal(emission, aligner._emissions(whole[None, :]))
+    assert spf == pytest.approx(whole.shape[0] / emission.shape[1] / 16000)
+
+
+def test_a_failed_model_download_says_how_to_supply_the_model(data_dir, caplog):
+    with patch.object(QuartzNetAligner, "_download_model", side_effect=OSError("network is unreachable")):
+        with pytest.raises(OSError):
+            QuartzNetAligner()._load()
+    assert "QuartzNet model file" in caplog.text
+    assert "network is unreachable" in caplog.text
+
+
 def test_align_runs_the_chunked_path_on_a_numpy_emission():
     """End to end through ForcedAligner's chunking, with no torch involved."""
     aligner = _aligner_with_fake_session()

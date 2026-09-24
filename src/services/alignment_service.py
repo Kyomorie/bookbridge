@@ -309,6 +309,26 @@ class AlignmentService:
         value = os.environ.get("CTC_MODEL", "quartznet").strip().lower()
         return "mms_fa" if value in ("mms_fa", "mms") else "quartznet"
 
+    # QuartzNet only knows English. Share of these words among a book's words:
+    # measured 0.32-0.39 on eight English books (Push's dialect lowest), 0.00-0.02
+    # on French, German and Spanish prose. EPUB language tags are often missing or
+    # wrong in Calibre libraries, so the text itself decides.
+    _ENGLISH_FUNCTION_WORDS = frozenset(
+        "the and of to a in that it is was he i for you with his her she had as on at "
+        "not but be they this have by from my all we one so".split()
+    )
+    _ENGLISH_MIN_SHARE = 0.15
+
+    @classmethod
+    def _english_share(cls, text: str) -> float:
+        """Share of English function words among the words of up to 200,000
+        characters from the middle of ``text`` (past any front matter)."""
+        middle = len(text) // 2
+        words = re.findall(r"[a-zÀ-ɏ']+", text[max(0, middle - 100_000):middle + 100_000].lower())
+        if not words:
+            return 0.0
+        return sum(word in cls._ENGLISH_FUNCTION_WORDS for word in words) / len(words)
+
     def _ctc_aligner_class(self) -> type:
         """The aligner class for `ctc_model`."""
         if self.ctc_model() == "mms_fa":
@@ -369,6 +389,17 @@ class AlignmentService:
                 abs_id,
             )
             return False
+
+        if self.ctc_model() == "quartznet":
+            share = self._english_share(ebook_text)
+            if share < self._ENGLISH_MIN_SHARE:
+                logger.info(
+                    "⚙️ CTC: QuartzNet is English-only and %s does not read as English "
+                    "(%.0f%% English function words, needs %.0f%%); using the "
+                    "transcription pipeline",
+                    abs_id, share * 100, self._ENGLISH_MIN_SHARE * 100,
+                )
+                return False
 
         if type(self._forced_aligner) is not aligner_cls:
             self._forced_aligner = aligner_cls()

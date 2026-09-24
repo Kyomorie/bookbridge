@@ -111,8 +111,10 @@ All notable changes to BookBridge will be documented in this file.
   default: on three test books (2.5 to 22 hours) it put more words within half a
   second of the narration every time. It is downloaded once on first use (77 MB),
   or you can point **QuartzNet model file** at a copy you already have, such as your
-  Storyteller install's. A 22-hour audiobook aligns in about 7 minutes on a modern
-  CPU. Choose **MMS** under **CTC Model** for books that are not in English.
+  Storyteller install's, which also covers a download that fails. A 22-hour
+  audiobook aligns in about 7 minutes on a modern CPU. QuartzNet only understands
+  English, so books in other languages go to transcription automatically (or choose
+  **MMS** under **CTC Model**, which needs the `-ctc` image).
 
 - **Long audiobooks can get CTC alignment without waiting for Whisper.** A book too
   long to align in one pass used to need a full Whisper transcript first, which takes

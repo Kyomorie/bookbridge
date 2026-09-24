@@ -2,9 +2,9 @@
 
 The torch-free counterpart of ``ForcedAligner``: it runs on CPU in the standard
 image, where ``onnxruntime`` already ships as a faster-whisper dependency, so CTC
-alignment no longer needs the multi-gigabyte ``-ctc`` image. Everything above the
-model is inherited from ``ForcedAligner`` unchanged: the text-partitioned chunks
-windowed by a prior map, the skipped-span recovery and the map assembly.
+alignment no longer needs the multi-gigabyte ``-ctc`` image. The word bookkeeping,
+pre-flight sizing and map assembly are ``ForcedAligner``'s; the audio is decoded as
+a stream, and the text is aligned anchor to anchor (`_chunked_word_times`).
 
 The model is the ONNX conversion Storyteller's ghost-story engine uses (18.9M
 parameters, 77 MB). Its graph contains the mel frontend, so the caller supplies
@@ -26,7 +26,7 @@ import hashlib
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from src.utils.forced_aligner import ForcedAligner
 
@@ -124,9 +124,7 @@ def ctc_viterbi_first_frames(log_probs: Any, labels: Sequence[int], blank: int,
 class QuartzNetAligner(ForcedAligner):
     """QuartzNet15x5 forced aligner on onnxruntime (see module docstring)."""
 
-    # The numpy Viterbi keeps one back-pointer byte per frame x state, so chunks are
-    # smaller than MMS's: 2000 tokens is ~2-3 minutes of narration, a few MB.
-    _MAX_CHUNK_TOKENS = 2000
+    # The numpy Viterbi keeps one back-pointer byte per frame x state.
     _MAX_SINGLE_PASS_CELLS = 2**26
 
     def __init__(self):
@@ -196,7 +194,16 @@ class QuartzNetAligner(ForcedAligner):
             return
         import onnxruntime as ort
 
-        path = self._model_path()
+        try:
+            path = self._model_path()
+        except Exception as e:
+            logger.warning(
+                "⚠️ CTC: could not get the QuartzNet model (%s); set 'QuartzNet model file' "
+                "(CTC_QUARTZNET_MODEL_PATH) to a local model.onnx, such as a Storyteller "
+                "install's ghost-story copy. Falling back to the transcription pipeline.",
+                e, exc_info=True,
+            )
+            raise
         options = ort.SessionOptions()
         options.intra_op_num_threads = max(1, min(8, os.cpu_count() or 1))
         logger.info("⚙️ CTC: loading QuartzNet15x5 (onnxruntime, CPU) from %s", path)
@@ -209,14 +216,95 @@ class QuartzNetAligner(ForcedAligner):
     def _load_audio(self, audio_paths):
         return self._decode_to_memmap(audio_paths)[None, :]
 
-    def _emissions(self, waveform):
-        """``[1, T, 29]`` log-probs for a ``[1, samples]`` 16 kHz waveform."""
+    @staticmethod
+    def _pcm_windows(audio_paths) -> Iterator[Any]:
+        """Decode ``audio_paths`` in order through ffmpeg and yield consecutive
+        ``_WINDOW_SAMPLES`` float32 windows (the last may be shorter).
+
+        Streams, so at most one window of audio is held: the shared decode writes
+        the whole book to a temp file first, ~230 MB per hour (5 GB for a 22-hour
+        book), which a small NAS may not have to spare.
+        """
+        import subprocess
+
         import numpy as np
 
+        if isinstance(audio_paths, (str, os.PathLike)):
+            audio_paths = [audio_paths]
+        window_bytes = _WINDOW_SAMPLES * 4
+        pending = bytearray()
+        for path in audio_paths:
+            proc = subprocess.Popen(
+                ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", str(path),
+                 "-f", "f32le", "-ac", "1", "-ar", str(_SAMPLE_RATE), "pipe:1"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            try:
+                while True:
+                    chunk = proc.stdout.read(window_bytes - len(pending))
+                    if not chunk:
+                        break
+                    pending += chunk
+                    if len(pending) == window_bytes:
+                        yield np.frombuffer(bytes(pending), dtype="<f4")
+                        pending.clear()
+            finally:
+                proc.stdout.close()
+                errors = proc.stderr.read()
+                proc.stderr.close()
+                returncode = proc.wait()
+            if returncode != 0:
+                raise RuntimeError(
+                    f"ffmpeg could not decode {path}: {errors.decode('utf-8', 'replace').strip()[-300:]}"
+                )
+        if pending:
+            yield np.frombuffer(bytes(pending), dtype="<f4")
+
+    def _stream_emissions(self, audio_paths) -> Tuple[Any, float]:
+        """``(emission [1, T, 29], seconds_per_frame)`` decoded window by window."""
+        samples = 0
+
+        def counted():
+            nonlocal samples
+            for window in self._pcm_windows(audio_paths):
+                samples += window.shape[0]
+                yield window
+
+        emission = self._emissions_from_windows(counted())
+        if not samples:
+            raise ValueError("ffmpeg produced no audio samples")
+        logger.info("⚙️ CTC: QuartzNet emissions for %.0fs audio (streamed, CPU)", samples / _SAMPLE_RATE)
+        return emission, samples / emission.shape[1] / _SAMPLE_RATE
+
+    def emissions_for(self, audio_paths) -> Optional[Tuple[Any, float]]:
+        """Decode ``audio_paths`` and run the model once: ``(emission, seconds_per_frame)``."""
+        if not self.is_available():
+            return None
+        try:
+            self._load()
+            return self._stream_emissions(audio_paths)
+        except Exception as e:
+            logger.error(f"❌ CTC emissions failed: {e}", exc_info=True)
+            return None
+
+    def _decode_and_emit(self, audio_paths, boundaries: Optional[List[Dict]],
+                         num_targets: int) -> Tuple[Optional[Any], float]:
+        return self._stream_emissions(audio_paths)
+
+    def _emissions(self, waveform):
+        """``[1, T, 29]`` log-probs for a ``[1, samples]`` 16 kHz waveform."""
         samples = waveform[0]
+        return self._emissions_from_windows(
+            samples[start:start + _WINDOW_SAMPLES] for start in range(0, samples.shape[0], _WINDOW_SAMPLES)
+        )
+
+    def _emissions_from_windows(self, windows) -> Any:
+        """``[1, T, 29]`` log-probs for consecutive ``_WINDOW_SAMPLES`` windows."""
+        import numpy as np
+
         parts = []
-        for start in range(0, samples.shape[0], _WINDOW_SAMPLES):
-            window = np.asarray(samples[start:start + _WINDOW_SAMPLES], dtype=np.float32)
+        for window in windows:
+            window = np.asarray(window, dtype=np.float32)
             if window.shape[0] <= _MIN_WINDOW_SAMPLES:
                 continue
             emphasised = np.empty_like(window)
