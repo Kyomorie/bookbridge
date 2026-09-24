@@ -6,103 +6,22 @@ All notable changes to BookBridge will be documented in this file.
 
 ## [Unreleased]
 
-### Fixed
-
-- **Reading on in Storyteller after listening no longer snaps you back to the
-  audiobook position (#447).** When you switched from listening in
-  Audiobookshelf to reading in Storyteller, each sync mistook your first few
-  pages of reading for BookBridge's own update and put Storyteller back where the
-  audiobook stopped. That kept happening until you had read about 1% of the book
-  in one go or restarted BookBridge. BookBridge now recognises its own
-  Storyteller updates by the exact timestamp it sent with them, so any newer
-  Storyteller position is treated as your reading, however small the move.
-
-- **Resuming a read-along in BookOrbit's web reader no longer plays two voices.**
-  When you picked up where you left off, BookOrbit's web reader gave the audio
-  less than a second to start and then started it a second time, so two copies
-  of the narration played over each other. On slower connections, or behind
-  Cloudflare (which does not cache the audio format read-alongs use), the audio
-  never loaded in time. Read-alongs now ship their audio in smaller pieces
-  (about 6 minutes each) that load in time without any cache. Regenerate an
-  existing read-along to pick this up.
-
-- **Read-alongs keep playing from chapter to chapter in Safari on iPhone and
-  iPad.** Narration stopped at every new chapter with "The request is not
-  allowed by the user agent or the platform" until you pressed Play again.
-  Safari only lets a page start audio on its own right after other audio has
-  finished, and read-alongs changed chapters partway through an audio file.
-  Each chapter now gets its own audio files, the way Storyteller builds them,
-  and front-matter pages with less than a second of narration are left without
-  it. Regenerate an existing read-along to pick this up.
-
-- **Registering from KOReader or Readest no longer pretends to succeed (#446).**
-  Tapping "Register" against BookBridge's built-in sync server always reported
-  success without creating anything, so the device then failed every login with no
-  explanation. BookBridge sets up sync accounts in its own settings, so "Register"
-  now only succeeds for an account that already exists there, and otherwise shows a
-  message pointing you to **My Account → My Integrations** to set a KoSync username
-  and password and then use **Login**.
-
-- **EPUBs that style part of a word (e.g. "bionic reading" bold formatting)
-  extract correctly.** Some EPUBs render a few letters of each word in bold to
-  help reading speed. BookBridge's text extraction previously read these as
-  separate words with an extra space injected mid-word (`<b>Th</b>e` became
-  "Th e" instead of "The"), which could break audiobook alignment, position
-  syncing, and read-along generation for affected books. Word boundaries are
-  now preserved without changing anything for ordinary books.
-
-- **Asking for a read-along at match time works without Storyteller.** Ticking the
-  read-along box and then using **Match All** recorded nothing, so no read-along was
-  ever built unless the book also went through Storyteller. The request now sticks,
-  and the read-along is generated as soon as the book's alignment finishes.
-
-- **Synced ebook positions land in the right place.** When progress from an
-  audiobook was sent to an ebook reader, the position could land in the previous
-  paragraph (KOReader and CFI-based readers alike), and a position that fell on a
-  "* * *" scene break jumped back to the start of the chapter, which could be tens
-  of thousands of words. A line repeated elsewhere in a chapter could also resolve
-  to its first copy. Positions now resolve to the right paragraph. Positions read
-  from Storyteller and the Audiobookshelf ebook reader also no longer land about a
-  sentence early.
-
-- **Read-along narration no longer doubles in BookOrbit's web reader.** On longer
-  books, the web reader could start the next audio file twice at each file change,
-  so two copies of the narration played over each other and got worse as the book
-  went on. The BookOrbit app was unaffected. Regenerate an existing read-along to
-  pick this up.
-
-- **Read-alongs now highlight in BookOrbit's web reader.** Generated read-alongs
-  played their audio in the web reader but never highlighted the sentence being
-  read (the BookOrbit app was unaffected). The book now declares the highlight
-  style readers look for. Lines without ending punctuation, such as headings,
-  credits and captions, now get their own highlight instead of being merged with
-  the next paragraph. Regenerate an existing read-along to pick this up.
-
-- **Read-along generation review fixes completed.** Terminal audio cuts no longer
-  emit empty chunks; delivery rejects unsafe shared or nested library roots; EPUB 2
-  conversion preserves publication identifiers required by IDPF-obfuscated fonts;
-  generation isolates job kinds and worker-owned IDs, coordinates admission with
-  shared per-book reservations, releases failed dispatches, and recovers stale rows
-  after restart; marker injection preserves escaped XHTML IDs and `<pre>` content;
-  and Forge/alignment `__main__` entry points now receive callbacks.
-
-- **Read-along EPUB generation now covers EPUB 2 books and no longer mis-times
-  unnarrated sections.** Several correctness fixes landed together: a stretch of text
-  with no narration behind it used to be given a nearby chapter's audio instead of
-  being left alone; a book whose audio and text were both already in hand could have
-  its generation job marked finished by an unrelated sync; and generating with the
-  output pointed at the source book could overwrite the original file. Books can also
-  now opt in to a read-along at match time, so it is built automatically once
-  alignment finishes. Books that already carry read-along narration are refused rather
-  than rebuilt.
-
-
-- Readalong EPUB generation preserves original chapter markup and nonbreaking
-  whitespace, keeps audio clips within their narration segments, and refuses
-  incomplete exports instead of publishing a book with missing chapters. A failed
-  regeneration leaves the previous EPUB in place and does not trigger a library scan.
-
 ### Added
+
+- **Read-along EPUBs for BookOrbit, built by BookBridge — no Storyteller needed.**
+  BookBridge can now turn a matched audiobook and ebook into a read-along EPUB: the
+  book with its narration built in, highlighting each sentence as it is read. It uses
+  the book's own alignment, so no Storyteller server is involved, and it is delivered
+  straight into the book's BookOrbit audiobook folder, where it plays with highlighting
+  in both the BookOrbit app and the web reader, including Safari on iPhone and iPad.
+  Tick **Also generate a read-along EPUB for BookOrbit** when you match a book and it
+  is built as soon as the book's alignment finishes, or use **Create read-along EPUB**
+  from the book's menu on the dashboard at any time; progress shows step by step.
+  EPUB 2 books are converted automatically, a book that already carries narration is
+  left as it is, and a failed rebuild keeps the previous read-along. A blue headphones
+  pill marks books with a finished read-along, beside the CTC pill, which moved under
+  the ratings. Needs BookOrbit as the audiobook source; **Read-Along Audio Bitrate**
+  (default 32k) sets the size of the embedded audio.
 
 - **Forced alignment is now a regular, recommended option, and runs on any CPU.**
   Settings now offers a plain choice: **Use forced alignment (recommended)**, which
@@ -123,10 +42,6 @@ All notable changes to BookBridge will be documented in this file.
   your Storyteller install's. It is on by default for new installs; existing installs
   keep their current choice. The older **MMS** model stays available under **CTC
   Model** for books that are not in English, and still needs the `-ctc` image.
-
-- **The dashboard shows which books have a read-along.** A blue headphones pill
-  appears under the ratings on books with a finished read-along EPUB, next to the CTC
-  pill, which moved there from the card footer.
 
 - **Recently-read books can now be shared between your devices.** KOReader writes its
   History only when you open a book *on that device*, so a book you read on the Kobo
@@ -198,6 +113,40 @@ All notable changes to BookBridge will be documented in this file.
   anything your readers receive.
 
 ### Fixed
+
+- **Reading on in Storyteller after listening no longer snaps you back to the
+  audiobook position (#447).** When you switched from listening in
+  Audiobookshelf to reading in Storyteller, each sync mistook your first few
+  pages of reading for BookBridge's own update and put Storyteller back where the
+  audiobook stopped. That kept happening until you had read about 1% of the book
+  in one go or restarted BookBridge. BookBridge now recognises its own
+  Storyteller updates by the exact timestamp it sent with them, so any newer
+  Storyteller position is treated as your reading, however small the move.
+
+- **Registering from KOReader or Readest no longer pretends to succeed (#446).**
+  Tapping "Register" against BookBridge's built-in sync server always reported
+  success without creating anything, so the device then failed every login with no
+  explanation. BookBridge sets up sync accounts in its own settings, so "Register"
+  now only succeeds for an account that already exists there, and otherwise shows a
+  message pointing you to **My Account → My Integrations** to set a KoSync username
+  and password and then use **Login**.
+
+- **EPUBs that style part of a word (e.g. "bionic reading" bold formatting)
+  extract correctly.** Some EPUBs render a few letters of each word in bold to
+  help reading speed. BookBridge's text extraction previously read these as
+  separate words with an extra space injected mid-word (`<b>Th</b>e` became
+  "Th e" instead of "The"), which could break audiobook alignment and position
+  syncing for affected books. Word boundaries are now preserved without changing
+  anything for ordinary books.
+
+- **Synced ebook positions land in the right place.** When progress from an
+  audiobook was sent to an ebook reader, the position could land in the previous
+  paragraph (KOReader and CFI-based readers alike), and a position that fell on a
+  "* * *" scene break jumped back to the start of the chapter, which could be tens
+  of thousands of words. A line repeated elsewhere in a chapter could also resolve
+  to its first copy. Positions now resolve to the right paragraph. Positions read
+  from Storyteller and the Audiobookshelf ebook reader also no longer land about a
+  sentence early.
 
 - **BookBridge and BookOrbit 3.0 no longer both write a read-along book.** BookOrbit
   3.0.0 added its own sync that keeps one entry's audiobook and EPUB in step, for entries
