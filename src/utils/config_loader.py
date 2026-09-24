@@ -166,7 +166,7 @@ ALL_SETTINGS = [
     'JOB_MAX_RETRIES', 'JOB_RETRY_DELAY_MINS', 'WHISPER_MODEL',
     'WHISPER_DEVICE', 'WHISPER_COMPUTE_TYPE',
     'TRANSCRIPTION_PROVIDER', 'DEEPGRAM_API_KEY', 'DEEPGRAM_MODEL', 'WHISPER_CPP_URL', 'WHISPER_CPP_TIMEOUT', 'WHISPER_CPP_SEND_ORIGINAL', 'WHISPER_CPP_CHUNK_MINUTES',
-    'CTC_ENABLED', 'CTC_MODEL', 'CTC_DEVICE', 'CTC_CHAPTER_SEARCH',
+    'CTC_ENABLED', 'CTC_MODEL', 'CTC_QUARTZNET_MODEL_PATH', 'CTC_DEVICE', 'CTC_CHAPTER_SEARCH',
     'ALIGNMENT_SEGMENTED_MAPS',
     'CONTENT_MATCH_GUARD', 'CONTENT_MATCH_MIN_OVERLAP',
     'AUDIO_SPLIT_DURATION_MINUTES',
@@ -217,9 +217,12 @@ DEFAULT_CONFIG = {
     'WHISPER_CPP_TIMEOUT': '600',
     'WHISPER_CPP_SEND_ORIGINAL': 'false',
     'WHISPER_CPP_CHUNK_MINUTES': '0',
-    # CTC forced alignment (opt-in; needs the CTC-enabled image with torch/torchaudio).
+    # CTC forced alignment (opt-in). 'quartznet' runs on CPU in every image
+    # (onnxruntime); 'mms_fa' needs the -ctc image with torch/torchaudio.
     'CTC_ENABLED': 'false',
-    'CTC_MODEL': 'mms_fa',
+    'CTC_MODEL': 'quartznet',
+    # Optional local QuartzNet model.onnx (or its folder); empty downloads it once.
+    'CTC_QUARTZNET_MODEL_PATH': '',
     'CTC_DEVICE': 'auto',
     # Build the CTC chunking prior by locating each spine chapter in the greedy-decoded
     # emissions (src/services/ctc_search.py) instead of waiting for a Whisper transcript.

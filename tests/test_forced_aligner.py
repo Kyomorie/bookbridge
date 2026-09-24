@@ -20,6 +20,12 @@ from src.utils.forced_aligner import ForcedAligner
 from src.utils.polisher import Polisher
 
 
+@pytest.fixture(autouse=True)
+def _mms_ctc_model(monkeypatch):
+    """These tests exercise the MMS (torch) aligner, not the QuartzNet default."""
+    monkeypatch.setenv("CTC_MODEL", "mms_fa")
+
+
 # --------------------------------------------------------------------------- #
 # Pure helpers
 # --------------------------------------------------------------------------- #

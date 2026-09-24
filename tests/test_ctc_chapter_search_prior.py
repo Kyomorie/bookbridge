@@ -58,6 +58,12 @@ def _emission(full: str, chapters: List[Dict], narration_order: List[int]):
     return emission, first_frame
 
 
+@pytest.fixture(autouse=True)
+def _mms_ctc_model(monkeypatch):
+    """These tests exercise the MMS (torch) aligner, not the QuartzNet default."""
+    monkeypatch.setenv("CTC_MODEL", "mms_fa")
+
+
 @pytest.fixture
 def service(tmp_path):
     db = DatabaseService(str(tmp_path / "search.db"))

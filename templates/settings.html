@@ -2928,10 +2928,10 @@
                     </div>
 
                     <!-- CTC forced alignment: experimental/advanced, hidden behind a disclosure.
-                         Not in any published image (needs a local INSTALL_CTC=true build) and
-                         effectively needs a GPU — see the note below. -->
+                         QuartzNet runs on CPU in every image; MMS needs a local INSTALL_CTC=true
+                         build and effectively a GPU — see the notes below. -->
                     <details class="advanced-sub full-width" {% if get_bool('CTC_ENABLED') %}open{% endif %}>
-                        <summary>Advanced · Experimental — CTC forced alignment (needs a custom build + a GPU)</summary>
+                        <summary>Advanced · Experimental — CTC forced alignment</summary>
                     <div class="form-group full-width">
                         <label class="toggle-label">
                             <input type="checkbox" name="CTC_ENABLED"
@@ -2942,20 +2942,33 @@
                         <div class="help-text"><strong>Experimental &amp; advanced — leave off unless you
                             know you want it.</strong> Aligns the audiobook directly against the known ebook
                             text (per-word) instead of transcribing and matching back — more accurate for
-                            char-precise readers (BookOrbit, ABS ebook, Grimmory). <strong>Not included in any
-                            published image:</strong> it requires a custom <code>-ctc</code> build
-                            (<code>INSTALL_CTC=true</code>, which bundles torch/torchaudio) and is inert on the
-                            standard and <code>-cuda</code> images. <strong>Effectively requires an NVIDIA
-                            GPU</strong> — on CPU it works only for short books and is very slow on full-length
-                            audiobooks. Leave off to keep the Whisper/lexical pipeline (the default).</div>
+                            char-precise readers (BookOrbit, ABS ebook, Grimmory). The default QuartzNet model
+                            runs on the CPU in every image (a few minutes per 10 hours of audio on a modern CPU).
+                            Leave off to keep the Whisper/lexical pipeline (the default).</div>
                     </div>
                     <div id="ctc_body" class="dynamic-group full-width section-body {% if not get_bool('CTC_ENABLED') %}collapsed{% endif %}" style="display:contents;">
                         <div class="form-group">
                             <label>CTC Model</label>
-                            <input type="text" name="CTC_MODEL" value="{{ get_val('CTC_MODEL', 'mms_fa') }}"
-                                placeholder="mms_fa" autocomplete="off">
-                            <div class="help-text">Forced-alignment model bundle. <code>mms_fa</code> (Meta MMS,
-                                ~1000 languages) is the only supported value today.</div>
+                            <select name="CTC_MODEL">
+                                <option value="quartznet" {% if get_val('CTC_MODEL', 'quartznet') != 'mms_fa' %}selected{% endif %}>QuartzNet
+                                    (English, CPU, any image)</option>
+                                <option value="mms_fa" {% if get_val('CTC_MODEL', 'quartznet') == 'mms_fa' %}selected{% endif %}>MMS
+                                    (~1000 languages, needs the -ctc image)</option>
+                            </select>
+                            <div class="help-text">QuartzNet is NVIDIA's QuartzNet15x5 (the model Storyteller uses),
+                                downloaded once (77 MB) on first use. MMS needs a custom <code>-ctc</code> build
+                                (<code>INSTALL_CTC=true</code>, which bundles torch/torchaudio) and effectively an
+                                NVIDIA GPU; use it for books that are not in English.</div>
+                        </div>
+                        <div class="form-group">
+                            <label>QuartzNet model file</label>
+                            <input type="text" name="CTC_QUARTZNET_MODEL_PATH"
+                                value="{{ get_val('CTC_QUARTZNET_MODEL_PATH', '') }}"
+                                placeholder="/data/models/quartznet15x5-en/model.onnx" autocomplete="off">
+                            <div class="help-text">Optional. A local <code>model.onnx</code> (or the folder holding
+                                it), for example a copy from Storyteller's
+                                <code>ghost-story/models/quartznet15x5-en</code>. Leave empty to download it
+                                from Storyteller's package registry on first use.</div>
                         </div>
                         <div class="form-group">
                             <label>CTC Device</label>
@@ -2966,8 +2979,8 @@
                                 <option value="cuda" {% if get_val('CTC_DEVICE')=='cuda' %}selected{% endif %}>GPU
                                     (NVIDIA)</option>
                             </select>
-                            <div class="help-text">Auto uses an NVIDIA GPU when available, otherwise CPU. CTC on CPU
-                                is workable but slow for long audiobooks.</div>
+                            <div class="help-text">MMS only (QuartzNet always runs on the CPU). Auto uses an NVIDIA
+                                GPU when available, otherwise CPU; MMS on CPU is slow for long audiobooks.</div>
                         </div>
                         <div class="form-group full-width">
                             <label class="toggle-label">

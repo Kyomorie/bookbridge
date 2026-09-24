@@ -301,6 +301,22 @@ class AlignmentService:
         instead of refusing and waiting for a Whisper transcript. Read per call."""
         return env_truthy("CTC_CHAPTER_SEARCH", "false")
 
+    @staticmethod
+    def ctc_model() -> str:
+        """The CTC model to align with, read per call: ``quartznet`` (QuartzNet15x5 on
+        onnxruntime, CPU, the standard image) or ``mms_fa`` (Meta MMS on torch, the
+        ``-ctc`` image)."""
+        value = os.environ.get("CTC_MODEL", "quartznet").strip().lower()
+        return "mms_fa" if value in ("mms_fa", "mms") else "quartznet"
+
+    def _ctc_aligner_class(self) -> type:
+        """The aligner class for `ctc_model`."""
+        if self.ctc_model() == "mms_fa":
+            from src.utils.forced_aligner import ForcedAligner
+            return ForcedAligner
+        from src.utils.quartznet_aligner import QuartzNetAligner
+        return QuartzNetAligner
+
     @time_execution
     def align_forced_and_store(self, abs_id: str, audio_path: str, ebook_text: str,
                                spine_chapters: Optional[List[Dict]] = None,
@@ -320,12 +336,18 @@ class AlignmentService:
         if not ebook_text:
             return False
 
-        from src.utils.forced_aligner import ForcedAligner
-        if not ForcedAligner.is_available():
-            logger.warning(
-                "⚠️ CTC alignment requested but torch/torchaudio are unavailable "
-                "(use the -ctc image); falling back to the lexical pipeline"
-            )
+        aligner_cls = self._ctc_aligner_class()
+        if not aligner_cls.is_available():
+            if aligner_cls.__name__ == "ForcedAligner":
+                logger.warning(
+                    "⚠️ CTC alignment requested but torch/torchaudio are unavailable "
+                    "(use the -ctc image); falling back to the lexical pipeline"
+                )
+            else:
+                logger.warning(
+                    "⚠️ CTC alignment requested but onnxruntime is unavailable; "
+                    "falling back to the lexical pipeline"
+                )
             return False
 
         # Segment-placement guard (issue #426): a book whose stored map already
@@ -348,8 +370,8 @@ class AlignmentService:
             )
             return False
 
-        if self._forced_aligner is None:
-            self._forced_aligner = ForcedAligner()
+        if type(self._forced_aligner) is not aligner_cls:
+            self._forced_aligner = aligner_cls()
 
         text_range = self._ctc_text_range(abs_id, ebook_text, spine_chapters)
         # An existing lexical map lets the aligner chunk a long book (its char->ts
@@ -470,11 +492,14 @@ class AlignmentService:
 
         emission, seconds_per_frame = precomputed
         blank_id, id_to_char = self._forced_aligner.ctc_vocab()
-        argmaxes = emission[0].argmax(dim=-1).cpu().numpy()
+        if hasattr(emission, "cpu"):
+            argmaxes = emission[0].argmax(dim=-1).cpu().numpy()
+        else:
+            argmaxes = emission[0].argmax(axis=-1)
         text, frames = greedy_decode_argmax(argmaxes, blank_id, id_to_char)
         chapters = [(int(c["start"]), int(c["end"])) for c in spine_chapters if c["end"] > c["start"]]
         results = search_chapters(PositionedDocument(text=text, positions=frames), ebook_text,
-                                  chapters, int(emission.size(1)),
+                                  chapters, int(emission.shape[1]),
                                   anchor_spacing=self._SEARCH_ANCHOR_SPACING)
 
         total_chars = sum(r.end_char - r.start_char for r in results) or 1
