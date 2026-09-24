@@ -295,11 +295,40 @@ class AlignmentService:
         return env_truthy("ALIGNMENT_SEGMENTED_MAPS", "false")
 
     @staticmethod
-    def chapter_search_enabled() -> bool:
-        """Whether a CTC pass with no usable prior builds one by locating each spine
-        chapter in the greedy-decoded emissions (`src/services/ctc_search.py`)
-        instead of refusing and waiting for a Whisper transcript. Read per call."""
-        return env_truthy("CTC_CHAPTER_SEARCH", "false")
+    def ctc_model() -> str:
+        """The CTC model to align with, read per call: ``quartznet`` (QuartzNet15x5 on
+        onnxruntime, CPU, the standard image) or ``mms_fa`` (Meta MMS on torch, the
+        ``-ctc`` image)."""
+        value = os.environ.get("CTC_MODEL", "quartznet").strip().lower()
+        return "mms_fa" if value in ("mms_fa", "mms") else "quartznet"
+
+    # QuartzNet only knows English. Share of these words among a book's words:
+    # measured 0.32-0.39 on eight English books (Push's dialect lowest), 0.00-0.02
+    # on French, German and Spanish prose. EPUB language tags are often missing or
+    # wrong in Calibre libraries, so the text itself decides.
+    _ENGLISH_FUNCTION_WORDS = frozenset(
+        "the and of to a in that it is was he i for you with his her she had as on at "
+        "not but be they this have by from my all we one so".split()
+    )
+    _ENGLISH_MIN_SHARE = 0.15
+
+    @classmethod
+    def _english_share(cls, text: str) -> float:
+        """Share of English function words among the words of up to 200,000
+        characters from the middle of ``text`` (past any front matter)."""
+        middle = len(text) // 2
+        words = re.findall(r"[a-zÀ-ɏ']+", text[max(0, middle - 100_000):middle + 100_000].lower())
+        if not words:
+            return 0.0
+        return sum(word in cls._ENGLISH_FUNCTION_WORDS for word in words) / len(words)
+
+    def _ctc_aligner_class(self) -> type:
+        """The aligner class for `ctc_model`."""
+        if self.ctc_model() == "mms_fa":
+            from src.utils.forced_aligner import ForcedAligner
+            return ForcedAligner
+        from src.utils.quartznet_aligner import QuartzNetAligner
+        return QuartzNetAligner
 
     @time_execution
     def align_forced_and_store(self, abs_id: str, audio_path: str, ebook_text: str,
@@ -320,12 +349,18 @@ class AlignmentService:
         if not ebook_text:
             return False
 
-        from src.utils.forced_aligner import ForcedAligner
-        if not ForcedAligner.is_available():
-            logger.warning(
-                "⚠️ CTC alignment requested but torch/torchaudio are unavailable "
-                "(use the -ctc image); falling back to the lexical pipeline"
-            )
+        aligner_cls = self._ctc_aligner_class()
+        if not aligner_cls.is_available():
+            if aligner_cls.__name__ == "ForcedAligner":
+                logger.warning(
+                    "⚠️ CTC alignment requested but torch/torchaudio are unavailable "
+                    "(use the -ctc image); falling back to the lexical pipeline"
+                )
+            else:
+                logger.warning(
+                    "⚠️ CTC alignment requested but onnxruntime is unavailable; "
+                    "falling back to the lexical pipeline"
+                )
             return False
 
         # Segment-placement guard (issue #426): a book whose stored map already
@@ -348,8 +383,19 @@ class AlignmentService:
             )
             return False
 
-        if self._forced_aligner is None:
-            self._forced_aligner = ForcedAligner()
+        if self.ctc_model() == "quartznet":
+            share = self._english_share(ebook_text)
+            if share < self._ENGLISH_MIN_SHARE:
+                logger.info(
+                    "⚙️ CTC: QuartzNet is English-only and %s does not read as English "
+                    "(%.0f%% English function words, needs %.0f%%); using the "
+                    "transcription pipeline",
+                    abs_id, share * 100, self._ENGLISH_MIN_SHARE * 100,
+                )
+                return False
+
+        if type(self._forced_aligner) is not aligner_cls:
+            self._forced_aligner = aligner_cls()
 
         text_range = self._ctc_text_range(abs_id, ebook_text, spine_chapters)
         # An existing lexical map lets the aligner chunk a long book (its char->ts
@@ -385,12 +431,13 @@ class AlignmentService:
             logger.info("⚙️ CTC: excluding likely unnarrated interior text for %s: %s",
                         abs_id, exclude_spans)
 
-        # Chapter search: with no usable prior, run the
+        # Chapter search (src/services/ctc_search.py): with no usable prior, run the
         # model once, locate each spine chapter in its greedy decode, and use that as
         # the prior, so a long book aligns without a Whisper transcript. The emissions
-        # are handed to `align` so the model runs only once.
+        # are handed to `align` so the model runs only once. A book the search cannot
+        # vouch for falls back to the transcription pipeline (see `_search_prior`).
         precomputed = None
-        if (boundaries is None and spine_chapters and self.chapter_search_enabled()
+        if (boundaries is None and spine_chapters
                 and not (audio_duration and audio_duration > 0
                          and self._forced_aligner.can_single_pass(
                              audio_duration, ebook_text, text_range=text_range,
@@ -470,11 +517,14 @@ class AlignmentService:
 
         emission, seconds_per_frame = precomputed
         blank_id, id_to_char = self._forced_aligner.ctc_vocab()
-        argmaxes = emission[0].argmax(dim=-1).cpu().numpy()
+        if hasattr(emission, "cpu"):
+            argmaxes = emission[0].argmax(dim=-1).cpu().numpy()
+        else:
+            argmaxes = emission[0].argmax(axis=-1)
         text, frames = greedy_decode_argmax(argmaxes, blank_id, id_to_char)
         chapters = [(int(c["start"]), int(c["end"])) for c in spine_chapters if c["end"] > c["start"]]
         results = search_chapters(PositionedDocument(text=text, positions=frames), ebook_text,
-                                  chapters, int(emission.size(1)),
+                                  chapters, int(emission.shape[1]),
                                   anchor_spacing=self._SEARCH_ANCHOR_SPACING)
 
         total_chars = sum(r.end_char - r.start_char for r in results) or 1

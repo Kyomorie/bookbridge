@@ -234,11 +234,17 @@ class ForcedAligner:
         buffer (subprocess PIPE + numpy copy) peaked at several GB and OOM-killed the
         container (#426). The temp file is unlinked by ``align`` after use.
         """
+        import torch
+
+        return torch.from_numpy(self._decode_to_memmap(audio_paths)).unsqueeze(0)
+
+    def _decode_to_memmap(self, audio_paths):
+        """Decode ``audio_paths`` (see `_load_audio`) into a temp file and return a
+        ``[samples]`` float32 memory-map of it; the file is unlinked after `align`."""
         import subprocess
         import tempfile
 
         import numpy as np
-        import torch
 
         if isinstance(audio_paths, (str, os.PathLike)):
             audio_paths = [audio_paths]
@@ -267,8 +273,7 @@ class ForcedAligner:
             raise
 
         self._tmp_audio_files.append(tmp_path)
-        mm = np.memmap(tmp_path, dtype="<f4", mode="r", shape=(num_samples,))
-        return torch.from_numpy(mm).unsqueeze(0)
+        return np.memmap(tmp_path, dtype="<f4", mode="r", shape=(num_samples,))
 
     def _cleanup_tmp_audio(self):
         while self._tmp_audio_files:
@@ -399,8 +404,7 @@ class ForcedAligner:
             logger.warning("⚠️ CTC: no alignable words in ebook text; skipping")
             return None
         try:
-            import torch
-            import torchaudio.functional as F
+            F, torch = self._alignment_backend()
 
             self._load()
 
@@ -411,23 +415,24 @@ class ForcedAligner:
 
             if precomputed is not None:
                 emission, seconds_per_frame = precomputed
-                num_frames = emission.size(1)
+                num_frames = self._frames(emission)
             else:
                 emission, seconds_per_frame = self._decode_and_emit(
                     audio_paths, boundaries, num_targets,
                 )
                 if emission is None:
                     return None
-                num_frames = emission.size(1)
+                num_frames = self._frames(emission)
 
             # forced_align allocates a work buffer that grows ~with frames x tokens.
             # An oversized single pass does not raise a catchable error — it aborts
             # the whole process (CPU: 32-bit back-pointer overflow; GPU: the CUDA
             # kernel exceeds device memory and aborts, taking the container down, #426).
-            if not spans and self._single_pass_fits(emission.device, num_frames, num_targets):
+            device = getattr(emission, "device", self._device)
+            if not spans and self._single_pass_fits(device, num_frames, num_targets):
                 logger.info(
                     "⚙️ CTC: forced_align on %s (%s frames, %s tokens)",
-                    emission.device, num_frames, num_targets,
+                    device, num_frames, num_targets,
                 )
                 word_times = self._segment_word_times(
                     F, torch, emission, word_tokens, seconds_per_frame,
@@ -447,7 +452,7 @@ class ForcedAligner:
                 )
             else:
                 # Too large for one pass and no prior map to chunk against.
-                if emission.device.type == "cpu":
+                if getattr(device, "type", device) == "cpu":
                     logger.warning(
                         "⚠️ CTC: CPU alignment exceeds the safe back-pointer limit "
                         "(%s frames, %s tokens); falling back to lexical alignment",
@@ -499,10 +504,10 @@ class ForcedAligner:
             waveform = self._load_audio(audio_paths)
             logger.info(
                 "⚙️ CTC: decoded %.0fs audio; computing emissions on %s",
-                waveform.size(1) / self._sample_rate, self._device,
+                self._frames(waveform) / self._sample_rate, self._device,
             )
             emission = self._emissions(waveform)  # [1, T, C], log-probs
-            return emission, waveform.size(1) / emission.size(1) / self._sample_rate
+            return emission, self._frames(waveform) / self._frames(emission) / self._sample_rate
         except Exception as e:
             logger.error(f"❌ CTC emissions failed: {e}", exc_info=True)
             return None
@@ -520,7 +525,7 @@ class ForcedAligner:
         # anyway and there is no prior map to chunk against (a new long book on its
         # first attempt): estimate frames from the sample count (MMS/wav2vec2 downsample
         # ~320 samples/frame) so the doomed pass costs only a decode, not a GPU forward.
-        est_frames = max(1, waveform.size(1) // 320)
+        est_frames = max(1, self._frames(waveform) // 320)
         can_chunk = bool(boundaries and len(boundaries) >= 2)
         if not can_chunk and not self._single_pass_fits(self._device, est_frames, num_targets):
             if getattr(self._device, "type", self._device) == "cpu":
@@ -539,15 +544,28 @@ class ForcedAligner:
 
         logger.info(
             "⚙️ CTC: decoded %.0fs audio; computing emissions on %s",
-            waveform.size(1) / self._sample_rate, self._device,
+            self._frames(waveform) / self._sample_rate, self._device,
         )
         emission = self._emissions(waveform)  # [1, T, C], log-probs
-        return emission, waveform.size(1) / emission.size(1) / self._sample_rate
+        return emission, self._frames(waveform) / self._frames(emission) / self._sample_rate
 
     def ctc_vocab(self) -> Tuple[int, Dict[int, str]]:
         """``(blank_id, {token_id: char})`` for greedy-decoding this model's emissions."""
         self._load()
         return 0, {token_id: char for char, token_id in self._dict.items()}
+
+    @staticmethod
+    def _frames(x: Any) -> int:
+        """Length of dim 1 of a torch tensor (``size(1)``) or numpy array (``shape[1]``)."""
+        size = getattr(x, "size", None)
+        return int(size(1)) if callable(size) else int(x.shape[1])
+
+    def _alignment_backend(self) -> Tuple[Any, Any]:
+        """``(torchaudio.functional, torch)``, handed to `_segment_word_times`."""
+        import torch
+        import torchaudio.functional as F
+
+        return F, torch
 
     # -- single-pass sizing + chunked alignment ------------------------------ #
 
@@ -563,10 +581,10 @@ class ForcedAligner:
 
     def _single_pass_fits(self, device, num_frames: int, num_targets: int) -> bool:
         """Whether one forced_align over the whole book is safe on this device."""
-        import torch
         cost = num_frames * (2 * num_targets + 1)
         if getattr(device, "type", device) == "cpu":
             return cost <= 2**31 - 1  # torchaudio's CPU back-pointer index is int32
+        import torch
         try:
             free_bytes, _total = torch.cuda.mem_get_info()
         except Exception:
@@ -669,7 +687,8 @@ class ForcedAligner:
                         whi = min(audio_hi, int(fa + (fb - fa) * c1 / total_tokens) + margin)
                         token_count = c1 - c0
                         fits = (whi - wlo > token_count and
-                                self._single_pass_fits(emission.device, whi - wlo, token_count))
+                                self._single_pass_fits(getattr(emission, "device", self._device),
+                                                       whi - wlo, token_count))
                         if fits or q == p + 1:
                             break
                         q = p + (q - p) // 2
@@ -712,7 +731,7 @@ class ForcedAligner:
         chunk's true speech is fully contained. Returns ``[(char, ts)]`` for the words
         that aligned (failed chunks are skipped and covered by interpolation).
         """
-        total_frames = emission.size(1)
+        total_frames = self._frames(emission)
         margin = max(1, int(round(self._CHUNK_MARGIN_SECONDS / seconds_per_frame)))
         kept_chars = [char for _word, char in kept]
         breaks = {bisect.bisect_left(kept_chars, lo): hi for lo, hi in (exclude_spans or [])}
