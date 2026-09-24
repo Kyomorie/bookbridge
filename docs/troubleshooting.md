@@ -21,13 +21,13 @@ as a bonus alignment source.
 - If a collection's audiobook narrates chapters in a different order from the EPUB,
   enable experimental **Segmented Alignment Maps** in Settings, then remap that book.
   It is off by default and is not needed for normally ordered books.
-- CTC forced alignment is optional and unavailable in published images. It requires a
-  custom `INSTALL_CTC=true` build and is not the first troubleshooting step.
-- **CTC chapter search** (experimental, off by default, needs CTC enabled first) skips
-  Whisper on long books by locating each chapter directly in the audio. It automatically
-  falls back to the normal Whisper-based route for a book whose narration does not match
-  the text closely enough, or whose chapters are read out of order — that fallback is
-  expected, not a failure.
+- **Forced alignment** (on by default) matches each audiobook directly against its ebook
+  and locates every chapter in the audio itself, so most books never touch Whisper. It
+  falls back to transcription automatically for a book that is not in English, whose
+  audio does not follow the text closely enough, whose chapters are narrated out of
+  order, or that appears to be a different book — that fallback is expected, not a
+  failure. To force-align a non-English book instead, choose the `mms_fa` model, which
+  requires a self-built image (`INSTALL_CTC=true`) and effectively an NVIDIA GPU.
 
 ### A deliberate rewind does not stick
 

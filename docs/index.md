@@ -60,7 +60,7 @@ BookBridge does its own audio ↔ text alignment, using built-in Whisper transcr
 - **Book upload to Readest** (optional, per reader) that copies matched books, or just the
   ones you are currently reading, into your Readest cloud library and files them into a group.
 - **Rich locators** using timestamps, href/fragment data, XPath, and EPUB CFI where available.
-- **Built-in audio ↔ text alignment** using Whisper transcription and EPUB SMIL timing data — no extra services required. Content-match protection catches wrong pairings, Alignment Health scores and restores maps, Storyteller transcript assets remain a premium source when available, and experimental CTC chapter search can skip Whisper transcription entirely on long audiobooks.
+- **Built-in audio ↔ text alignment**: forced alignment matches each audiobook directly against its ebook and finds every chapter in the audio itself, running on the CPU in every image with no extra services required. Whisper transcription and EPUB SMIL timing data are the automatic fallback for books it can't follow. Content-match protection catches wrong pairings, Alignment Health scores and restores maps, and Storyteller transcript assets remain a premium source when available.
 - **Resumable jobs** for background processing and transcript work.
 
 ### Management Web UI

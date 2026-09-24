@@ -16,8 +16,8 @@ It shows:
 - **Show position** beside the progress bar on any book with an ebook, opening a short excerpt of the text where you are currently synced
 - **Author, series, and format filters** with counts, plus a visible total of the books currently shown
 - Annotation sync status when the updated Bridge Sync KOReader plugin is in use
-- A **CTC pill** and a blue **read-along pill** under a book's ratings, marking a book already
-  using the optional CTC backend or one that has a finished read-along EPUB
+- A **CTC pill** and a blue **read-along pill** under a book's ratings, marking a book whose
+  alignment came from forced alignment or one that has a finished read-along EPUB
 - Quick access to **Add / Update Book**, **Suggestions**, **Stats**, **Settings**, and **Logs**
 
 If a book is significantly out of sync, the card is highlighted so you can spot it quickly.
@@ -62,7 +62,7 @@ Open **Settings → Sync → Alignment Health** to see alignment quality scores,
 maps that can benefit from rebuilding, and restore the previous map if a remap is not
 an improvement. On a book card, use **Remap alignment** to rebuild the audio-to-ebook
 map without clearing reading progress; **Clear position** remains the action that
-resets progress. A CTC badge marks a book already using the optional CTC backend.
+resets progress. A CTC badge marks a book whose alignment came from forced alignment.
 
 **Honor a Deliberate Rewind** is on by default in Settings → Sync. After you go back in
 one app, keep reading or listening from the new position so the bridge can distinguish
@@ -425,8 +425,8 @@ This is useful after importing old Storyteller assets or fixing your Storyteller
 
 BookBridge can build its own read-along EPUB — an EPUB 3 with word-level narration
 highlighting — from a book's existing audiobook and ebook, and deliver it into BookOrbit.
-Unlike Storyteller Editions, this uses BookBridge's own alignment (Whisper/lexical or CTC),
-so no separate Storyteller server is required.
+Unlike Storyteller Editions, this uses BookBridge's own alignment (forced alignment or
+Whisper/lexical), so no separate Storyteller server is required.
 
 ### Requirements
 
@@ -434,8 +434,8 @@ A mapping is eligible once:
 
 - Its **audio source is BookOrbit** (Audiobookshelf and Grimmory audio are not supported for
   this feature), and
-- it already has an **alignment map** — CTC or the standard Whisper/lexical one — from a
-  normal sync or match.
+- it already has an **alignment map** — forced alignment or the standard Whisper/lexical
+  one — from a normal sync or match.
 
 A book that already carries its own read-along narration is refused rather than rebuilt.
 

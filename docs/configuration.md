@@ -333,7 +333,7 @@ BookOrbit notes:
     ```
 
 - **Generating a read-along EPUB** for BookOrbit needs a mapping whose audio source is
-  BookOrbit and that already has an alignment map (CTC or the standard Whisper/lexical one).
+  BookOrbit and that already has an alignment map (forced alignment or the standard Whisper/lexical one).
   See [Read-Along EPUBs for BookOrbit](user-guide.md#read-along-epubs-for-bookorbit) in the
   User Guide.
 
@@ -554,10 +554,10 @@ audio ↔ text alignment; it runs locally by default and needs no external servi
 | Content-Match Guard | `CONTENT_MATCH_GUARD` | `true` | Refuses to store an alignment when transcript and ebook wording overlap too little, even without Ollama. |
 | Content-Match Min Overlap | `CONTENT_MATCH_MIN_OVERLAP` | `0.15` | Minimum direct word n-gram overlap required by the guard. Raise only when you knowingly align a rough edition. |
 | Segmented Alignment Maps | `ALIGNMENT_SEGMENTED_MAPS` | `false` | Experimental. Enable only for a collection whose audiobook narrates sections in a different order from the EPUB spine, then remap that book. |
-| Use CTC Forced Alignment | `CTC_ENABLED` | `false` | Experimental and available only in a self-built image with `INSTALL_CTC=true`; leave off for the standard Whisper/lexical pipeline. |
-| CTC Model | `CTC_MODEL` | `mms_fa` | The only supported forced-alignment model bundle. Visible after enabling CTC. |
-| CTC Device | `CTC_DEVICE` | `auto` | Uses an NVIDIA GPU when available; CPU is practical only for short books. Visible after enabling CTC. |
-| CTC Chapter Search | `CTC_CHAPTER_SEARCH` | `false` | Experimental. Visible after enabling CTC. Locates each chapter directly in the audio and aligns without a Whisper transcript first, so a long audiobook does not need a full transcription pass before CTC can run. Falls back to the normal Whisper route for a book whose chapters are narrated out of order, or whose narration departs too far from the text. |
+| Use Forced Alignment | `CTC_ENABLED` | `true` | Recommended. Aligns each audiobook directly against its ebook's text, word by word, instead of transcribing it first; also locates each chapter directly in the audio, so long books skip Whisper entirely. Runs on the CPU in every image via the default QuartzNet model. Off always uses transcription (Whisper/lexical). New installs default on; existing installs keep whatever they had. |
+| CTC Model | `CTC_MODEL` | `quartznet` | `quartznet` (NVIDIA QuartzNet15x5, English only) runs on the CPU in every image. `mms_fa` (Meta MMS, ~1000 languages) needs a self-built image with `INSTALL_CTC=true` and effectively an NVIDIA GPU. Visible under Advanced once forced alignment is on. |
+| QuartzNet Model File | `CTC_QUARTZNET_MODEL_PATH` | empty | Optional path to a local `model.onnx` (or the folder holding it). Empty downloads it once (77 MB) from Storyteller's package registry into `/data/models/quartznet15x5-en/`; set this if that download fails. |
+| CTC Device | `CTC_DEVICE` | `auto` | MMS only — QuartzNet always runs on the CPU. Uses an NVIDIA GPU when available; CPU is practical only for short books with MMS. |
 
 Transcription notes:
 
@@ -567,8 +567,8 @@ Transcription notes:
 - **Send Original Audio** skips local ffmpeg normalization and splitting, which saves minutes per book, but only works on servers that decode arbitrary formats *and* chunk long audio themselves (e.g. parakeet with `-long-audio`). Leave it off for whisper.cpp, which requires 16kHz WAV input. When it is on, **Audio Split Length** no longer applies — the server controls chunking.
 - **Content-Match Guard** is the safe default. It prevents a wrong, abridged, or otherwise incompatible ebook/audio pairing from replacing a usable map when semantic matching is unavailable. Check the selected editions before lowering its threshold.
 - **Segmented Alignment Maps** is an opt-in fix for an unusual edition where the EPUB's chapter order does not match narration order. It does nothing for normally ordered books. Enable it, then use **Remap alignment** for the affected book.
-- **CTC forced alignment** is a separate experimental backend, not an upgrade to the standard or `-cuda` image. It is disabled by default and requires the custom build described below.
-- **CTC Chapter Search** is an experimental option inside CTC, off by default, so it only appears once **Use CTC Forced Alignment** is on. On a 39-hour test audiobook it cut alignment time to about 8 minutes by skipping the Whisper transcript entirely; a book whose chapters are narrated out of order, or whose audio departs from the text, still falls back to the normal route automatically.
+- **Forced alignment** is the recommended, default-on method: it runs on the CPU in every published image (standard and `-cuda`) using QuartzNet, and it finds each chapter directly in the audio, so long books skip the Whisper transcript entirely — a 22-hour audiobook takes about 7.5 minutes on a modern 8-thread CPU, a 39-hour one about 15. It falls back to transcription automatically, with no user action needed, for a book that is not in English, whose audio does not follow the text closely enough, whose chapters are narrated out of order, or that appears to be a different book — that fallback is expected, not an error. New installs default it on; existing installs keep whatever they had.
+- For a non-English book, switch **CTC Model** to `mms_fa` under **Advanced — forced alignment model**. MMS needs a self-built image (`INSTALL_CTC=true`) and effectively an NVIDIA GPU — see [Forced alignment for non-English books (MMS)](#forced-alignment-for-non-english-books-mms) below.
 
 ### Sync Tuning
 
@@ -674,17 +674,20 @@ In **Settings**, set **Transcription Provider** to `local`. **Whisper Device** d
 
 Consider raising **Whisper Model** to `small` or `medium` if your GPU can handle it.
 
-### CTC forced alignment (experimental)
+### Forced alignment for non-English books (MMS)
 
-The published standard and `-cuda` images do not include CTC's torch and torchaudio
-dependencies. To try it, build your own image, then enable **Use CTC forced alignment**
-in Settings and use **Remap alignment** on a book:
+Forced alignment's default model, QuartzNet, needs no build and already runs on the
+CPU in every published image — see [Transcription Settings](#transcription-settings)
+above. For a book that is not in English, switch **CTC Model** to `mms_fa` (Meta MMS,
+~1000 languages) instead. MMS is not included in the published images; build your own
+with its torch and torchaudio dependencies, then select `mms_fa` under **Advanced —
+forced alignment model** in Settings and use **Remap alignment** on the book:
 
 ```bash
 docker compose build --build-arg INSTALL_CTC=true
 docker compose up -d
 ```
 
-Use an NVIDIA GPU for full-length audiobooks. CPU mode is available for short books but
-is very slow. CTC remains opt-in; leaving it off keeps the normal Whisper/lexical
-pipeline unchanged.
+Use an NVIDIA GPU for full-length audiobooks with MMS. CPU mode is available for short
+books but is very slow. Leaving **CTC Model** on `quartznet` keeps the default
+CPU-only pipeline unchanged.
